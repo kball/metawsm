@@ -228,3 +228,85 @@ I implemented close-time validation as explicit gate logic tied to the run brief
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go`
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/README.md`
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/07/METAWSM-002--first-bootstrap-flow/playbook/01-bootstrap-operator-playbook.md`
+
+## Step 3: Fix ticket auto-create detection bug discovered in real run
+
+During your live end-to-end run, bootstrap failed after workspace creation while trying to create the bootstrap brief doc. Root cause was ticket-existence detection: `docmgr ticket list --ticket <id>` returns exit code `0` even when no ticket exists, so bootstrap incorrectly assumed ticket already existed and skipped auto-create.
+
+I fixed detection to query structured ticket data and explicitly check for the ticket id. This makes the auto-create path reliable in real runs.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ℹ Executing git worktree command: git worktree add -b task/metawsm-003-run-2026 /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm
+✓ Successfully executed: git worktree add -b task/metawsm-003-run-2026 /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm
+  Output: Preparing worktree (new branch 'task/metawsm-003-run-2026')
+HEAD is now at d37ccd0 Bare bones readme
+
+ℹ Git worktree command succeeded: git worktree add -b task/metawsm-003-run-2026 /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm
+ℹ Successfully created worktree for 'metawsm'
+ℹ Successfully created workspace structure for 'metawsm-003-run-2026' with 1 worktrees
+✓ Workspace 'metawsm-003-run-2026' created successfully!
+
+Workspace Details
+  Path: /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026
+  Repositories: metawsm
+  Branch: task/metawsm-003-run-2026
+
+ℹ To start working:
+  cd /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026
+error: create bootstrap brief doc: exit status 1: {\"level\":\"debug\",\"time\":\"2026-02-07T07:53:50-08:00\",\"message\":\"Created FTS5 tables and triggers\"}
+Error: failed to find ticket directory: ticket not found: METAWSM-003
+exit status 1"
+
+**Assistant interpretation:** Diagnose and fix bootstrap ticket auto-create behavior based on real-run failure output.
+
+**Inferred user intent:** Get bootstrap to run end-to-end on a real ticket without manual simulation workarounds.
+
+**Commit (code):** N/A (to be committed after this diary update)
+
+### What I did
+- Reproduced command behavior:
+  - `docmgr ticket list --ticket METAWSM-003` prints `No tickets found.` but exits `0`.
+- Updated bootstrap ticket existence logic in `cmd/metawsm/main.go`:
+  - added `docmgrTicketExists` using `docmgr list tickets --with-glaze-output --output json`,
+  - parse JSON array and check for exact ticket id,
+  - keep auto-create behavior when missing.
+- Added parsing helper `extractJSONArray` because docmgr debug lines can prefix JSON output.
+- Added test `TestExtractJSONArray` in `cmd/metawsm/main_test.go`.
+- Ran `go test ./... -count=1` to verify no regressions.
+
+### Why
+- End-to-end operator flow cannot rely on exit code semantics that do not indicate ticket existence.
+- Structured output is less brittle than string-matching human-readable CLI output.
+
+### What worked
+- Test suite passes after fix.
+- Ticket-existence check now uses deterministic data rather than command exit status.
+
+### What didn't work
+- Original assumption that `docmgr ticket list --ticket` non-zero means missing ticket was incorrect in practice.
+
+### What I learned
+- For docmgr integration, existence checks should use list data parsing, not only command success/failure.
+
+### What was tricky to build
+- Parsing docmgr JSON output robustly while debug logs may appear before the JSON payload.
+
+### What warrants a second pair of eyes
+- Future-proofing against output format/logging changes in docmgr; ideally a strict machine-only mode would be preferable.
+
+### What should be done in the future
+- Add an explicit `docmgr ticket exists --ticket` command upstream (if possible) to eliminate output parsing.
+
+### Code review instructions
+- Inspect:
+  - `cmd/metawsm/main.go` (`ensureTicketExists`, `docmgrTicketExists`, `extractJSONArray`)
+  - `cmd/metawsm/main_test.go` (`TestExtractJSONArray`)
+- Validate:
+  - `go test ./... -count=1`
+  - rerun bootstrap with missing ticket id and confirm ticket is auto-created.
+
+### Technical details
+- Files changed in this step:
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go`

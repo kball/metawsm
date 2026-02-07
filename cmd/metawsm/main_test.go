@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -62,5 +63,27 @@ func TestCollectBootstrapBriefNonInteractiveWithSeed(t *testing.T) {
 	}
 	if len(brief.QA) != 5 {
 		t.Fatalf("expected 5 QA entries, got %d", len(brief.QA))
+	}
+}
+
+func TestExtractJSONArray(t *testing.T) {
+	payload := []map[string]any{
+		{"ticket": "METAWSM-001"},
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	out := []byte(`{"level":"debug"}\n` + string(b) + "\n")
+	extracted, ok := extractJSONArray(out)
+	if !ok {
+		t.Fatalf("expected to extract json array")
+	}
+	var parsed []map[string]any
+	if err := json.Unmarshal(extracted, &parsed); err != nil {
+		t.Fatalf("unmarshal extracted json: %v", err)
+	}
+	if len(parsed) != 1 || parsed[0]["ticket"] != "METAWSM-001" {
+		t.Fatalf("unexpected parsed payload: %#v", parsed)
 	}
 }

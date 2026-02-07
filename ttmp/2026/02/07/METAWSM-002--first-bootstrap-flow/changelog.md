@@ -48,3 +48,13 @@ Added bootstrap close validation gates and published operator playbook with test
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Coverage for bootstrap close blocked/passing validation scenarios
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/07/METAWSM-002--first-bootstrap-flow/playbook/01-bootstrap-operator-playbook.md — Operator playbook for manual validation
 
+
+## 2026-02-07
+
+Fixed bootstrap ticket auto-create detection to parse structured ticket list output
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Robust ticket existence detection using docmgr JSON output
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go — Coverage for debug-prefixed JSON array extraction
+
