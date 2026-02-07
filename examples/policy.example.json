@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "workspace": {
+    "default_strategy": "create",
+    "branch_prefix": "task"
+  },
+  "tmux": {
+    "session_pattern": "{agent}-{workspace}"
+  },
+  "execution": {
+    "step_retries": 1
+  },
+  "health": {
+    "idle_seconds": 300,
+    "activity_stalled_seconds": 900,
+    "progress_stalled_seconds": 1200
+  },
+  "close": {
+    "require_clean_git": true
+  },
+  "agents": [
+    {
+      "name": "agent",
+      "command": "bash"
+    }
+  ]
+}
