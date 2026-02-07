@@ -66,6 +66,12 @@ type CleanupOptions struct {
 	DeleteWorkspaces bool
 }
 
+type MergeOptions struct {
+	Ticket string
+	RunID  string
+	DryRun bool
+}
+
 type RunResult struct {
 	RunID string
 	Steps []model.PlanStep
@@ -85,6 +91,11 @@ type RestartResult struct {
 }
 
 type CleanupResult struct {
+	RunID   string
+	Actions []string
+}
+
+type MergeResult struct {
 	RunID   string
 	Actions []string
 }
@@ -439,6 +450,70 @@ func (s *Service) Cleanup(ctx context.Context, options CleanupOptions) (CleanupR
 	return CleanupResult{RunID: runID, Actions: actions}, nil
 }
 
+func (s *Service) Merge(ctx context.Context, options MergeOptions) (MergeResult, error) {
+	runID, err := s.resolveRunID(options.RunID, options.Ticket)
+	if err != nil {
+		return MergeResult{}, err
+	}
+
+	record, specJSON, _, err := s.store.GetRun(runID)
+	if err != nil {
+		return MergeResult{}, err
+	}
+	if record.Status != model.RunStatusComplete && record.Status != model.RunStatusClosed {
+		return MergeResult{}, fmt.Errorf("run %s must be completed before merge (current: %s)", runID, record.Status)
+	}
+
+	var spec model.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return MergeResult{}, fmt.Errorf("unmarshal run spec: %w", err)
+	}
+
+	agents, err := s.store.GetAgents(runID)
+	if err != nil {
+		return MergeResult{}, err
+	}
+	workspaces := workspaceNamesFromAgents(agents)
+	if len(workspaces) == 0 {
+		return MergeResult{}, fmt.Errorf("run %s has no workspaces to merge", runID)
+	}
+
+	actions := make([]string, 0, len(workspaces))
+	for _, workspaceName := range workspaces {
+		workspacePath, err := resolveWorkspacePath(workspaceName)
+		if err != nil {
+			return MergeResult{}, err
+		}
+		repoStates, err := workspaceRepoDirtyStates(ctx, workspacePath, spec.Repos)
+		if err != nil {
+			return MergeResult{}, err
+		}
+		dirty := false
+		for _, state := range repoStates {
+			if state.Dirty {
+				dirty = true
+				break
+			}
+		}
+		if !dirty {
+			continue
+		}
+		actions = append(actions, fmt.Sprintf("wsm merge %s", shellQuote(workspaceName)))
+	}
+
+	if options.DryRun || record.Status == model.RunStatusClosed {
+		return MergeResult{RunID: runID, Actions: actions}, nil
+	}
+
+	for _, action := range actions {
+		if err := runShell(ctx, action); err != nil {
+			return MergeResult{}, err
+		}
+	}
+	_ = s.store.AddEvent(runID, "run", runID, "merge", "", "", fmt.Sprintf("merged %d workspace(s)", len(actions)))
+	return MergeResult{RunID: runID, Actions: actions}, nil
+}
+
 func (s *Service) resolveRunID(explicitRunID string, ticket string) (string, error) {
 	runID := strings.TrimSpace(explicitRunID)
 	if runID != "" {
@@ -565,27 +640,21 @@ func (s *Service) Close(ctx context.Context, options CloseOptions) error {
 		return err
 	}
 
-	workspaceSet := map[string]struct{}{}
-	for _, agent := range agents {
-		workspaceSet[agent.WorkspaceName] = struct{}{}
-	}
-	workspaces := make([]string, 0, len(workspaceSet))
-	for workspaceName := range workspaceSet {
-		workspaces = append(workspaces, workspaceName)
-	}
-	sort.Strings(workspaces)
+	workspaces := workspaceNamesFromAgents(agents)
 
 	for _, workspaceName := range workspaces {
 		path, err := resolveWorkspacePath(workspaceName)
 		if err != nil {
 			return err
 		}
-		dirty, err := hasDirtyGitState(ctx, path)
+		repoStates, err := workspaceRepoDirtyStates(ctx, path, spec.Repos)
 		if err != nil {
 			return err
 		}
-		if dirty {
-			return fmt.Errorf("workspace %s (%s) has uncommitted changes; close blocked", workspaceName, path)
+		for _, state := range repoStates {
+			if state.Dirty {
+				return fmt.Errorf("workspace %s repo %s has uncommitted changes; close blocked", workspaceName, state.RepoPath)
+			}
 		}
 	}
 	if spec.Mode == model.RunModeBootstrap {
@@ -706,6 +775,48 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 			b.WriteString(fmt.Sprintf("  - id=%d %s@%s question=%s\n", item.ID, item.AgentName, item.WorkspaceName, item.Question))
 		}
 	}
+
+	workspaceDiffs := collectWorkspaceDiffs(ctx, workspaceNamesFromAgents(agents), spec.Repos)
+	if len(workspaceDiffs) > 0 {
+		b.WriteString("Diffs:\n")
+		for _, diff := range workspaceDiffs {
+			if diff.Error != nil {
+				b.WriteString(fmt.Sprintf("  - %s error=%v\n", diff.WorkspaceName, diff.Error))
+				continue
+			}
+			b.WriteString(fmt.Sprintf("  - %s path=%s\n", diff.WorkspaceName, diff.WorkspacePath))
+			for _, repo := range diff.Repos {
+				repoLabel := repo.RepoLabel
+				if repo.Error != nil {
+					b.WriteString(fmt.Sprintf("    * %s error=%v\n", repoLabel, repo.Error))
+					continue
+				}
+				if len(repo.StatusLines) == 0 {
+					b.WriteString(fmt.Sprintf("    * %s clean\n", repoLabel))
+					continue
+				}
+				b.WriteString(fmt.Sprintf("    * %s dirty files=%d\n", repoLabel, len(repo.StatusLines)))
+				limit := len(repo.StatusLines)
+				if limit > 8 {
+					limit = 8
+				}
+				for i := 0; i < limit; i++ {
+					b.WriteString(fmt.Sprintf("      %s\n", repo.StatusLines[i]))
+				}
+				if len(repo.StatusLines) > limit {
+					b.WriteString(fmt.Sprintf("      ... (%d more)\n", len(repo.StatusLines)-limit))
+				}
+			}
+		}
+	}
+
+	if record.Status == model.RunStatusComplete {
+		b.WriteString("Next:\n")
+		b.WriteString(fmt.Sprintf("  - metawsm merge --run-id %s --dry-run\n", runID))
+		b.WriteString(fmt.Sprintf("  - metawsm merge --run-id %s\n", runID))
+		b.WriteString(fmt.Sprintf("  - metawsm close --run-id %s\n", runID))
+	}
+
 	b.WriteString(fmt.Sprintf("Steps: total=%d done=%d running=%d pending=%d failed=%d\n", len(steps), doneCount, runningCount, pendingCount, failedCount))
 	b.WriteString("Agents:\n")
 	if len(agents) == 0 {
@@ -1424,6 +1535,123 @@ func hasDirtyGitState(ctx context.Context, repoPath string) (bool, error) {
 		return false, err
 	}
 	return strings.TrimSpace(string(out)) != "", nil
+}
+
+type repoDirtyState struct {
+	RepoPath string
+	Dirty    bool
+}
+
+func workspaceRepoDirtyStates(ctx context.Context, workspacePath string, repos []string) ([]repoDirtyState, error) {
+	repoPaths, err := workspaceRepoPaths(workspacePath, repos)
+	if err != nil {
+		return nil, err
+	}
+	states := make([]repoDirtyState, 0, len(repoPaths))
+	for _, repoPath := range repoPaths {
+		dirty, err := hasDirtyGitState(ctx, repoPath)
+		if err != nil {
+			return nil, err
+		}
+		states = append(states, repoDirtyState{RepoPath: repoPath, Dirty: dirty})
+	}
+	return states, nil
+}
+
+type workspaceDiff struct {
+	WorkspaceName string
+	WorkspacePath string
+	Repos         []repoDiff
+	Error         error
+}
+
+type repoDiff struct {
+	RepoPath    string
+	RepoLabel   string
+	StatusLines []string
+	Error       error
+}
+
+func collectWorkspaceDiffs(ctx context.Context, workspaceNames []string, repos []string) []workspaceDiff {
+	out := make([]workspaceDiff, 0, len(workspaceNames))
+	for _, workspaceName := range workspaceNames {
+		diff := workspaceDiff{WorkspaceName: workspaceName}
+		workspacePath, err := resolveWorkspacePath(workspaceName)
+		if err != nil {
+			diff.Error = err
+			out = append(out, diff)
+			continue
+		}
+		diff.WorkspacePath = workspacePath
+		repoPaths, err := workspaceRepoPaths(workspacePath, repos)
+		if err != nil {
+			diff.Error = err
+			out = append(out, diff)
+			continue
+		}
+		sort.Strings(repoPaths)
+		repoDiffs := make([]repoDiff, 0, len(repoPaths))
+		for _, repoPath := range repoPaths {
+			label := repoLabelForWorkspace(workspacePath, repoPath)
+			lines, err := gitStatusShortLines(ctx, repoPath)
+			repoDiffs = append(repoDiffs, repoDiff{
+				RepoPath:    repoPath,
+				RepoLabel:   label,
+				StatusLines: lines,
+				Error:       err,
+			})
+		}
+		diff.Repos = repoDiffs
+		out = append(out, diff)
+	}
+	return out
+}
+
+func gitStatusShortLines(ctx context.Context, repoPath string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "zsh", "-lc", fmt.Sprintf("git -C %s status --short", shellQuote(repoPath)))
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	text := strings.TrimSpace(string(out))
+	if text == "" {
+		return nil, nil
+	}
+	lines := strings.Split(text, "\n")
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		result = append(result, trimmed)
+	}
+	return result, nil
+}
+
+func repoLabelForWorkspace(workspacePath string, repoPath string) string {
+	rel, err := filepath.Rel(workspacePath, repoPath)
+	if err == nil && strings.TrimSpace(rel) != "" && rel != "." {
+		return rel
+	}
+	return filepath.Base(repoPath)
+}
+
+func workspaceNamesFromAgents(agents []model.AgentRecord) []string {
+	workspaceSet := map[string]struct{}{}
+	for _, agent := range agents {
+		name := strings.TrimSpace(agent.WorkspaceName)
+		if name == "" {
+			continue
+		}
+		workspaceSet[name] = struct{}{}
+	}
+	workspaces := make([]string, 0, len(workspaceSet))
+	for workspaceName := range workspaceSet {
+		workspaces = append(workspaces, workspaceName)
+	}
+	sort.Strings(workspaces)
+	return workspaces
 }
 
 func evaluateHealth(ctx context.Context, cfg policy.Config, agent model.AgentRecord, now time.Time) (model.HealthState, model.AgentStatus, *time.Time) {

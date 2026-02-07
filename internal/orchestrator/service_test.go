@@ -646,6 +646,150 @@ func TestCloseBootstrapDryRunPassesWithValidationResult(t *testing.T) {
 	}
 }
 
+func TestCloseBootstrapDryRunBlocksWhenNestedRepoDirty(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+
+	runID := "run-close-dirty-nested-repo"
+	workspaceName := "ws-close-dirty-nested"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	if err := os.MkdirAll(filepath.Join(workspacePath, ".metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	writeValidationResult(t, workspacePath, runID, "tests pass")
+	repoA := filepath.Join(workspacePath, "repo-a")
+	repoB := filepath.Join(workspacePath, "repo-b")
+	if err := os.MkdirAll(repoA, 0o755); err != nil {
+		t.Fatalf("mkdir repo-a: %v", err)
+	}
+	if err := os.MkdirAll(repoB, 0o755); err != nil {
+		t.Fatalf("mkdir repo-b: %v", err)
+	}
+	initGitRepo(t, repoA)
+	initGitRepo(t, repoB)
+	if err := os.WriteFile(filepath.Join(repoB, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty repo file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+
+	createBootstrapRunFixtureWithRepos(t, svc, runID, workspaceName, []string{"repo-a", "repo-b"})
+
+	err := svc.Close(t.Context(), CloseOptions{RunID: runID, DryRun: true})
+	if err == nil {
+		t.Fatalf("expected close to fail when nested repo is dirty")
+	}
+	if !strings.Contains(err.Error(), "repo-b") {
+		t.Fatalf("expected dirty nested repo path in error, got: %v", err)
+	}
+}
+
+func TestMergeDryRunByRunIDIncludesOnlyDirtyWorkspaces(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	ticket := "METAWSM-007"
+	workspaceName := "ws-merge-diff"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoA := filepath.Join(workspacePath, "repo-a")
+	repoB := filepath.Join(workspacePath, "repo-b")
+	if err := os.MkdirAll(repoA, 0o755); err != nil {
+		t.Fatalf("mkdir repo-a: %v", err)
+	}
+	if err := os.MkdirAll(repoB, 0o755); err != nil {
+		t.Fatalf("mkdir repo-b: %v", err)
+	}
+	initGitRepo(t, repoA)
+	initGitRepo(t, repoB)
+	if err := os.WriteFile(filepath.Join(repoB, "feature.txt"), []byte("work in progress\n"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+
+	createRunWithTicketFixtureWithRepos(t, svc, "run-merge-z", ticket, workspaceName, model.RunStatusComplete, false, []string{"repo-a", "repo-b"})
+
+	result, err := svc.Merge(t.Context(), MergeOptions{
+		RunID:  "run-merge-z",
+		DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("merge dry-run: %v", err)
+	}
+	if result.RunID != "run-merge-z" {
+		t.Fatalf("expected merge run id run-merge-z, got %s", result.RunID)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected one merge action, got %d", len(result.Actions))
+	}
+	if !strings.Contains(result.Actions[0], "wsm merge") || !strings.Contains(result.Actions[0], workspaceName) {
+		t.Fatalf("unexpected merge action: %q", result.Actions[0])
+	}
+}
+
+func TestStatusIncludesPerRepoDiffsForWorkspace(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	ticket := "METAWSM-008"
+	runID := "run-status-diffs"
+	workspaceName := "ws-status-diffs"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoA := filepath.Join(workspacePath, "repo-a")
+	repoB := filepath.Join(workspacePath, "repo-b")
+	if err := os.MkdirAll(repoA, 0o755); err != nil {
+		t.Fatalf("mkdir repo-a: %v", err)
+	}
+	if err := os.MkdirAll(repoB, 0o755); err != nil {
+		t.Fatalf("mkdir repo-b: %v", err)
+	}
+	initGitRepo(t, repoA)
+	initGitRepo(t, repoB)
+	if err := os.WriteFile(filepath.Join(repoB, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"repo-a", "repo-b"})
+
+	status, err := svc.Status(t.Context(), runID)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(status, "Diffs:") {
+		t.Fatalf("expected Diffs section in status output, got:\n%s", status)
+	}
+	if !strings.Contains(status, "repo-a clean") {
+		t.Fatalf("expected clean repo-a line in status output, got:\n%s", status)
+	}
+	if !strings.Contains(status, "repo-b dirty") {
+		t.Fatalf("expected dirty repo-b line in status output, got:\n%s", status)
+	}
+	if !strings.Contains(status, "?? dirty.txt") {
+		t.Fatalf("expected dirty file line in status output, got:\n%s", status)
+	}
+	if !strings.Contains(status, "metawsm merge --run-id "+runID) {
+		t.Fatalf("expected merge next-step guidance in status output, got:\n%s", status)
+	}
+}
+
 func newTestService(t *testing.T) *Service {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
@@ -681,11 +825,16 @@ func writeWorkspaceConfig(t *testing.T, workspaceName string, workspacePath stri
 
 func createBootstrapRunFixture(t *testing.T, svc *Service, runID string, workspaceName string) {
 	t.Helper()
+	createBootstrapRunFixtureWithRepos(t, svc, runID, workspaceName, []string{"metawsm"})
+}
+
+func createBootstrapRunFixtureWithRepos(t *testing.T, svc *Service, runID string, workspaceName string, repos []string) {
+	t.Helper()
 	spec := model.RunSpec{
 		RunID:             runID,
 		Mode:              model.RunModeBootstrap,
 		Tickets:           []string{"METAWSM-002"},
-		Repos:             []string{"metawsm"},
+		Repos:             repos,
 		WorkspaceStrategy: model.WorkspaceStrategyCreate,
 		Agents:            []model.AgentSpec{{Name: "agent", Command: "bash"}},
 		PolicyPath:        ".metawsm/policy.json",
@@ -730,11 +879,16 @@ func createBootstrapRunFixture(t *testing.T, svc *Service, runID string, workspa
 
 func createRunWithTicketFixture(t *testing.T, svc *Service, runID string, ticket string, workspaceName string, status model.RunStatus, dryRun bool) {
 	t.Helper()
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, status, dryRun, []string{"metawsm"})
+}
+
+func createRunWithTicketFixtureWithRepos(t *testing.T, svc *Service, runID string, ticket string, workspaceName string, status model.RunStatus, dryRun bool, repos []string) {
+	t.Helper()
 	spec := model.RunSpec{
 		RunID:             runID,
 		Mode:              model.RunModeBootstrap,
 		Tickets:           []string{ticket},
-		Repos:             []string{"metawsm"},
+		Repos:             repos,
 		WorkspaceStrategy: model.WorkspaceStrategyCreate,
 		Agents:            []model.AgentSpec{{Name: "agent", Command: "bash"}},
 		PolicyPath:        ".metawsm/policy.json",

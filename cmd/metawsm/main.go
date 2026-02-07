@@ -59,6 +59,8 @@ func main() {
 		err = restartCommand(args)
 	case "cleanup":
 		err = cleanupCommand(args)
+	case "merge":
+		err = mergeCommand(args)
 	case "close":
 		err = closeCommand(args)
 	case "policy-init":
@@ -425,6 +427,53 @@ func cleanupCommand(args []string) error {
 	return nil
 }
 
+func mergeCommand(args []string) error {
+	fs := flag.NewFlagSet("merge", flag.ContinueOnError)
+	var runID string
+	var ticket string
+	var dbPath string
+	var dryRun bool
+	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (merge latest run for this ticket)")
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.BoolVar(&dryRun, "dry-run", false, "Preview merge actions without executing them")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	runID, ticket, err := requireRunSelector(runID, ticket)
+	if err != nil {
+		return err
+	}
+
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	result, err := service.Merge(context.Background(), orchestrator.MergeOptions{
+		RunID:  runID,
+		Ticket: ticket,
+		DryRun: dryRun,
+	})
+	if err != nil {
+		return err
+	}
+
+	if dryRun {
+		fmt.Printf("Merge dry-run for run %s:\n", result.RunID)
+	} else {
+		fmt.Printf("Merge completed for run %s.\n", result.RunID)
+	}
+	if len(result.Actions) == 0 {
+		fmt.Println("  - no dirty workspace changes to merge")
+		return nil
+	}
+	for _, action := range result.Actions {
+		fmt.Printf("  - %s\n", action)
+	}
+	return nil
+}
+
 func closeCommand(args []string) error {
 	fs := flag.NewFlagSet("close", flag.ContinueOnError)
 	var runID string
@@ -784,6 +833,7 @@ func printUsage() {
 	fmt.Println("  metawsm stop --run-id RUN_ID")
 	fmt.Println("  metawsm restart [--run-id RUN_ID | --ticket T1] [--dry-run]")
 	fmt.Println("  metawsm cleanup [--run-id RUN_ID | --ticket T1] [--keep-workspaces] [--dry-run]")
+	fmt.Println("  metawsm merge [--run-id RUN_ID | --ticket T1] [--dry-run]")
 	fmt.Println("  metawsm close --run-id RUN_ID [--dry-run]")
 	fmt.Println("  metawsm policy-init")
 	fmt.Println("  metawsm tui [--run-id RUN_ID] [--interval 2]")
