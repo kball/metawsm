@@ -12,12 +12,12 @@ RelatedFiles:
     - Path: README.md
       Note: Signal contract and command reference mirrored by this playbook
     - Path: cmd/metawsm/main.go
-      Note: Operator commands exercised in playbook (bootstrap/status/guide/close)
+      Note: Operator commands exercised in playbook (bootstrap/status/guide/restart/cleanup/close)
     - Path: internal/orchestrator/service.go
-      Note: Guidance and close-gate signal handling expected by playbook
+      Note: Guidance, restart, cleanup, and close-gate handling expected by playbook
 ExternalSources: []
 Summary: Step-by-step operator procedure to run, guide, complete, validate, and close bootstrap runs
-LastUpdated: 2026-02-07T07:46:01.781084-08:00
+LastUpdated: 2026-02-07T08:27:13-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
@@ -105,6 +105,15 @@ go run ./cmd/metawsm status --run-id RUN_ID
 
 # 10) Preview close actions
 go run ./cmd/metawsm close --run-id RUN_ID --dry-run
+
+# Optional: restart latest run for the ticket without re-intake prompts
+go run ./cmd/metawsm restart --ticket METAWSM-002
+
+# Optional: clean up latest run for the ticket (kills tmux sessions and deletes workspace)
+go run ./cmd/metawsm cleanup --ticket METAWSM-002
+
+# Optional: keep workspace but stop agent sessions
+go run ./cmd/metawsm cleanup --ticket METAWSM-002 --keep-workspaces
 ```
 
 ## Exit Criteria

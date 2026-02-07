@@ -49,6 +49,19 @@ type CloseOptions struct {
 	ChangelogEntry string
 }
 
+type RestartOptions struct {
+	Ticket string
+	RunID  string
+	DryRun bool
+}
+
+type CleanupOptions struct {
+	Ticket           string
+	RunID            string
+	DryRun           bool
+	DeleteWorkspaces bool
+}
+
 type RunResult struct {
 	RunID string
 	Steps []model.PlanStep
@@ -60,6 +73,16 @@ type GuideResult struct {
 	WorkspaceName string
 	AgentName     string
 	Question      string
+}
+
+type RestartResult struct {
+	RunID   string
+	Actions []string
+}
+
+type CleanupResult struct {
+	RunID   string
+	Actions []string
 }
 
 func (s *Service) Run(ctx context.Context, options RunOptions) (RunResult, error) {
@@ -242,6 +265,169 @@ func (s *Service) Stop(ctx context.Context, runID string) error {
 		_ = s.store.UpdateAgentStatus(runID, agent.Name, agent.WorkspaceName, model.AgentStatusStopped, model.HealthStateDead, &now, agent.LastProgressAt)
 	}
 	return s.transitionRun(runID, model.RunStatusStopping, model.RunStatusStopped, "run stopped")
+}
+
+func (s *Service) Restart(ctx context.Context, options RestartOptions) (RestartResult, error) {
+	runID, err := s.resolveRunID(options.RunID, options.Ticket)
+	if err != nil {
+		return RestartResult{}, err
+	}
+	record, specJSON, _, err := s.store.GetRun(runID)
+	if err != nil {
+		return RestartResult{}, err
+	}
+	if record.Status == model.RunStatusClosed {
+		return RestartResult{}, fmt.Errorf("run %s is closed and cannot be restarted", runID)
+	}
+
+	var spec model.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return RestartResult{}, fmt.Errorf("unmarshal run spec: %w", err)
+	}
+	agentCommand := map[string]string{}
+	for _, agent := range spec.Agents {
+		agentCommand[agent.Name] = agent.Command
+	}
+
+	agents, err := s.store.GetAgents(runID)
+	if err != nil {
+		return RestartResult{}, err
+	}
+	if len(agents) == 0 {
+		return RestartResult{}, fmt.Errorf("run %s has no agents to restart", runID)
+	}
+
+	if record.Status != model.RunStatusRunning && hsm.CanTransitionRun(record.Status, model.RunStatusRunning) {
+		if !options.DryRun {
+			if err := s.transitionRun(runID, record.Status, model.RunStatusRunning, "restart requested"); err != nil {
+				return RestartResult{}, err
+			}
+		}
+	}
+
+	actions := make([]string, 0, len(agents)*2)
+	now := time.Now()
+	for _, agent := range agents {
+		workspacePath, err := resolveWorkspacePath(agent.WorkspaceName)
+		if err != nil {
+			return RestartResult{}, err
+		}
+		command := strings.TrimSpace(agentCommand[agent.Name])
+		if command == "" {
+			command = "bash"
+		}
+		sessionName := strings.TrimSpace(agent.SessionName)
+		if sessionName == "" {
+			sessionName = policy.RenderSessionName("{agent}-{workspace}", agent.Name, agent.WorkspaceName)
+		}
+
+		killCmd := fmt.Sprintf("tmux kill-session -t %s", shellQuote(sessionName))
+		startCmd := fmt.Sprintf("tmux new-session -d -s %s -c %s %s", shellQuote(sessionName), shellQuote(workspacePath), shellQuote(command))
+		actions = append(actions, killCmd, startCmd)
+
+		if options.DryRun {
+			continue
+		}
+		_ = tmuxKillSession(ctx, sessionName)
+		if err := runShell(ctx, startCmd); err != nil {
+			return RestartResult{}, err
+		}
+		if err := s.store.UpdateAgentStatus(runID, agent.Name, agent.WorkspaceName, model.AgentStatusRunning, model.HealthStateHealthy, &now, &now); err != nil {
+			return RestartResult{}, err
+		}
+	}
+	if !options.DryRun {
+		_ = s.store.AddEvent(runID, "run", runID, "restart", "", "", fmt.Sprintf("restarted %d agents", len(agents)))
+	}
+	return RestartResult{RunID: runID, Actions: actions}, nil
+}
+
+func (s *Service) Cleanup(ctx context.Context, options CleanupOptions) (CleanupResult, error) {
+	runID, err := s.resolveRunID(options.RunID, options.Ticket)
+	if err != nil {
+		return CleanupResult{}, err
+	}
+
+	record, _, _, err := s.store.GetRun(runID)
+	if err != nil {
+		return CleanupResult{}, err
+	}
+	agents, err := s.store.GetAgents(runID)
+	if err != nil {
+		return CleanupResult{}, err
+	}
+
+	actions := make([]string, 0, len(agents)*2)
+	workspaceSet := map[string]struct{}{}
+	for _, agent := range agents {
+		sessionName := strings.TrimSpace(agent.SessionName)
+		if sessionName == "" {
+			sessionName = policy.RenderSessionName("{agent}-{workspace}", agent.Name, agent.WorkspaceName)
+		}
+		actions = append(actions, fmt.Sprintf("tmux kill-session -t %s", shellQuote(sessionName)))
+		workspaceSet[agent.WorkspaceName] = struct{}{}
+	}
+	workspaces := make([]string, 0, len(workspaceSet))
+	for workspaceName := range workspaceSet {
+		if strings.TrimSpace(workspaceName) != "" {
+			workspaces = append(workspaces, workspaceName)
+		}
+	}
+	sort.Strings(workspaces)
+
+	if options.DeleteWorkspaces {
+		for _, workspaceName := range workspaces {
+			actions = append(actions, fmt.Sprintf("wsm delete %s", shellQuote(workspaceName)))
+		}
+	}
+
+	if options.DryRun {
+		return CleanupResult{RunID: runID, Actions: actions}, nil
+	}
+
+	for _, agent := range agents {
+		sessionName := strings.TrimSpace(agent.SessionName)
+		if sessionName == "" {
+			sessionName = policy.RenderSessionName("{agent}-{workspace}", agent.Name, agent.WorkspaceName)
+		}
+		_ = tmuxKillSession(ctx, sessionName)
+	}
+
+	now := time.Now()
+	for _, agent := range agents {
+		_ = s.store.UpdateAgentStatus(runID, agent.Name, agent.WorkspaceName, model.AgentStatusStopped, model.HealthStateDead, &now, agent.LastProgressAt)
+	}
+
+	for _, workspaceName := range workspaces {
+		if options.DeleteWorkspaces {
+			if err := runShell(ctx, fmt.Sprintf("wsm delete %s", shellQuote(workspaceName))); err != nil {
+				return CleanupResult{}, err
+			}
+		}
+	}
+
+	if record.Status != model.RunStatusStopped && hsm.CanTransitionRun(record.Status, model.RunStatusStopping) {
+		if err := s.transitionRun(runID, record.Status, model.RunStatusStopping, "cleanup requested"); err != nil {
+			return CleanupResult{}, err
+		}
+		if err := s.transitionRun(runID, model.RunStatusStopping, model.RunStatusStopped, "cleanup completed"); err != nil {
+			return CleanupResult{}, err
+		}
+	}
+	_ = s.store.AddEvent(runID, "run", runID, "cleanup", "", "", fmt.Sprintf("cleanup complete; workspaces=%d", len(workspaces)))
+	return CleanupResult{RunID: runID, Actions: actions}, nil
+}
+
+func (s *Service) resolveRunID(explicitRunID string, ticket string) (string, error) {
+	runID := strings.TrimSpace(explicitRunID)
+	if runID != "" {
+		return runID, nil
+	}
+	ticket = strings.TrimSpace(ticket)
+	if ticket == "" {
+		return "", fmt.Errorf("either run id or ticket is required")
+	}
+	return s.store.FindLatestRunIDByTicket(ticket)
 }
 
 func (s *Service) Guide(ctx context.Context, runID string, answer string) (GuideResult, error) {

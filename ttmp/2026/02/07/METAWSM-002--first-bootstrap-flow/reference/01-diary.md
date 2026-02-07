@@ -31,7 +31,7 @@ RelatedFiles:
       Note: Operator-ready manual test and execution flow
 ExternalSources: []
 Summary: Implementation diary for bootstrap and guide command rollout with durable run-brief and guidance state support
-LastUpdated: 2026-02-07T07:40:13.192507-08:00
+LastUpdated: 2026-02-07T08:27:13-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
@@ -546,3 +546,70 @@ exit status 1"
 - Files changed in this step:
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go`
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go`
+
+## Step 6: Add first-class restart/cleanup commands keyed by ticket
+
+You asked for a direct CLI path to restart agent/runtime state without re-answering intake questions, and a corresponding cleanup command for a ticket and its associated agents/workspaces. I implemented these as first-class `metawsm` commands instead of shell snippets.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Give me a cli command that lets me do that just based on the ticket id. Also then give me a cli command that lets me clean up a ticket & associated agents etc" and "yes add them as first class commands"
+
+**Assistant interpretation:** Promote restart/cleanup behavior into stable CLI commands with ticket-based targeting.
+
+**Inferred user intent:** Make operator recovery/retry workflow one-command and repeatable without re-entering bootstrap intake responses.
+
+**Commit (code):** N/A (pending)
+
+### What I did
+- Added store API `FindLatestRunIDByTicket` in `internal/store/sqlite.go`.
+- Added orchestrator helper `resolveRunID` in `internal/orchestrator/service.go` so `Restart/Cleanup` accept either run id or ticket.
+- Added CLI commands in `cmd/metawsm/main.go`:
+  - `metawsm restart --ticket <TICKET>` (or `--run-id`),
+  - `metawsm cleanup --ticket <TICKET>` (or `--run-id`),
+  - `metawsm cleanup --keep-workspaces` to stop sessions but preserve workspace dirs.
+- Added tests:
+  - `cmd/metawsm/main_test.go`: selector validation helper coverage,
+  - `internal/orchestrator/service_test.go`: dry-run restart and cleanup by ticket.
+- Updated docs:
+  - `README.md` command examples,
+  - operator playbook with restart/cleanup recovery commands.
+- Validation run:
+  - `go test ./... -count=1` (all packages passing).
+
+### Why
+- Ticket-driven restart/cleanup avoids brittle manual run-id lookup and prevents repeating intake prompts when a run already exists.
+- First-class commands are easier to teach and safer than ad-hoc shell pipelines.
+
+### What worked
+- Dry-run tests confirm latest-run-by-ticket resolution and action planning output.
+- CLI now supports direct operator recovery paths for active bootstrap runs.
+
+### What didn't work
+- Mid-implementation compile break occurred because `Restart/Cleanup` referenced missing `resolveRunID`; fixed by adding the helper and covering it through tests.
+
+### What should be done in the future
+- Add integration tests that execute `restart`/`cleanup` end-to-end with real tmux sessions in a controlled environment.
+- Consider exposing `metawsm runs --ticket <TICKET>` for explicit history visibility when multiple runs exist.
+
+### Code review instructions
+- Inspect command wiring in `cmd/metawsm/main.go` (`restartCommand`, `cleanupCommand`, `requireRunSelector`).
+- Inspect run resolution and behavior in `internal/orchestrator/service.go` (`resolveRunID`, `Restart`, `Cleanup`).
+- Inspect tests:
+  - `internal/orchestrator/service_test.go`
+  - `cmd/metawsm/main_test.go`
+- Validate:
+  - `go test ./... -count=1`
+  - `go run ./cmd/metawsm restart --ticket METAWSM-003 --dry-run`
+  - `go run ./cmd/metawsm cleanup --ticket METAWSM-003 --dry-run`
+
+### Technical details
+- Files changed in this step:
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_test.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/README.md`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/07/METAWSM-002--first-bootstrap-flow/playbook/01-bootstrap-operator-playbook.md`

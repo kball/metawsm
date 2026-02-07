@@ -14,6 +14,8 @@ Implemented command surface:
 - `metawsm guide`
 - `metawsm resume`
 - `metawsm stop`
+- `metawsm restart`
+- `metawsm cleanup`
 - `metawsm close`
 - `metawsm policy-init`
 - `metawsm tui`
@@ -61,6 +63,24 @@ Answer pending guidance from an agent:
 
 ```bash
 go run ./cmd/metawsm guide --run-id RUN_ID --answer "Proceed with the sentinel JSON contract."
+```
+
+Restart the latest run for a ticket:
+
+```bash
+go run ./cmd/metawsm restart --ticket METAWSM-003
+```
+
+Clean up the latest run for a ticket (kills agent tmux sessions and deletes workspaces):
+
+```bash
+go run ./cmd/metawsm cleanup --ticket METAWSM-003
+```
+
+Keep workspaces during cleanup:
+
+```bash
+go run ./cmd/metawsm cleanup --ticket METAWSM-003 --keep-workspaces
 ```
 
 Run initial TUI monitor:

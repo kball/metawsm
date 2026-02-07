@@ -55,6 +55,10 @@ func main() {
 		err = resumeCommand(args)
 	case "stop":
 		err = stopCommand(args)
+	case "restart":
+		err = restartCommand(args)
+	case "cleanup":
+		err = cleanupCommand(args)
 	case "close":
 		err = closeCommand(args)
 	case "policy-init":
@@ -326,6 +330,95 @@ func stopCommand(args []string) error {
 	return nil
 }
 
+func restartCommand(args []string) error {
+	fs := flag.NewFlagSet("restart", flag.ContinueOnError)
+	var runID string
+	var ticket string
+	var dbPath string
+	var dryRun bool
+	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (restart latest run for this ticket)")
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.BoolVar(&dryRun, "dry-run", false, "Preview restart actions without executing them")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	runID, ticket, err := requireRunSelector(runID, ticket)
+	if err != nil {
+		return err
+	}
+
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	result, err := service.Restart(context.Background(), orchestrator.RestartOptions{
+		RunID:  runID,
+		Ticket: ticket,
+		DryRun: dryRun,
+	})
+	if err != nil {
+		return err
+	}
+
+	if dryRun {
+		fmt.Printf("Restart dry-run for run %s:\n", result.RunID)
+	} else {
+		fmt.Printf("Run %s restarted.\n", result.RunID)
+	}
+	for _, action := range result.Actions {
+		fmt.Printf("  - %s\n", action)
+	}
+	return nil
+}
+
+func cleanupCommand(args []string) error {
+	fs := flag.NewFlagSet("cleanup", flag.ContinueOnError)
+	var runID string
+	var ticket string
+	var dbPath string
+	var dryRun bool
+	var keepWorkspaces bool
+	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (cleanup latest run for this ticket)")
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.BoolVar(&dryRun, "dry-run", false, "Preview cleanup actions without executing them")
+	fs.BoolVar(&keepWorkspaces, "keep-workspaces", false, "Keep workspaces; only stop agent sessions")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	runID, ticket, err := requireRunSelector(runID, ticket)
+	if err != nil {
+		return err
+	}
+
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	result, err := service.Cleanup(context.Background(), orchestrator.CleanupOptions{
+		RunID:            runID,
+		Ticket:           ticket,
+		DryRun:           dryRun,
+		DeleteWorkspaces: !keepWorkspaces,
+	})
+	if err != nil {
+		return err
+	}
+
+	if dryRun {
+		fmt.Printf("Cleanup dry-run for run %s:\n", result.RunID)
+	} else {
+		fmt.Printf("Run %s cleaned up.\n", result.RunID)
+	}
+	for _, action := range result.Actions {
+		fmt.Printf("  - %s\n", action)
+	}
+	return nil
+}
+
 func closeCommand(args []string) error {
 	fs := flag.NewFlagSet("close", flag.ContinueOnError)
 	var runID string
@@ -470,6 +563,15 @@ func normalizeInputTokens(values []string) []string {
 		}
 	}
 	return out
+}
+
+func requireRunSelector(runID string, ticket string) (string, string, error) {
+	runID = strings.TrimSpace(runID)
+	ticket = strings.TrimSpace(ticket)
+	if runID == "" && ticket == "" {
+		return "", "", fmt.Errorf("one of --run-id or --ticket is required")
+	}
+	return runID, ticket, nil
 }
 
 func isInteractiveStdin() bool {
@@ -674,6 +776,8 @@ func printUsage() {
 	fmt.Println("  metawsm guide --run-id RUN_ID --answer \"...\"")
 	fmt.Println("  metawsm resume --run-id RUN_ID")
 	fmt.Println("  metawsm stop --run-id RUN_ID")
+	fmt.Println("  metawsm restart [--run-id RUN_ID | --ticket T1] [--dry-run]")
+	fmt.Println("  metawsm cleanup [--run-id RUN_ID | --ticket T1] [--keep-workspaces] [--dry-run]")
 	fmt.Println("  metawsm close --run-id RUN_ID [--dry-run]")
 	fmt.Println("  metawsm policy-init")
 	fmt.Println("  metawsm tui [--run-id RUN_ID] [--interval 2]")

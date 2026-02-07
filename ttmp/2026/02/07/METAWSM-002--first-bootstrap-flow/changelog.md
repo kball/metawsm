@@ -78,3 +78,16 @@ Fixed workspace naming collision so repeated bootstrap runs generate distinct wo
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — workspaceNameFor now uses normalized run token instead of first 8 chars
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Regression coverage for distinct workspace names across run ids
 
+
+## 2026-02-07
+
+Added first-class `restart` and `cleanup` commands with ticket-based run lookup and operator docs
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Added `metawsm restart` and `metawsm cleanup` command handlers and usage text
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Added ticket/run-id resolver for restart/cleanup APIs
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Added dry-run coverage for restart/cleanup by ticket
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go — Added latest-run lookup by ticket
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/README.md — Documented new restart/cleanup commands
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/07/METAWSM-002--first-bootstrap-flow/playbook/01-bootstrap-operator-playbook.md — Added operator recovery commands

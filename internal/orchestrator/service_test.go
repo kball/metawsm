@@ -214,6 +214,96 @@ func TestWorkspaceNameForUsesUniqueRunToken(t *testing.T) {
 	}
 }
 
+func TestRestartDryRunResolvesLatestRunByTicket(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	ticket := "METAWSM-003"
+
+	oldWorkspace := "ws-restart-old"
+	newWorkspace := "ws-restart-new"
+	oldPath := filepath.Join(homeDir, "workspaces", oldWorkspace)
+	newPath := filepath.Join(homeDir, "workspaces", newWorkspace)
+	if err := os.MkdirAll(oldPath, 0o755); err != nil {
+		t.Fatalf("mkdir old workspace: %v", err)
+	}
+	if err := os.MkdirAll(newPath, 0o755); err != nil {
+		t.Fatalf("mkdir new workspace: %v", err)
+	}
+	writeWorkspaceConfig(t, oldWorkspace, oldPath)
+	writeWorkspaceConfig(t, newWorkspace, newPath)
+
+	createRunWithTicketFixture(t, svc, "run-restart-a", ticket, oldWorkspace, model.RunStatusPaused)
+	createRunWithTicketFixture(t, svc, "run-restart-z", ticket, newWorkspace, model.RunStatusPaused)
+
+	result, err := svc.Restart(t.Context(), RestartOptions{
+		Ticket: ticket,
+		DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("restart dry-run: %v", err)
+	}
+	if result.RunID != "run-restart-z" {
+		t.Fatalf("expected latest run id run-restart-z, got %s", result.RunID)
+	}
+	if len(result.Actions) != 2 {
+		t.Fatalf("expected 2 restart actions, got %d", len(result.Actions))
+	}
+	if !strings.Contains(result.Actions[0], "tmux kill-session -t") {
+		t.Fatalf("expected kill-session action, got %q", result.Actions[0])
+	}
+	if !strings.Contains(result.Actions[1], "tmux new-session -d -s") {
+		t.Fatalf("expected new-session action, got %q", result.Actions[1])
+	}
+	if !strings.Contains(result.Actions[1], shellQuote(newPath)) {
+		t.Fatalf("expected workspace path %q in action %q", newPath, result.Actions[1])
+	}
+}
+
+func TestCleanupDryRunByTicketIncludesWorkspaceDelete(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	ticket := "METAWSM-004"
+	workspaceName := "ws-cleanup"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixture(t, svc, "run-cleanup-z", ticket, workspaceName, model.RunStatusRunning)
+
+	result, err := svc.Cleanup(t.Context(), CleanupOptions{
+		Ticket:           ticket,
+		DryRun:           true,
+		DeleteWorkspaces: true,
+	})
+	if err != nil {
+		t.Fatalf("cleanup dry-run: %v", err)
+	}
+	if result.RunID != "run-cleanup-z" {
+		t.Fatalf("expected run id run-cleanup-z, got %s", result.RunID)
+	}
+	if len(result.Actions) != 2 {
+		t.Fatalf("expected 2 cleanup actions, got %d", len(result.Actions))
+	}
+	if !strings.Contains(result.Actions[0], "tmux kill-session -t") {
+		t.Fatalf("expected kill-session action, got %q", result.Actions[0])
+	}
+	if !strings.Contains(result.Actions[1], "wsm delete") {
+		t.Fatalf("expected workspace delete action, got %q", result.Actions[1])
+	}
+	if !strings.Contains(result.Actions[1], shellQuote(workspaceName)) {
+		t.Fatalf("expected workspace name %q in delete action %q", workspaceName, result.Actions[1])
+	}
+}
+
 func TestCloseBootstrapRequiresValidationResult(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")
@@ -359,6 +449,41 @@ func createBootstrapRunFixture(t *testing.T, svc *Service, runID string, workspa
 		UpdatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("upsert run brief fixture: %v", err)
+	}
+}
+
+func createRunWithTicketFixture(t *testing.T, svc *Service, runID string, ticket string, workspaceName string, status model.RunStatus) {
+	t.Helper()
+	spec := model.RunSpec{
+		RunID:             runID,
+		Mode:              model.RunModeBootstrap,
+		Tickets:           []string{ticket},
+		Repos:             []string{"metawsm"},
+		WorkspaceStrategy: model.WorkspaceStrategyCreate,
+		Agents:            []model.AgentSpec{{Name: "agent", Command: "bash"}},
+		PolicyPath:        ".metawsm/policy.json",
+		CreatedAt:         time.Now(),
+	}
+	if err := svc.store.CreateRun(spec, `{"version":1}`); err != nil {
+		t.Fatalf("create run fixture: %v", err)
+	}
+	if status != model.RunStatusCreated {
+		if err := svc.store.UpdateRunStatus(runID, status, ""); err != nil {
+			t.Fatalf("set run status fixture: %v", err)
+		}
+	}
+	now := time.Now()
+	if err := svc.store.UpsertAgent(model.AgentRecord{
+		RunID:          runID,
+		Name:           "agent",
+		WorkspaceName:  workspaceName,
+		SessionName:    fmt.Sprintf("agent-%s", workspaceName),
+		Status:         model.AgentStatusRunning,
+		HealthState:    model.HealthStateHealthy,
+		LastActivityAt: &now,
+		LastProgressAt: &now,
+	}); err != nil {
+		t.Fatalf("upsert agent fixture: %v", err)
 	}
 }
 

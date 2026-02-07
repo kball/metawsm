@@ -184,4 +184,12 @@ func TestSQLiteStoreRoundTrip(t *testing.T) {
 	if answered[0].Answer != "Use workspace sentinel" {
 		t.Fatalf("expected stored guidance answer, got %q", answered[0].Answer)
 	}
+
+	latestRunID, err := s.FindLatestRunIDByTicket("METAWSM-001")
+	if err != nil {
+		t.Fatalf("find latest run id by ticket: %v", err)
+	}
+	if latestRunID != spec.RunID {
+		t.Fatalf("expected latest run id %s, got %s", spec.RunID, latestRunID)
+	}
 }

@@ -492,6 +492,26 @@ func (s *SQLiteStore) GetTickets(runID string) ([]string, error) {
 	return out, nil
 }
 
+func (s *SQLiteStore) FindLatestRunIDByTicket(ticket string) (string, error) {
+	sql := fmt.Sprintf(
+		`SELECT r.run_id
+FROM runs r
+JOIN run_tickets t ON t.run_id = r.run_id
+WHERE t.ticket=%s
+ORDER BY r.updated_at DESC, r.run_id DESC
+LIMIT 1;`,
+		quote(ticket),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", fmt.Errorf("no run found for ticket %s", ticket)
+	}
+	return asString(rows[0]["run_id"]), nil
+}
+
 func (s *SQLiteStore) GetSteps(runID string) ([]model.StepRecord, error) {
 	sql := fmt.Sprintf(
 		`SELECT run_id, step_index, name, kind, command_text, blocking, ticket, workspace_name, agent_name, status, error_text, started_at, finished_at

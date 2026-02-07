@@ -87,3 +87,26 @@ func TestExtractJSONArray(t *testing.T) {
 		t.Fatalf("unexpected parsed payload: %#v", parsed)
 	}
 }
+
+func TestRequireRunSelector(t *testing.T) {
+	_, _, err := requireRunSelector("", "")
+	if err == nil {
+		t.Fatalf("expected selector error")
+	}
+
+	runID, ticket, err := requireRunSelector(" run-1 ", "")
+	if err != nil {
+		t.Fatalf("selector with run id: %v", err)
+	}
+	if runID != "run-1" || ticket != "" {
+		t.Fatalf("unexpected selector result run=%q ticket=%q", runID, ticket)
+	}
+
+	runID, ticket, err = requireRunSelector("", " METAWSM-003 ")
+	if err != nil {
+		t.Fatalf("selector with ticket: %v", err)
+	}
+	if runID != "" || ticket != "METAWSM-003" {
+		t.Fatalf("unexpected selector result run=%q ticket=%q", runID, ticket)
+	}
+}
