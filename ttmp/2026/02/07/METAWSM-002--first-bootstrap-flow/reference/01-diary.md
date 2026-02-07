@@ -13,6 +13,8 @@ RelatedFiles:
       Note: Documented bootstrap/guide commands and sentinel contracts
     - Path: cmd/metawsm/main.go
       Note: Added bootstrap and guide commands
+    - Path: cmd/metawsm/main_test.go
+      Note: Intake prompt collection and non-interactive validation tests
     - Path: internal/hsm/hsm.go
       Note: Added awaiting_guidance lifecycle transitions
     - Path: internal/model/types.go
@@ -25,12 +27,15 @@ RelatedFiles:
       Note: Added run_briefs and guidance_requests persistence APIs
     - Path: internal/store/sqlite_test.go
       Note: Added run brief and guidance persistence coverage
+    - Path: ttmp/2026/02/07/METAWSM-002--first-bootstrap-flow/playbook/01-bootstrap-operator-playbook.md
+      Note: Operator-ready manual test and execution flow
 ExternalSources: []
 Summary: Implementation diary for bootstrap and guide command rollout with durable run-brief and guidance state support
 LastUpdated: 2026-02-07T07:40:13.192507-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 
 
@@ -138,3 +143,88 @@ The key architectural choice was to keep `run` behavior stable while adding a se
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go`
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go`
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/README.md`
+
+## Step 2: Enforce bootstrap close checks and publish operator playbook
+
+After committing the first bootstrap/guidance increment, I continued by enforcing merge-readiness checks for bootstrap runs and writing an operator playbook that you can execute directly. This turns the flow from "can run and ask guidance" into "can be validated and safely closed."
+
+I implemented close-time validation as explicit gate logic tied to the run brief `done_criteria`, then added test coverage for missing/passing validation outcomes. In parallel, I authored a concrete playbook with exact commands and expected signals for manual verification.
+
+### Prompt Context
+
+**User prompt (verbatim):** "commit and continue. Once you have an operator playbook I will test it"
+
+**Assistant interpretation:** Commit the current work, continue implementation, and produce an operator playbook suitable for immediate user testing.
+
+**Inferred user intent:** Keep progress moving after checkpointing and provide a reproducible manual test procedure.
+
+**Commit (code):** `a7e8ff2` — "feat: add bootstrap run mode and guidance loop"
+
+### What I did
+- Committed prior implementation checkpoint:
+  - `git commit -m "feat: add bootstrap run mode and guidance loop"`
+- Added bootstrap close checks in `internal/orchestrator/service.go`:
+  - bootstrap close now requires run brief with non-empty done criteria,
+  - blocks close when pending guidance requests exist,
+  - requires `<workspace>/.metawsm/validation-result.json`,
+  - requires validation status `"passed"` and `done_criteria` match against run brief.
+- Added close-gate tests in `internal/orchestrator/service_test.go`:
+  - fails when validation result file is missing,
+  - passes (dry-run) when validation result is present and matching.
+- Added intake-focused tests in `cmd/metawsm/main_test.go`:
+  - non-interactive missing field failure,
+  - interactive prompt collection success,
+  - seeded non-interactive success.
+- Updated `README.md` signal contract to include validation-result gate.
+- Added playbook document:
+  - `ttmp/2026/02/07/METAWSM-002--first-bootstrap-flow/playbook/01-bootstrap-operator-playbook.md`
+- Checked remaining ticket tasks complete (#8, #9, #10).
+
+### Why
+- Bootstrap needed a deterministic merge-readiness gate beyond completion/guidance markers.
+- You explicitly requested an operator playbook suitable for immediate testing.
+
+### What worked
+- `go test ./... -count=1` passed after close-gate and intake test additions.
+- Task list now shows all ten tasks complete for `METAWSM-002`.
+- Playbook was added as a dedicated `playbook` doc and related to implementation files.
+
+### What didn't work
+- No new blocking implementation failures in this step.
+- One expected environment behavior remains from earlier: worktree-based git metadata requires `git -C ...` command shape in this environment for permitted commit operations.
+
+### What I learned
+- Close safety for bootstrap runs is clearer when validation semantics are explicit file contract checks, not inferred heuristics.
+- A concrete playbook significantly reduces ambiguity when handing off manual operator verification.
+
+### What was tricky to build
+- Ensuring validation files do not accidentally trigger dirty-git close failures in tests (needed committed fixture setup).
+- Keeping bootstrap-only close behavior scoped so non-bootstrap close behavior remains unchanged.
+
+### What warrants a second pair of eyes
+- Validation gate contract strictness (`done_criteria` exact string match) may be too rigid if operators edit wording between intake and final validation artifact generation.
+- Potential future need to support structured validation checks (list of commands/results) rather than a single string equality check.
+
+### What should be done in the future
+- Add richer validation contract schema (command list + per-command result metadata).
+- Add a small utility command to generate `validation-result.json` from standardized check execution.
+- Run full playbook QA across multiple repositories/workspaces (not just single-repo bootstrap path).
+
+### Code review instructions
+- Review close gate logic in `internal/orchestrator/service.go` (`ensureBootstrapCloseChecks`, `readValidationResult`).
+- Review close/intake test additions:
+  - `internal/orchestrator/service_test.go`
+  - `cmd/metawsm/main_test.go`
+- Review operator procedure:
+  - `ttmp/2026/02/07/METAWSM-002--first-bootstrap-flow/playbook/01-bootstrap-operator-playbook.md`
+- Validate with:
+  - `go test ./... -count=1`
+  - execute playbook commands with a real run id/workspace.
+
+### Technical details
+- Files changed in this step:
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/README.md`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/07/METAWSM-002--first-bootstrap-flow/playbook/01-bootstrap-operator-playbook.md`

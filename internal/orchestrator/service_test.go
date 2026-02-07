@@ -2,9 +2,11 @@ package orchestrator
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -198,5 +200,190 @@ func TestGuideAnswersPendingRequest(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(workspacePath, ".metawsm", "guidance-request.json")); !os.IsNotExist(err) {
 		t.Fatalf("expected guidance-request file to be removed")
+	}
+}
+
+func TestCloseBootstrapRequiresValidationResult(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+
+	runID := "run-close-missing-validation"
+	workspaceName := "ws-close-missing"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	initGitRepo(t, workspacePath)
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+
+	createBootstrapRunFixture(t, svc, runID, workspaceName)
+
+	err := svc.Close(t.Context(), CloseOptions{RunID: runID, DryRun: true})
+	if err == nil {
+		t.Fatalf("expected close to fail without validation-result file")
+	}
+	if !strings.Contains(err.Error(), "validation-result.json") {
+		t.Fatalf("expected validation-result close error, got: %v", err)
+	}
+}
+
+func TestCloseBootstrapDryRunPassesWithValidationResult(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+
+	runID := "run-close-with-validation"
+	workspaceName := "ws-close-valid"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	if err := os.MkdirAll(filepath.Join(workspacePath, ".metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	writeValidationResult(t, workspacePath, runID, "tests pass")
+	initGitRepo(t, workspacePath)
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+
+	createBootstrapRunFixture(t, svc, runID, workspaceName)
+
+	if err := svc.Close(t.Context(), CloseOptions{RunID: runID, DryRun: true}); err != nil {
+		t.Fatalf("close dry-run with validation: %v", err)
+	}
+	record, _, _, err := svc.store.GetRun(runID)
+	if err != nil {
+		t.Fatalf("get run after close: %v", err)
+	}
+	if record.Status != model.RunStatusClosed {
+		t.Fatalf("expected run status closed, got %s", record.Status)
+	}
+}
+
+func newTestService(t *testing.T) *Service {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	svc, err := NewService(dbPath)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	return svc
+}
+
+func setupWorkspaceConfigRoot(t *testing.T) string {
+	t.Helper()
+	homeDir := filepath.Join(t.TempDir(), "home")
+	t.Setenv("HOME", homeDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, ".config"))
+	return homeDir
+}
+
+func writeWorkspaceConfig(t *testing.T, workspaceName string, workspacePath string) {
+	t.Helper()
+	configDir := filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "workspace-manager", "workspaces")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace config dir: %v", err)
+	}
+	payload, err := json.Marshal(map[string]string{"path": workspacePath})
+	if err != nil {
+		t.Fatalf("marshal workspace config payload: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, workspaceName+".json"), payload, 0o644); err != nil {
+		t.Fatalf("write workspace config: %v", err)
+	}
+}
+
+func createBootstrapRunFixture(t *testing.T, svc *Service, runID string, workspaceName string) {
+	t.Helper()
+	spec := model.RunSpec{
+		RunID:             runID,
+		Mode:              model.RunModeBootstrap,
+		Tickets:           []string{"METAWSM-002"},
+		Repos:             []string{"metawsm"},
+		WorkspaceStrategy: model.WorkspaceStrategyCreate,
+		Agents:            []model.AgentSpec{{Name: "agent", Command: "bash"}},
+		PolicyPath:        ".metawsm/policy.json",
+		CreatedAt:         time.Now(),
+	}
+	if err := svc.store.CreateRun(spec, `{"version":1}`); err != nil {
+		t.Fatalf("create run fixture: %v", err)
+	}
+	if err := svc.store.UpdateRunStatus(runID, model.RunStatusComplete, ""); err != nil {
+		t.Fatalf("set run status complete: %v", err)
+	}
+	now := time.Now()
+	if err := svc.store.UpsertAgent(model.AgentRecord{
+		RunID:          runID,
+		Name:           "agent",
+		WorkspaceName:  workspaceName,
+		SessionName:    fmt.Sprintf("agent-%s", workspaceName),
+		Status:         model.AgentStatusRunning,
+		HealthState:    model.HealthStateHealthy,
+		LastActivityAt: &now,
+		LastProgressAt: &now,
+	}); err != nil {
+		t.Fatalf("upsert agent fixture: %v", err)
+	}
+	if err := svc.store.UpsertRunBrief(model.RunBrief{
+		RunID:        runID,
+		Ticket:       "METAWSM-002",
+		Goal:         "Implement bootstrap flow",
+		Scope:        "orchestrator",
+		DoneCriteria: "tests pass",
+		Constraints:  "none",
+		MergeIntent:  "default",
+		QA: []model.IntakeQA{
+			{Question: "Goal?", Answer: "Implement bootstrap flow"},
+		},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert run brief fixture: %v", err)
+	}
+}
+
+func initGitRepo(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(path, ".gitkeep"), []byte("fixture\n"), 0o644); err != nil {
+		t.Fatalf("write .gitkeep: %v", err)
+	}
+	runCmd := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = path
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+	}
+	runCmd("init")
+	runCmd("config", "user.email", "metawsm-test@example.com")
+	runCmd("config", "user.name", "metawsm test")
+	runCmd("add", ".")
+	runCmd("commit", "-m", "init")
+}
+
+func writeValidationResult(t *testing.T, workspacePath string, runID string, doneCriteria string) {
+	t.Helper()
+	payload := map[string]string{
+		"run_id":        runID,
+		"status":        "passed",
+		"done_criteria": doneCriteria,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal validation payload: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspacePath, ".metawsm", "validation-result.json"), b, 0o644); err != nil {
+		t.Fatalf("write validation result: %v", err)
 	}
 }

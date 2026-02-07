@@ -36,3 +36,15 @@ Implemented bootstrap and guide flow: mandatory repos, auto ticket create, run-b
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Guide workflow regression coverage
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go — Run brief and guidance request persistence
 
+
+## 2026-02-07
+
+Added bootstrap close validation gates and published operator playbook with test procedures
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go — Intake prompt and non-interactive completeness tests
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Bootstrap close checks for validation-result and pending-guidance blocking
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Coverage for bootstrap close blocked/passing validation scenarios
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/07/METAWSM-002--first-bootstrap-flow/playbook/01-bootstrap-operator-playbook.md — Operator playbook for manual validation
+

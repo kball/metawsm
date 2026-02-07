@@ -92,6 +92,8 @@ For bootstrap runs, agents communicate through workspace files:
 - Guidance request: `<workspace>/.metawsm/guidance-request.json`
 - Guidance response (written by `metawsm guide`): `<workspace>/.metawsm/guidance-response.json`
 - Completion marker: `<workspace>/.metawsm/implementation-complete.json`
+- Validation gate (required before close for bootstrap runs):
+  `<workspace>/.metawsm/validation-result.json` with `status="passed"` and `done_criteria` matching the run brief.
 
 ## Build & Test
 

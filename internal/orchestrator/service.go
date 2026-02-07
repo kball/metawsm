@@ -313,9 +313,13 @@ func (s *Service) Guide(ctx context.Context, runID string, answer string) (Guide
 }
 
 func (s *Service) Close(ctx context.Context, options CloseOptions) error {
-	record, _, _, err := s.store.GetRun(options.RunID)
+	record, specJSON, _, err := s.store.GetRun(options.RunID)
 	if err != nil {
 		return err
+	}
+	var spec model.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return fmt.Errorf("unmarshal run spec: %w", err)
 	}
 
 	if record.Status != model.RunStatusComplete && record.Status != model.RunStatusClosed {
@@ -355,6 +359,11 @@ func (s *Service) Close(ctx context.Context, options CloseOptions) error {
 		}
 		if dirty {
 			return fmt.Errorf("workspace %s (%s) has uncommitted changes; close blocked", workspaceName, path)
+		}
+	}
+	if spec.Mode == model.RunModeBootstrap {
+		if err := s.ensureBootstrapCloseChecks(options.RunID, workspaces); err != nil {
+			return err
 		}
 	}
 
@@ -563,6 +572,48 @@ func (s *Service) syncBootstrapSignals(ctx context.Context, runID string, curren
 	}
 	if currentStatus == model.RunStatusRunning && len(pendingAfter) == 0 && allComplete {
 		return s.transitionRun(runID, model.RunStatusRunning, model.RunStatusComplete, "completion signal detected")
+	}
+	return nil
+}
+
+func (s *Service) ensureBootstrapCloseChecks(runID string, workspaceNames []string) error {
+	brief, err := s.store.GetRunBrief(runID)
+	if err != nil {
+		return err
+	}
+	if brief == nil {
+		return fmt.Errorf("bootstrap run %s is missing run brief; close blocked", runID)
+	}
+	if strings.TrimSpace(brief.DoneCriteria) == "" {
+		return fmt.Errorf("bootstrap run %s has empty done criteria; close blocked", runID)
+	}
+
+	pending, err := s.store.ListGuidanceRequests(runID, model.GuidanceStatusPending)
+	if err != nil {
+		return err
+	}
+	if len(pending) > 0 {
+		return fmt.Errorf("bootstrap run %s has %d pending guidance request(s); close blocked", runID, len(pending))
+	}
+
+	for _, workspaceName := range workspaceNames {
+		workspacePath, err := resolveWorkspacePath(workspaceName)
+		if err != nil {
+			return err
+		}
+		result, ok := readValidationResult(workspacePath)
+		if !ok {
+			return fmt.Errorf("workspace %s is missing .metawsm/validation-result.json; close blocked", workspaceName)
+		}
+		if strings.TrimSpace(result.RunID) != "" && result.RunID != runID {
+			return fmt.Errorf("workspace %s validation result run_id mismatch (%s)", workspaceName, result.RunID)
+		}
+		if !strings.EqualFold(strings.TrimSpace(result.Status), "passed") {
+			return fmt.Errorf("workspace %s validation status=%q; close blocked", workspaceName, result.Status)
+		}
+		if strings.TrimSpace(result.DoneCriteria) != strings.TrimSpace(brief.DoneCriteria) {
+			return fmt.Errorf("workspace %s validation done_criteria mismatch; close blocked", workspaceName)
+		}
 	}
 	return nil
 }
@@ -937,6 +988,31 @@ func hasCompletionSignal(workspacePath string, runID string, agentName string) b
 		return false
 	}
 	return true
+}
+
+func readValidationResult(workspacePath string) (struct {
+	RunID        string `json:"run_id,omitempty"`
+	Status       string `json:"status"`
+	DoneCriteria string `json:"done_criteria"`
+}, bool) {
+	path := filepath.Join(workspacePath, ".metawsm", "validation-result.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return struct {
+			RunID        string `json:"run_id,omitempty"`
+			Status       string `json:"status"`
+			DoneCriteria string `json:"done_criteria"`
+		}{}, false
+	}
+	var payload struct {
+		RunID        string `json:"run_id,omitempty"`
+		Status       string `json:"status"`
+		DoneCriteria string `json:"done_criteria"`
+	}
+	if err := json.Unmarshal(b, &payload); err != nil {
+		return payload, false
+	}
+	return payload, true
 }
 
 func shellQuote(value string) string {
