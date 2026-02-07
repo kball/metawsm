@@ -17,7 +17,7 @@ RelatedFiles:
       Note: Guidance, restart, cleanup, and close-gate handling expected by playbook
 ExternalSources: []
 Summary: Step-by-step operator procedure to run, guide, complete, validate, and close bootstrap runs
-LastUpdated: 2026-02-07T08:27:13-08:00
+LastUpdated: 2026-02-07T08:39:05-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
@@ -47,7 +47,7 @@ Run and validate the minimum bootstrap workflow end-to-end:
 
 ```bash
 # 1) Start bootstrap
-go run ./cmd/metawsm bootstrap --ticket METAWSM-002 --repos metawsm
+go run ./cmd/metawsm bootstrap --ticket METAWSM-002 --repos metawsm --base-branch main
 
 # During prompts, provide:
 # - goal

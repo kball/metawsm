@@ -11,6 +11,9 @@ func TestDefaultPolicyIsValid(t *testing.T) {
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("expected default policy to validate: %v", err)
 	}
+	if cfg.Workspace.BaseBranch != "main" {
+		t.Fatalf("expected default base branch main, got %q", cfg.Workspace.BaseBranch)
+	}
 }
 
 func TestLoadPolicyFromFile(t *testing.T) {

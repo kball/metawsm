@@ -75,6 +75,7 @@ type RunSpec struct {
 	Mode              RunMode           `json:"mode"`
 	Tickets           []string          `json:"tickets"`
 	Repos             []string          `json:"repos"`
+	BaseBranch        string            `json:"base_branch"`
 	WorkspaceStrategy WorkspaceStrategy `json:"workspace_strategy"`
 	Agents            []AgentSpec       `json:"agents"`
 	PolicyPath        string            `json:"policy_path"`

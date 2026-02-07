@@ -50,7 +50,8 @@ Start a bootstrap run with interactive intake:
 ```bash
 go run ./cmd/metawsm bootstrap \
   --ticket METAWSM-002 \
-  --repos metawsm
+  --repos metawsm \
+  --base-branch main
 ```
 
 Inspect status:
@@ -101,6 +102,7 @@ Reference example: `examples/policy.example.json`.
 Important fields:
 - `workspace.default_strategy` (`create|fork|reuse`)
 - `tmux.session_pattern` (supports `{agent}` and `{workspace}`)
+- `workspace.base_branch` (branch used as workspace start-point; default `main`)
 - `health.idle_seconds`
 - `health.activity_stalled_seconds`
 - `health.progress_stalled_seconds`

@@ -91,3 +91,27 @@ Added first-class `restart` and `cleanup` commands with ticket-based run lookup 
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go — Added latest-run lookup by ticket
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/README.md — Documented new restart/cleanup commands
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/07/METAWSM-002--first-bootstrap-flow/playbook/01-bootstrap-operator-playbook.md — Added operator recovery commands
+
+
+## 2026-02-07
+
+Fixed bootstrap workspace base-branch behavior and tmux agent startup durability
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Aligns newly-created workspace branches to a configurable base branch and wraps tmux agent command to keep session alive
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Added `--base-branch` support for `run` and `bootstrap`
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy.go — Added `workspace.base_branch` policy field with default `main`
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Added regression tests for base-branch reset and tmux wrapper behavior
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/examples/policy.example.json — Included `workspace.base_branch`
+
+
+## 2026-02-07
+
+Fixed ticket-based cleanup/restart run selection to skip dry-run runs and made workspace deletion idempotent
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Ticket resolver now prefers non-dry-run runs; cleanup ignores missing workspace deletes
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go — Added run-id listing API for ticket-based selection
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Added regression tests for non-dry-run selection and missing-workspace output matching

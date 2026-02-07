@@ -2,7 +2,8 @@
   "version": 1,
   "workspace": {
     "default_strategy": "create",
-    "branch_prefix": "task"
+    "branch_prefix": "task",
+    "base_branch": "main"
   },
   "tmux": {
     "session_pattern": "{agent}-{workspace}"

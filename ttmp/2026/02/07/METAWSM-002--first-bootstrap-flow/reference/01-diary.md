@@ -31,7 +31,7 @@ RelatedFiles:
       Note: Operator-ready manual test and execution flow
 ExternalSources: []
 Summary: Implementation diary for bootstrap and guide command rollout with durable run-brief and guidance state support
-LastUpdated: 2026-02-07T08:27:13-08:00
+LastUpdated: 2026-02-07T08:42:43-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
@@ -613,3 +613,109 @@ You asked for a direct CLI path to restart agent/runtime state without re-answer
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_test.go`
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/README.md`
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/07/METAWSM-002--first-bootstrap-flow/playbook/01-bootstrap-operator-playbook.md`
+
+## Step 7: Fix workspace base branch selection and tmux startup reliability
+
+You reported two runtime failures from a real bootstrap: new workspaces started from an outdated commit instead of `main`, and the agent session was immediately dead after bootstrap setup. I reproduced the run state and patched both behaviors.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok so two problems to debug. I tried to bootstrap a new ticket... the workspace was created but it started at the wrong commit, it should branch off of main by default or accept a branch to start from. Second, it doesn't appear to have successfully spun up the tmux/agent. I'd like you to debug both of these and fix."
+
+**Assistant interpretation:** Debug the observed bootstrap run output and harden workspace branch creation plus agent session startup.
+
+**Inferred user intent:** Make bootstrap starts deterministic (correct base branch) and operationally visible (agent tmux session remains available).
+
+**Commit (code):** N/A (pending)
+
+### What I did
+- Reproduced state from your run:
+  - run status was `running`,
+  - all steps were marked done,
+  - agent status was `dead`.
+- Implemented base-branch control:
+  - Added `workspace.base_branch` policy field (default `main`),
+  - Added `--base-branch` flag to `metawsm run` and `metawsm bootstrap`,
+  - On workspace create steps, the orchestrator now aligns each repo branch tip to the configured base branch (`origin/<base>` if available, otherwise local `<base>`).
+- Improved agent startup behavior:
+  - tmux startup now wraps the agent command in a shell that keeps the session alive after command exit (`exec bash`),
+  - added a post-start session existence check; if session exits immediately, step now fails with an explicit error.
+- Updated docs:
+  - README now documents `workspace.base_branch`,
+  - operator playbook now uses `--base-branch main`.
+- Added regression tests:
+  - base-branch reset behavior on local-only git branches,
+  - tmux command wrapping keeps shell alive.
+
+### Why
+- `wsm create` branch creation comes from the source repo HEAD by default, not necessarily `main`; this caused outdated bootstrap worktrees.
+- `tmux new-session` returning success does not guarantee the inner agent command stayed alive; command exit was being treated as successful startup.
+
+### What worked
+- `go test ./... -count=1` passed after the fixes.
+- Dry-run bootstrap now shows explicit `wsm create ... --branch 'task/<workspace>'` command generation.
+
+### What didn't work
+- Original implementation assumed tmux start success implied agent runtime success; this assumption was incorrect in real runs.
+
+### What should be done in the future
+- Add an optional startup log capture path (`.metawsm/agent-start.log`) for first-failure diagnostics.
+- Consider explicit per-repo base-branch mapping when multi-repo workspaces have different default branches.
+
+### Code review instructions
+- Review base-branch and startup logic in `internal/orchestrator/service.go`:
+  - `executeSingleStep`,
+  - `alignWorkspaceToBaseBranch`,
+  - `resetRepoToBaseBranch`,
+  - `wrapAgentCommandForTmux`.
+- Review CLI surface updates in `cmd/metawsm/main.go` (`--base-branch` flag handling).
+- Review policy schema updates in `internal/policy/policy.go`.
+- Validate:
+  - `go test ./... -count=1`
+  - `go run ./cmd/metawsm bootstrap --ticket METAWSM-003 --repos metawsm --base-branch main`
+
+### Technical details
+- Files changed in this step:
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/model/types.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy_test.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/examples/policy.example.json`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/README.md`
+
+## Step 8: Fix cleanup selecting dry-run ticket runs and failing on missing workspaces
+
+After the runtime fix, `metawsm cleanup --ticket METAWSM-003` still failed in your environment because it selected the latest run by ticket (`run-...083855`) which was a dry-run record from a previous test. That run never created a workspace, so cleanup attempted `wsm delete` for a non-existent workspace and aborted.
+
+### Prompt Context
+
+**User prompt (verbatim):** "go run ./cmd/metawsm cleanup --ticket METAWSM-003 ... workspace ... not found"
+
+**Assistant interpretation:** Make ticket-based cleanup/restart choose the intended real run and avoid brittle failures when a workspace is already gone.
+
+**Inferred user intent:** `cleanup --ticket` should be safe and practical during repeated bootstrap iterations.
+
+### What I did
+- Added store API in `internal/store/sqlite.go`:
+  - `ListRunIDsByTicket(ticket)` in newest-first order.
+- Updated ticket resolver in `internal/orchestrator/service.go`:
+  - when `--ticket` is used, it now prefers the newest **non-dry-run** run,
+  - falls back to newest run only if all runs are dry-run.
+- Made workspace deletion idempotent:
+  - cleanup now uses `deleteWorkspaceIfPresent`,
+  - if `wsm delete` output indicates `workspace ... not found`, cleanup continues instead of failing.
+- Added regression tests in `internal/orchestrator/service_test.go`:
+  - `TestCleanupDryRunByTicketPrefersNonDryRun`,
+  - `TestIsWorkspaceNotFoundOutput`.
+- Verified with:
+  - `go test ./... -count=1`
+  - `go run ./cmd/metawsm cleanup --ticket METAWSM-003 --dry-run`
+    - now selects `run-20260207-083049` (the real run), not the dry-run run.
+
+### Technical details
+- Files changed in this step:
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go`

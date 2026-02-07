@@ -84,6 +84,7 @@ func runCommand(args []string) error {
 	var agents multiValueFlag
 	var runID string
 	var strategy string
+	var baseBranch string
 	var policyPath string
 	var dbPath string
 	var dryRun bool
@@ -93,6 +94,7 @@ func runCommand(args []string) error {
 	fs.Var(&agents, "agent", "Agent name from policy (repeatable, or comma-separated)")
 	fs.StringVar(&runID, "run-id", "", "Run identifier (optional)")
 	fs.StringVar(&strategy, "workspace-strategy", "", "Workspace strategy: create|fork|reuse")
+	fs.StringVar(&baseBranch, "base-branch", "", "Branch to use as workspace start point (default from policy, usually main)")
 	fs.StringVar(&policyPath, "policy", "", "Path to policy file (defaults to .metawsm/policy.json)")
 	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
 	fs.BoolVar(&dryRun, "dry-run", false, "Plan only; do not execute steps")
@@ -108,6 +110,7 @@ func runCommand(args []string) error {
 		RunID:             runID,
 		Tickets:           tickets,
 		Repos:             repos,
+		BaseBranch:        baseBranch,
 		AgentNames:        agents,
 		WorkspaceStrategy: model.WorkspaceStrategy(strings.TrimSpace(strategy)),
 		PolicyPath:        policyPath,
@@ -137,6 +140,7 @@ func bootstrapCommand(args []string) error {
 	var agents multiValueFlag
 	var runID string
 	var strategy string
+	var baseBranch string
 	var policyPath string
 	var dbPath string
 	var dryRun bool
@@ -151,6 +155,7 @@ func bootstrapCommand(args []string) error {
 	fs.Var(&agents, "agent", "Agent name from policy (repeatable, or comma-separated)")
 	fs.StringVar(&runID, "run-id", "", "Run identifier (optional)")
 	fs.StringVar(&strategy, "workspace-strategy", "", "Workspace strategy: create|fork|reuse")
+	fs.StringVar(&baseBranch, "base-branch", "", "Branch to use as workspace start point (default from policy, usually main)")
 	fs.StringVar(&policyPath, "policy", "", "Path to policy file (defaults to .metawsm/policy.json)")
 	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
 	fs.BoolVar(&dryRun, "dry-run", false, "Plan only; do not execute setup steps")
@@ -196,6 +201,7 @@ func bootstrapCommand(args []string) error {
 		RunID:             runID,
 		Tickets:           []string{ticket},
 		Repos:             repoTokens,
+		BaseBranch:        baseBranch,
 		AgentNames:        agents,
 		WorkspaceStrategy: model.WorkspaceStrategy(strings.TrimSpace(strategy)),
 		PolicyPath:        policyPath,
@@ -770,8 +776,8 @@ func printUsage() {
 	fmt.Println("metawsm - orchestrate multi-ticket multi-workspace agent runs")
 	fmt.Println("")
 	fmt.Println("Usage:")
-	fmt.Println("  metawsm run --ticket T1 --ticket T2 --repos repo1,repo2 [--agent planner --agent coder]")
-	fmt.Println("  metawsm bootstrap --ticket T1 --repos repo1,repo2 [--agent planner]")
+	fmt.Println("  metawsm run --ticket T1 --ticket T2 --repos repo1,repo2 [--agent planner --agent coder] [--base-branch main]")
+	fmt.Println("  metawsm bootstrap --ticket T1 --repos repo1,repo2 [--agent planner] [--base-branch main]")
 	fmt.Println("  metawsm status --run-id RUN_ID")
 	fmt.Println("  metawsm guide --run-id RUN_ID --answer \"...\"")
 	fmt.Println("  metawsm resume --run-id RUN_ID")

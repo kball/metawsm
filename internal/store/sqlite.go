@@ -512,6 +512,30 @@ LIMIT 1;`,
 	return asString(rows[0]["run_id"]), nil
 }
 
+func (s *SQLiteStore) ListRunIDsByTicket(ticket string) ([]string, error) {
+	sql := fmt.Sprintf(
+		`SELECT r.run_id
+FROM runs r
+JOIN run_tickets t ON t.run_id = r.run_id
+WHERE t.ticket=%s
+ORDER BY r.updated_at DESC, r.run_id DESC;`,
+		quote(ticket),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		runID := strings.TrimSpace(asString(row["run_id"]))
+		if runID == "" {
+			continue
+		}
+		out = append(out, runID)
+	}
+	return out, nil
+}
+
 func (s *SQLiteStore) GetSteps(runID string) ([]model.StepRecord, error) {
 	sql := fmt.Sprintf(
 		`SELECT run_id, step_index, name, kind, command_text, blocking, ticket, workspace_name, agent_name, status, error_text, started_at, finished_at

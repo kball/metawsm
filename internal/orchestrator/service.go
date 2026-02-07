@@ -35,6 +35,7 @@ type RunOptions struct {
 	RunID             string
 	Tickets           []string
 	Repos             []string
+	BaseBranch        string
 	AgentNames        []string
 	WorkspaceStrategy model.WorkspaceStrategy
 	PolicyPath        string
@@ -104,6 +105,13 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunResult, error
 	if strategy == "" {
 		strategy = model.WorkspaceStrategy(cfg.Workspace.DefaultStrategy)
 	}
+	baseBranch := normalizeBaseBranch(options.BaseBranch)
+	if baseBranch == "" {
+		baseBranch = normalizeBaseBranch(cfg.Workspace.BaseBranch)
+	}
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
 
 	agents, err := policy.ResolveAgents(cfg, normalizeTokens(options.AgentNames))
 	if err != nil {
@@ -124,6 +132,7 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunResult, error
 		Mode:              mode,
 		Tickets:           tickets,
 		Repos:             repos,
+		BaseBranch:        baseBranch,
 		WorkspaceStrategy: strategy,
 		Agents:            agents,
 		PolicyPath:        policyPath,
@@ -400,7 +409,7 @@ func (s *Service) Cleanup(ctx context.Context, options CleanupOptions) (CleanupR
 
 	for _, workspaceName := range workspaces {
 		if options.DeleteWorkspaces {
-			if err := runShell(ctx, fmt.Sprintf("wsm delete %s", shellQuote(workspaceName))); err != nil {
+			if err := deleteWorkspaceIfPresent(ctx, workspaceName); err != nil {
 				return CleanupResult{}, err
 			}
 		}
@@ -427,7 +436,27 @@ func (s *Service) resolveRunID(explicitRunID string, ticket string) (string, err
 	if ticket == "" {
 		return "", fmt.Errorf("either run id or ticket is required")
 	}
-	return s.store.FindLatestRunIDByTicket(ticket)
+	runIDs, err := s.store.ListRunIDsByTicket(ticket)
+	if err != nil {
+		return "", err
+	}
+	if len(runIDs) == 0 {
+		return "", fmt.Errorf("no run found for ticket %s", ticket)
+	}
+	for _, candidate := range runIDs {
+		_, specJSON, _, err := s.store.GetRun(candidate)
+		if err != nil {
+			continue
+		}
+		var spec model.RunSpec
+		if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+			continue
+		}
+		if !spec.DryRun {
+			return candidate, nil
+		}
+	}
+	return runIDs[0], nil
 }
 
 func (s *Service) Guide(ctx context.Context, runID string, answer string) (GuideResult, error) {
@@ -877,7 +906,15 @@ func (s *Service) executeSingleStep(ctx context.Context, spec model.RunSpec, cfg
 		if strings.TrimSpace(step.Command) == "" {
 			return fmt.Errorf("empty shell command")
 		}
-		return runShell(ctx, step.Command)
+		if err := runShell(ctx, step.Command); err != nil {
+			return err
+		}
+		if workspaceCreateStep(step) {
+			if err := alignWorkspaceToBaseBranch(ctx, step.WorkspaceName, spec.Repos, spec.BaseBranch); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "tmux_start":
 		workspacePath, err := resolveWorkspacePath(step.WorkspaceName)
 		if err != nil {
@@ -887,6 +924,7 @@ func (s *Service) executeSingleStep(ctx context.Context, spec model.RunSpec, cfg
 		if strings.TrimSpace(command) == "" {
 			command = "bash"
 		}
+		command = wrapAgentCommandForTmux(command)
 		sessionName := policy.RenderSessionName(cfg.Tmux.SessionPattern, step.Agent, step.WorkspaceName)
 
 		hasSession := tmuxHasSession(ctx, sessionName)
@@ -894,6 +932,10 @@ func (s *Service) executeSingleStep(ctx context.Context, spec model.RunSpec, cfg
 			tmuxCmd := fmt.Sprintf("tmux new-session -d -s %s -c %s %s", shellQuote(sessionName), shellQuote(workspacePath), shellQuote(command))
 			if err := runShell(ctx, tmuxCmd); err != nil {
 				return err
+			}
+			time.Sleep(200 * time.Millisecond)
+			if !tmuxHasSession(ctx, sessionName) {
+				return fmt.Errorf("tmux session %s exited immediately after start", sessionName)
 			}
 		}
 		now := time.Now()
@@ -954,11 +996,12 @@ func buildPlan(spec model.RunSpec, cfg policy.Config) []model.PlanStep {
 		workspaceCommand := ""
 		switch spec.WorkspaceStrategy {
 		case model.WorkspaceStrategyCreate:
+			workspaceBranch := fmt.Sprintf("%s/%s", cfg.Workspace.BranchPrefix, workspaceName)
 			workspaceCommand = fmt.Sprintf(
-				"wsm create %s --repos %s --branch-prefix %s",
+				"wsm create %s --repos %s --branch %s",
 				shellQuote(workspaceName),
 				shellQuote(repoCSV),
-				shellQuote(cfg.Workspace.BranchPrefix),
+				shellQuote(workspaceBranch),
 			)
 		case model.WorkspaceStrategyFork:
 			workspaceCommand = fmt.Sprintf(
@@ -969,11 +1012,12 @@ func buildPlan(spec model.RunSpec, cfg policy.Config) []model.PlanStep {
 		case model.WorkspaceStrategyReuse:
 			workspaceCommand = fmt.Sprintf("wsm info %s", shellQuote(workspaceName))
 		default:
+			workspaceBranch := fmt.Sprintf("%s/%s", cfg.Workspace.BranchPrefix, workspaceName)
 			workspaceCommand = fmt.Sprintf(
-				"wsm create %s --repos %s --branch-prefix %s",
+				"wsm create %s --repos %s --branch %s",
 				shellQuote(workspaceName),
 				shellQuote(repoCSV),
-				shellQuote(cfg.Workspace.BranchPrefix),
+				shellQuote(workspaceBranch),
 			)
 		}
 		steps = append(steps, model.PlanStep{
@@ -1058,6 +1102,133 @@ func resolveWorkspacePath(workspaceName string) (string, error) {
 		return "", errors.New("workspace config missing path")
 	}
 	return payload.Path, nil
+}
+
+func workspaceCreateStep(step model.PlanStep) bool {
+	if strings.TrimSpace(step.WorkspaceName) == "" {
+		return false
+	}
+	command := strings.TrimSpace(step.Command)
+	return strings.HasPrefix(command, "wsm create ")
+}
+
+func normalizeBaseBranch(branch string) string {
+	branch = strings.TrimSpace(branch)
+	branch = strings.TrimPrefix(branch, "origin/")
+	return branch
+}
+
+func alignWorkspaceToBaseBranch(ctx context.Context, workspaceName string, repos []string, baseBranch string) error {
+	workspacePath, err := resolveWorkspacePath(workspaceName)
+	if err != nil {
+		return err
+	}
+	repoPaths, err := workspaceRepoPaths(workspacePath, repos)
+	if err != nil {
+		return err
+	}
+	targetBranch := normalizeBaseBranch(baseBranch)
+	if targetBranch == "" {
+		targetBranch = "main"
+	}
+	for _, repoPath := range repoPaths {
+		if err := resetRepoToBaseBranch(ctx, repoPath, targetBranch); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func workspaceRepoPaths(workspacePath string, repos []string) ([]string, error) {
+	paths := make([]string, 0, len(repos))
+	if len(repos) == 0 {
+		if isGitRepo(workspacePath) {
+			return []string{workspacePath}, nil
+		}
+		return nil, fmt.Errorf("workspace %s has no repository definitions", workspacePath)
+	}
+	for _, repo := range repos {
+		repo = strings.TrimSpace(repo)
+		if repo == "" {
+			continue
+		}
+		candidate := filepath.Join(workspacePath, repo)
+		if isGitRepo(candidate) {
+			paths = append(paths, candidate)
+			continue
+		}
+		if len(repos) == 1 && isGitRepo(workspacePath) {
+			paths = append(paths, workspacePath)
+			continue
+		}
+		return nil, fmt.Errorf("workspace repo path not found: %s", candidate)
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no git repositories found in workspace %s", workspacePath)
+	}
+	return paths, nil
+}
+
+func isGitRepo(path string) bool {
+	info, err := os.Stat(filepath.Join(path, ".git"))
+	if err != nil {
+		return false
+	}
+	return info.IsDir() || info.Mode().IsRegular()
+}
+
+func resetRepoToBaseBranch(ctx context.Context, repoPath string, baseBranch string) error {
+	_ = exec.CommandContext(ctx, "git", "-C", repoPath, "fetch", "origin", baseBranch).Run()
+
+	target := ""
+	remoteRef := "refs/remotes/origin/" + baseBranch
+	localRef := "refs/heads/" + baseBranch
+	if gitRefExists(ctx, repoPath, remoteRef) {
+		target = "origin/" + baseBranch
+	} else if gitRefExists(ctx, repoPath, localRef) {
+		target = baseBranch
+	}
+	if target == "" {
+		return fmt.Errorf("base branch %q not found for repo %s", baseBranch, repoPath)
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "reset", "--hard", target)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("reset repo %s to %s: %w: %s", repoPath, target, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func deleteWorkspaceIfPresent(ctx context.Context, workspaceName string) error {
+	command := exec.CommandContext(ctx, "zsh", "-lc", fmt.Sprintf("wsm delete %s", shellQuote(workspaceName)))
+	output, err := command.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if isWorkspaceNotFoundOutput(string(output)) {
+		return nil
+	}
+	return fmt.Errorf("wsm delete %s failed: %w: %s", workspaceName, err, strings.TrimSpace(string(output)))
+}
+
+func isWorkspaceNotFoundOutput(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "workspace") && strings.Contains(lower, "not found")
+}
+
+func gitRefExists(ctx context.Context, repoPath string, ref string) bool {
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "show-ref", "--verify", "--quiet", ref)
+	return cmd.Run() == nil
+}
+
+func wrapAgentCommandForTmux(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = "bash"
+	}
+	script := command + "; status=$?; printf '[metawsm] agent command exited with status %s at %s\\n' \"$status\" \"$(date -Iseconds)\"; exec bash"
+	return fmt.Sprintf("bash -lc %s", shellQuote(script))
 }
 
 func runShell(ctx context.Context, command string) error {

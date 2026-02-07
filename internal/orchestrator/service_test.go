@@ -236,8 +236,8 @@ func TestRestartDryRunResolvesLatestRunByTicket(t *testing.T) {
 	writeWorkspaceConfig(t, oldWorkspace, oldPath)
 	writeWorkspaceConfig(t, newWorkspace, newPath)
 
-	createRunWithTicketFixture(t, svc, "run-restart-a", ticket, oldWorkspace, model.RunStatusPaused)
-	createRunWithTicketFixture(t, svc, "run-restart-z", ticket, newWorkspace, model.RunStatusPaused)
+	createRunWithTicketFixture(t, svc, "run-restart-a", ticket, oldWorkspace, model.RunStatusPaused, false)
+	createRunWithTicketFixture(t, svc, "run-restart-z", ticket, newWorkspace, model.RunStatusPaused, false)
 
 	result, err := svc.Restart(t.Context(), RestartOptions{
 		Ticket: ticket,
@@ -277,7 +277,7 @@ func TestCleanupDryRunByTicketIncludesWorkspaceDelete(t *testing.T) {
 		t.Fatalf("mkdir workspace: %v", err)
 	}
 	writeWorkspaceConfig(t, workspaceName, workspacePath)
-	createRunWithTicketFixture(t, svc, "run-cleanup-z", ticket, workspaceName, model.RunStatusRunning)
+	createRunWithTicketFixture(t, svc, "run-cleanup-z", ticket, workspaceName, model.RunStatusRunning, false)
 
 	result, err := svc.Cleanup(t.Context(), CleanupOptions{
 		Ticket:           ticket,
@@ -301,6 +301,91 @@ func TestCleanupDryRunByTicketIncludesWorkspaceDelete(t *testing.T) {
 	}
 	if !strings.Contains(result.Actions[1], shellQuote(workspaceName)) {
 		t.Fatalf("expected workspace name %q in delete action %q", workspaceName, result.Actions[1])
+	}
+}
+
+func TestCleanupDryRunByTicketPrefersNonDryRun(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	svc := newTestService(t)
+	ticket := "METAWSM-005"
+	createRunWithTicketFixture(t, svc, "run-nondry", ticket, "ws-real", model.RunStatusRunning, false)
+	createRunWithTicketFixture(t, svc, "run-dry", ticket, "ws-dry", model.RunStatusPaused, true)
+
+	result, err := svc.Cleanup(t.Context(), CleanupOptions{
+		Ticket:           ticket,
+		DryRun:           true,
+		DeleteWorkspaces: true,
+	})
+	if err != nil {
+		t.Fatalf("cleanup dry-run: %v", err)
+	}
+	if result.RunID != "run-nondry" {
+		t.Fatalf("expected non-dry run selection run-nondry, got %s", result.RunID)
+	}
+}
+
+func TestResetRepoToBaseBranchUsesLocalBranchWhenOriginMissing(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	repoPath := t.TempDir()
+	runGit(t, repoPath, "init")
+	runGit(t, repoPath, "config", "user.email", "metawsm-test@example.com")
+	runGit(t, repoPath, "config", "user.name", "metawsm test")
+	runGit(t, repoPath, "checkout", "-b", "main")
+
+	if err := os.WriteFile(filepath.Join(repoPath, "a.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	runGit(t, repoPath, "add", "a.txt")
+	runGit(t, repoPath, "commit", "-m", "first")
+	mainBefore := strings.TrimSpace(runGit(t, repoPath, "rev-parse", "HEAD"))
+
+	if err := os.WriteFile(filepath.Join(repoPath, "a.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt second: %v", err)
+	}
+	runGit(t, repoPath, "add", "a.txt")
+	runGit(t, repoPath, "commit", "-m", "second")
+	mainAfter := strings.TrimSpace(runGit(t, repoPath, "rev-parse", "HEAD"))
+	if mainBefore == mainAfter {
+		t.Fatalf("expected distinct commits for test setup")
+	}
+
+	runGit(t, repoPath, "checkout", "-b", "task/test", mainBefore)
+	taskHead := strings.TrimSpace(runGit(t, repoPath, "rev-parse", "HEAD"))
+	if taskHead != mainBefore {
+		t.Fatalf("expected task branch to start at first commit")
+	}
+
+	if err := resetRepoToBaseBranch(t.Context(), repoPath, "main"); err != nil {
+		t.Fatalf("reset to base branch: %v", err)
+	}
+	afterReset := strings.TrimSpace(runGit(t, repoPath, "rev-parse", "HEAD"))
+	if afterReset != mainAfter {
+		t.Fatalf("expected reset head %s, got %s", mainAfter, afterReset)
+	}
+}
+
+func TestWrapAgentCommandForTmuxKeepsShellAlive(t *testing.T) {
+	wrapped := wrapAgentCommandForTmux("echo hi")
+	if !strings.HasPrefix(wrapped, "bash -lc ") {
+		t.Fatalf("expected wrapped command to start with bash -lc, got %q", wrapped)
+	}
+	if !strings.Contains(wrapped, "exec bash") {
+		t.Fatalf("expected wrapped command to keep shell alive, got %q", wrapped)
+	}
+}
+
+func TestIsWorkspaceNotFoundOutput(t *testing.T) {
+	if !isWorkspaceNotFoundOutput("Error: workspace 'abc' not found") {
+		t.Fatalf("expected workspace-not-found output to match")
+	}
+	if isWorkspaceNotFoundOutput("permission denied removing worktree") {
+		t.Fatalf("expected unrelated output not to match")
 	}
 }
 
@@ -452,7 +537,7 @@ func createBootstrapRunFixture(t *testing.T, svc *Service, runID string, workspa
 	}
 }
 
-func createRunWithTicketFixture(t *testing.T, svc *Service, runID string, ticket string, workspaceName string, status model.RunStatus) {
+func createRunWithTicketFixture(t *testing.T, svc *Service, runID string, ticket string, workspaceName string, status model.RunStatus, dryRun bool) {
 	t.Helper()
 	spec := model.RunSpec{
 		RunID:             runID,
@@ -462,6 +547,7 @@ func createRunWithTicketFixture(t *testing.T, svc *Service, runID string, ticket
 		WorkspaceStrategy: model.WorkspaceStrategyCreate,
 		Agents:            []model.AgentSpec{{Name: "agent", Command: "bash"}},
 		PolicyPath:        ".metawsm/policy.json",
+		DryRun:            dryRun,
 		CreatedAt:         time.Now(),
 	}
 	if err := svc.store.CreateRun(spec, `{"version":1}`); err != nil {
@@ -492,20 +578,11 @@ func initGitRepo(t *testing.T, path string) {
 	if err := os.WriteFile(filepath.Join(path, ".gitkeep"), []byte("fixture\n"), 0o644); err != nil {
 		t.Fatalf("write .gitkeep: %v", err)
 	}
-	runCmd := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = path
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-		}
-	}
-	runCmd("init")
-	runCmd("config", "user.email", "metawsm-test@example.com")
-	runCmd("config", "user.name", "metawsm test")
-	runCmd("add", ".")
-	runCmd("commit", "-m", "init")
+	runGit(t, path, "init")
+	runGit(t, path, "config", "user.email", "metawsm-test@example.com")
+	runGit(t, path, "config", "user.name", "metawsm test")
+	runGit(t, path, "add", ".")
+	runGit(t, path, "commit", "-m", "init")
 }
 
 func writeValidationResult(t *testing.T, workspacePath string, runID string, doneCriteria string) {
@@ -522,4 +599,15 @@ func writeValidationResult(t *testing.T, workspacePath string, runID string, don
 	if err := os.WriteFile(filepath.Join(workspacePath, ".metawsm", "validation-result.json"), b, 0o644); err != nil {
 		t.Fatalf("write validation result: %v", err)
 	}
+}
+
+func runGit(t *testing.T, path string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = path
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return string(out)
 }

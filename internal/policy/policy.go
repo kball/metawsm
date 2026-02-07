@@ -17,6 +17,7 @@ type Config struct {
 	Workspace struct {
 		DefaultStrategy string `json:"default_strategy"`
 		BranchPrefix    string `json:"branch_prefix"`
+		BaseBranch      string `json:"base_branch"`
 	} `json:"workspace"`
 	Tmux struct {
 		SessionPattern string `json:"session_pattern"`
@@ -46,6 +47,7 @@ func Default() Config {
 	}
 	cfg.Workspace.DefaultStrategy = string(model.WorkspaceStrategyCreate)
 	cfg.Workspace.BranchPrefix = "task"
+	cfg.Workspace.BaseBranch = "main"
 	cfg.Tmux.SessionPattern = "{agent}-{workspace}"
 	cfg.Execution.StepRetries = 1
 	cfg.Health.IdleSeconds = 300
@@ -108,6 +110,9 @@ func Validate(cfg Config) error {
 	}
 	if strings.TrimSpace(cfg.Tmux.SessionPattern) == "" {
 		return fmt.Errorf("tmux.session_pattern cannot be empty")
+	}
+	if strings.TrimSpace(cfg.Workspace.BaseBranch) == "" {
+		return fmt.Errorf("workspace.base_branch cannot be empty")
 	}
 	if cfg.Health.IdleSeconds <= 0 || cfg.Health.ActivityStalledSeconds <= 0 || cfg.Health.ProgressStalledSeconds <= 0 {
 		return fmt.Errorf("health thresholds must be > 0")
