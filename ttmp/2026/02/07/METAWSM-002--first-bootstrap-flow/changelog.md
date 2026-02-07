@@ -58,3 +58,13 @@ Fixed bootstrap ticket auto-create detection to parse structured ticket list out
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Robust ticket existence detection using docmgr JSON output
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go — Coverage for debug-prefixed JSON array extraction
 
+
+## 2026-02-07
+
+Fixed .gitignore pattern to ensure cmd/metawsm source is tracked and committed
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/.gitignore — Narrowed ignore from metawsm to /metawsm to avoid masking cmd/metawsm
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — CLI entrypoint now tracked in git history
+

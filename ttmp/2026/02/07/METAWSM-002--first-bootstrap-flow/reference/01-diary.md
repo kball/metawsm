@@ -310,3 +310,78 @@ exit status 1"
 - Files changed in this step:
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go`
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go`
+
+## Step 4: Fix gitignore to track `cmd/metawsm/main.go`
+
+While committing the runtime bugfix, I discovered the repository `.gitignore` pattern `metawsm` unintentionally ignored `cmd/metawsm/` and prevented normal staging of `cmd/metawsm/main.go`.
+
+I changed the ignore rule to `/metawsm` (root binary only) and force-added `cmd/metawsm/main.go` so the CLI entrypoint and bootstrap implementation are now truly tracked in git.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ℹ Executing git worktree command: git worktree add -b task/metawsm-003-run-2026 /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm
+✓ Successfully executed: git worktree add -b task/metawsm-003-run-2026 /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm
+  Output: Preparing worktree (new branch 'task/metawsm-003-run-2026')
+HEAD is now at d37ccd0 Bare bones readme
+
+ℹ Git worktree command succeeded: git worktree add -b task/metawsm-003-run-2026 /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm
+ℹ Successfully created worktree for 'metawsm'
+ℹ Successfully created workspace structure for 'metawsm-003-run-2026' with 1 worktrees
+✓ Workspace 'metawsm-003-run-2026' created successfully!
+
+Workspace Details
+  Path: /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026
+  Repositories: metawsm
+  Branch: task/metawsm-003-run-2026
+
+ℹ To start working:
+  cd /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026
+error: create bootstrap brief doc: exit status 1: {\"level\":\"debug\",\"time\":\"2026-02-07T07:53:50-08:00\",\"message\":\"Created FTS5 tables and triggers\"}
+Error: failed to find ticket directory: ticket not found: METAWSM-003
+exit status 1"
+
+**Assistant interpretation:** Fix the observed real-run failure and ensure the fix is committed correctly.
+
+**Inferred user intent:** Have a reliable end-to-end command path with no hidden repository-state pitfalls.
+
+**Commit (code):** `742af82` — "fix: track cmd entrypoint and narrow gitignore"
+
+### What I did
+- Updated `.gitignore`:
+  - from `metawsm`
+  - to `/metawsm`
+- Force-added and committed `cmd/metawsm/main.go` so command-surface code is tracked.
+
+### Why
+- Unintended ignore rules can silently drop critical source files from commits, making runtime behavior diverge from git history.
+
+### What worked
+- `cmd/metawsm/main.go` is now tracked by git.
+- Root binary ignore behavior is preserved through `/metawsm`.
+
+### What didn't work
+- Previous commits did not include `cmd/metawsm/main.go` due ignore pattern; this was corrected in this step.
+
+### What I learned
+- A plain ignore token matching a directory name can shadow entire source subtrees unexpectedly.
+
+### What was tricky to build
+- Distinguishing runtime bug from commit-tracking bug during rapid follow-up fix iteration.
+
+### What warrants a second pair of eyes
+- Review other ignore patterns for unintended directory matches.
+
+### What should be done in the future
+- Add a small repository hygiene check to CI for unexpectedly ignored source directories.
+
+### Code review instructions
+- Inspect:
+  - `.gitignore`
+  - `cmd/metawsm/main.go` tracking status
+- Validate:
+  - `git ls-files cmd/metawsm/main.go`
+
+### Technical details
+- Files changed in this step:
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/.gitignore`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go`
