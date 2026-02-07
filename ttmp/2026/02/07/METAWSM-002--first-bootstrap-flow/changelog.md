@@ -68,3 +68,13 @@ Fixed .gitignore pattern to ensure cmd/metawsm source is tracked and committed
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/.gitignore — Narrowed ignore from metawsm to /metawsm to avoid masking cmd/metawsm
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — CLI entrypoint now tracked in git history
 
+
+## 2026-02-07
+
+Fixed workspace naming collision so repeated bootstrap runs generate distinct workspace names
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — workspaceNameFor now uses normalized run token instead of first 8 chars
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Regression coverage for distinct workspace names across run ids
+

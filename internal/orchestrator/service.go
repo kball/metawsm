@@ -834,11 +834,22 @@ func workspaceNameFor(ticket string, runID string) string {
 	prefix := strings.ToLower(strings.TrimSpace(ticket))
 	prefix = strings.ReplaceAll(prefix, "/", "-")
 	prefix = strings.ReplaceAll(prefix, " ", "-")
-	shortID := runID
-	if len(shortID) > 8 {
-		shortID = shortID[:8]
+	runToken := strings.ToLower(strings.TrimSpace(runID))
+	runToken = strings.TrimPrefix(runToken, "run-")
+	runToken = strings.ReplaceAll(runToken, "/", "-")
+	runToken = strings.ReplaceAll(runToken, " ", "-")
+	runToken = strings.ReplaceAll(runToken, ":", "-")
+	for strings.Contains(runToken, "--") {
+		runToken = strings.ReplaceAll(runToken, "--", "-")
 	}
-	return fmt.Sprintf("%s-%s", prefix, shortID)
+	runToken = strings.Trim(runToken, "-")
+	if runToken == "" {
+		runToken = "x"
+	}
+	if len(runToken) > 14 {
+		runToken = runToken[len(runToken)-14:]
+	}
+	return fmt.Sprintf("%s-%s", prefix, runToken)
 }
 
 func resolveWorkspacePath(workspaceName string) (string, error) {

@@ -385,3 +385,164 @@ exit status 1"
 - Files changed in this step:
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/.gitignore`
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go`
+
+## Step 5: Fix workspace naming collision for repeated runs
+
+A real end-to-end run exposed a second runtime bug: workspace naming used only the first 8 characters of run IDs. Because generated IDs start with `run-2026...`, repeated runs mapped to the same workspace name (`metawsm-003-run-2026`), causing `wsm create` worktree collisions.
+
+I changed workspace name derivation to use a normalized run token based on run ID content (using the tail segment, up to 14 chars), which preserves readability and prevents year-prefix collisions.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Local branch 'task/metawsm-003-run-2026' exists: true
+  Remote branch 'origin/task/metawsm-003-run-2026' exists: false
+⚠ Branch 'task/metawsm-003-run-2026' already exists in repository 'metawsm'
+ℹ Using existing branch 'task/metawsm-003-run-2026'...
+Executing: git worktree add /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm task/metawsm-003-run-2026 (in /Users/kball/git/kball/metawsm)
+ℹ Executing git worktree command: git worktree add /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm task/metawsm-003-run-2026
+❌ Command failed: git worktree add /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm task/metawsm-003-run-2026
+   Error: exit status 128
+   Output: Preparing worktree (checking out 'task/metawsm-003-run-2026')
+fatal: '/Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm' already exists
+
+✗ Git worktree command failed: git worktree add /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm task/metawsm-003-run-2026
+✗ Failed to create worktree for repository 'metawsm'
+🧹 Cleaning up workspace directory: /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026
+ℹ Cleaning up workspace directory /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026
+  Directory contains unexpected files, leaving it intact
+ℹ Workspace directory /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026 contains 1 unexpected files
+    Unexpected file/directory: metawsm
+Error: failed to create workspace: failed to create workspace structure: failed to create worktree for metawsm: git command failed: Preparing worktree (checking out 'task/metawsm-003-run-2026')
+fatal: '/Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm' already exists
+: exit status 128
+Usage:
+  workspace-manager create [workspace-name] [flags]
+
+Flags:
+      --agent-source string    Path to AGENT.md template file
+      --branch string          Branch name for worktrees (if not specified, uses <branch-prefix>/<workspace-name>)
+      --branch-prefix string   Prefix for auto-generated branch names (default \"task\")
+      --dry-run                Show what would be created without actually creating
+  -h, --help                   help for create
+      --interactive            Interactive repository selection
+      --repos strings          Repository names to include (comma-separated)
+
+Global Flags:
+      --log-file string               Log file (default: stderr)
+      --log-format string             Log format (json, text) (default \"text\")
+      --log-level string              Log level (trace, debug, info, warn, error, fatal) (default \"info\")
+      --log-to-stdout                 Log to stdout even when log-file is set
+      --logstash-app-name string      Application name for Logstash logs (default \"workspace-manager\")
+      --logstash-enabled              Enable logging to Logstash
+      --logstash-environment string   Environment name for Logstash logs (development, staging, production) (default \"development\")
+      --logstash-host string          Logstash host (default \"logstash\")
+      --logstash-port int             Logstash port (default 5044)
+      --logstash-protocol string      Logstash protocol (tcp, udp) (default \"tcp\")
+      --with-caller                   Log caller information
+
+✗ Error: failed to create workspace: failed to create workspace structure: failed to create worktree for metawsm: git command failed: Preparing worktree (checking out 'task/metawsm-003-run-2026')
+fatal: '/Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm' already exists                                                                               
+: exit status 128                                                                                                                                                     
+ℹ Using auto-generated branch: task/metawsm-003-run-2026
+ℹ Creating workspace structure for 'metawsm-003-run-2026'
+ℹ Creating worktree for 'metawsm' on branch 'task/metawsm-003-run-2026'
+
+Branch status for metawsm:
+  Local branch 'task/metawsm-003-run-2026' exists: true
+  Remote branch 'origin/task/metawsm-003-run-2026' exists: false
+⚠ Branch 'task/metawsm-003-run-2026' already exists in repository 'metawsm'
+ℹ Overwriting branch 'task/metawsm-003-run-2026'...
+Executing: git worktree add -B task/metawsm-003-run-2026 /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm (in /Users/kball/git/kball/metawsm)
+ℹ Executing git worktree command: git worktree add -B task/metawsm-003-run-2026 /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm
+❌ Command failed: git worktree add -B task/metawsm-003-run-2026 /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm
+   Error: exit status 128
+   Output: fatal: 'task/metawsm-003-run-2026' is already checked out at '/Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm'
+
+✗ Git worktree command failed: git worktree add -B task/metawsm-003-run-2026 /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm
+✗ Failed to create worktree for repository 'metawsm'
+🧹 Cleaning up workspace directory: /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026
+ℹ Cleaning up workspace directory /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026
+  Directory contains unexpected files, leaving it intact
+ℹ Workspace directory /Users/kball/workspaces/2026-02-07/metawsm-003-run-2026 contains 1 unexpected files
+    Unexpected file/directory: metawsm
+Error: failed to create workspace: failed to create workspace structure: failed to create worktree for metawsm: git command failed: fatal: 'task/metawsm-003-run-2026' is already checked out at '/Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm'
+: exit status 128
+Usage:
+  workspace-manager create [workspace-name] [flags]
+
+Flags:
+      --agent-source string    Path to AGENT.md template file
+      --branch string          Branch name for worktrees (if not specified, uses <branch-prefix>/<workspace-name>)
+      --branch-prefix string   Prefix for auto-generated branch names (default \"task\")
+      --dry-run                Show what would be created without actually creating
+  -h, --help                   help for create
+      --interactive            Interactive repository selection
+      --repos strings          Repository names to include (comma-separated)
+
+Global Flags:
+      --log-file string               Log file (default: stderr)
+      --log-format string             Log format (json, text) (default \"text\")
+      --log-level string              Log level (trace, debug, info, warn, error, fatal) (default \"info\")
+      --log-to-stdout                 Log to stdout even when log-file is set
+      --logstash-app-name string      Application name for Logstash logs (default \"workspace-manager\")
+      --logstash-enabled              Enable logging to Logstash
+      --logstash-environment string   Environment name for Logstash logs (development, staging, production) (default \"development\")
+      --logstash-host string          Logstash host (default \"logstash\")
+      --logstash-port int             Logstash port (default 5044)
+      --logstash-protocol string      Logstash protocol (tcp, udp) (default \"tcp\")
+      --with-caller                   Log caller information
+
+✗ Error: failed to create workspace: failed to create workspace structure: failed to create worktree for metawsm: git command failed: fatal: 'task/metawsm-003-run-2026' is already checked out at '/Users/kball/workspaces/2026-02-07/metawsm-003-run-2026/metawsm'
+: exit status 128                                                                                                                                                                                                                                        
+error: step 2 workspace-create-metawsm-003-run-2026 failed: exit status 1
+exit status 1"
+
+**Assistant interpretation:** Diagnose and fix the real-run workspace branch/worktree collision.
+
+**Inferred user intent:** Make bootstrap runs unique and repeatable without manual branch/worktree cleanup each time.
+
+**Commit (code):** N/A (to be committed after this diary update)
+
+### What I did
+- Updated workspace naming in `internal/orchestrator/service.go`:
+  - replaced first-8-char run ID truncation,
+  - now uses normalized run token with better uniqueness (tail segment, max 14 chars).
+- Added regression test in `internal/orchestrator/service_test.go`:
+  - `TestWorkspaceNameForUsesUniqueRunToken`.
+- Ran `go test ./... -count=1`.
+
+### Why
+- Previous naming guaranteed collisions for runs in the same year (`run-2026...`).
+- Workspace creation must be idempotent and repeatable across repeated bootstrap runs.
+
+### What worked
+- Full test suite passed.
+- New workspace naming avoids repeated `metawsm-003-run-2026` collisions.
+
+### What didn't work
+- Previous implementation’s run-id truncation strategy was insufficient for uniqueness.
+
+### What I learned
+- Shortening IDs for readability must preserve enough entropy for real operational loops.
+
+### What was tricky to build
+- Keeping workspace names concise while avoiding collisions and invalid path characters.
+
+### What warrants a second pair of eyes
+- Name length/collision behavior for very high run volume in the same second/minute windows.
+
+### What should be done in the future
+- Consider persisting resolved workspace name on run creation so future algorithm tweaks cannot affect resume/close lookup.
+
+### Code review instructions
+- Inspect:
+  - `internal/orchestrator/service.go` (`workspaceNameFor`)
+  - `internal/orchestrator/service_test.go` (`TestWorkspaceNameForUsesUniqueRunToken`)
+- Validate:
+  - `go test ./... -count=1`
+  - run bootstrap twice and verify distinct workspace names in status output.
+
+### Technical details
+- Files changed in this step:
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go`

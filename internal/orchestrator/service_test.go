@@ -203,6 +203,17 @@ func TestGuideAnswersPendingRequest(t *testing.T) {
 	}
 }
 
+func TestWorkspaceNameForUsesUniqueRunToken(t *testing.T) {
+	a := workspaceNameFor("METAWSM-003", "run-20260207-075350")
+	b := workspaceNameFor("METAWSM-003", "run-20260207-075412")
+	if a == b {
+		t.Fatalf("expected different workspace names for different run ids, got same value %q", a)
+	}
+	if !strings.HasPrefix(a, "metawsm-003-") {
+		t.Fatalf("expected workspace name prefix, got %q", a)
+	}
+}
+
 func TestCloseBootstrapRequiresValidationResult(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")
