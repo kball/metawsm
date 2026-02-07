@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"metawsm/internal/model"
+	"metawsm/internal/policy"
 )
 
 func TestRunDryRunPersistsPlan(t *testing.T) {
@@ -211,6 +212,135 @@ func TestWorkspaceNameForUsesUniqueRunToken(t *testing.T) {
 	}
 	if !strings.HasPrefix(a, "metawsm-003-") {
 		t.Fatalf("expected workspace name prefix, got %q", a)
+	}
+}
+
+func TestBuildPlanBootstrapIncludesTicketContextSyncBeforeTmux(t *testing.T) {
+	spec := model.RunSpec{
+		RunID:             "run-20260207-093000",
+		Mode:              model.RunModeBootstrap,
+		Tickets:           []string{"METAWSM-004"},
+		Repos:             []string{"metawsm"},
+		WorkspaceStrategy: model.WorkspaceStrategyCreate,
+		Agents: []model.AgentSpec{
+			{Name: "agent", Command: "bash"},
+		},
+	}
+
+	steps := buildPlan(spec, policy.Default())
+	if len(steps) != 4 {
+		t.Fatalf("expected 4 steps for single bootstrap ticket/agent, got %d", len(steps))
+	}
+	expectedKinds := []string{"shell", "shell", "ticket_context_sync", "tmux_start"}
+	for i, expected := range expectedKinds {
+		if steps[i].Kind != expected {
+			t.Fatalf("expected step %d kind %q, got %q", i+1, expected, steps[i].Kind)
+		}
+	}
+	if steps[2].Ticket != "METAWSM-004" {
+		t.Fatalf("expected ticket on sync step, got %q", steps[2].Ticket)
+	}
+}
+
+func TestBuildPlanStandardModeSkipsTicketContextSync(t *testing.T) {
+	spec := model.RunSpec{
+		RunID:             "run-20260207-093100",
+		Mode:              model.RunModeStandard,
+		Tickets:           []string{"METAWSM-004"},
+		Repos:             []string{"metawsm"},
+		WorkspaceStrategy: model.WorkspaceStrategyCreate,
+		Agents: []model.AgentSpec{
+			{Name: "agent", Command: "bash"},
+		},
+	}
+
+	steps := buildPlan(spec, policy.Default())
+	for _, step := range steps {
+		if step.Kind == "ticket_context_sync" {
+			t.Fatalf("did not expect ticket_context_sync step in non-bootstrap mode")
+		}
+	}
+}
+
+func TestParseDocmgrTicketListPaths(t *testing.T) {
+	output := []byte("" +
+		"Docs root: `/tmp/metawsm/ttmp`\n" +
+		"\n" +
+		"## Tickets (1)\n" +
+		"\n" +
+		"### METAWSM-004\n" +
+		"- Path: `2026/02/07/METAWSM-004--bootstrap-workspace-context-handoff-and-nested-repo-ambiguity`\n")
+
+	docsRoot, ticketPath, err := parseDocmgrTicketListPaths(output)
+	if err != nil {
+		t.Fatalf("parse docmgr ticket list output: %v", err)
+	}
+	if docsRoot != filepath.Clean("/tmp/metawsm/ttmp") {
+		t.Fatalf("unexpected docs root: %q", docsRoot)
+	}
+	expectedPath := filepath.Join("2026", "02", "07", "METAWSM-004--bootstrap-workspace-context-handoff-and-nested-repo-ambiguity")
+	if ticketPath != expectedPath {
+		t.Fatalf("unexpected ticket path: got %q want %q", ticketPath, expectedPath)
+	}
+}
+
+func TestParseDocmgrTicketListPathsRejectsUnsafeRelativePath(t *testing.T) {
+	output := []byte("" +
+		"Docs root: `/tmp/metawsm/ttmp`\n" +
+		"- Path: `../escape`\n")
+
+	_, _, err := parseDocmgrTicketListPaths(output)
+	if err == nil {
+		t.Fatalf("expected unsafe path parse to fail")
+	}
+	if !strings.Contains(err.Error(), "unsafe ticket path") {
+		t.Fatalf("expected unsafe path error, got %v", err)
+	}
+}
+
+func TestSyncTicketDocsDirectoryCopiesTreeAndRemovesStaleFiles(t *testing.T) {
+	root := t.TempDir()
+	relativePath := filepath.Join("2026", "02", "07", "METAWSM-004--context-sync")
+	sourcePath := filepath.Join(root, relativePath)
+	if err := os.MkdirAll(filepath.Join(sourcePath, "reference"), 0o755); err != nil {
+		t.Fatalf("mkdir source path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourcePath, "README.md"), []byte("ticket docs\n"), 0o644); err != nil {
+		t.Fatalf("write source README: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourcePath, "reference", "01-analysis.md"), []byte("analysis\n"), 0o644); err != nil {
+		t.Fatalf("write source analysis: %v", err)
+	}
+
+	workspacePath := filepath.Join(root, "workspace")
+	staleFile := filepath.Join(workspacePath, "ttmp", relativePath, "stale.md")
+	if err := os.MkdirAll(filepath.Dir(staleFile), 0o755); err != nil {
+		t.Fatalf("mkdir stale file dir: %v", err)
+	}
+	if err := os.WriteFile(staleFile, []byte("stale\n"), 0o644); err != nil {
+		t.Fatalf("write stale file: %v", err)
+	}
+
+	if err := syncTicketDocsDirectory(sourcePath, relativePath, workspacePath); err != nil {
+		t.Fatalf("sync ticket docs directory: %v", err)
+	}
+
+	readmePath := filepath.Join(workspacePath, "ttmp", relativePath, "README.md")
+	readmeBytes, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read copied README: %v", err)
+	}
+	if strings.TrimSpace(string(readmeBytes)) != "ticket docs" {
+		t.Fatalf("unexpected copied README content: %q", string(readmeBytes))
+	}
+
+	analysisPath := filepath.Join(workspacePath, "ttmp", relativePath, "reference", "01-analysis.md")
+	if _, err := os.Stat(analysisPath); err != nil {
+		t.Fatalf("expected copied nested file: %v", err)
+	}
+
+	if _, err := os.Stat(staleFile); !os.IsNotExist(err) {
+		t.Fatalf("expected stale file removal, stat err=%v", err)
 	}
 }
 

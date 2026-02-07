@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -953,6 +955,12 @@ func (s *Service) executeSingleStep(ctx context.Context, spec model.RunSpec, cfg
 		}
 		now := time.Now()
 		return s.store.UpdateAgentStatus(spec.RunID, step.Agent, step.WorkspaceName, model.AgentStatusRunning, model.HealthStateHealthy, &now, &now)
+	case "ticket_context_sync":
+		workspacePath, err := resolveWorkspacePath(step.WorkspaceName)
+		if err != nil {
+			return err
+		}
+		return syncTicketDocsToWorkspace(ctx, step.Ticket, workspacePath)
 	default:
 		return fmt.Errorf("unknown step kind: %s", step.Kind)
 	}
@@ -1044,6 +1052,20 @@ func buildPlan(spec model.RunSpec, cfg policy.Config) []model.PlanStep {
 			Status:        model.StepStatusPending,
 		})
 		index++
+
+		if spec.Mode == model.RunModeBootstrap {
+			steps = append(steps, model.PlanStep{
+				Index:         index,
+				Name:          fmt.Sprintf("sync-ticket-context-%s", workspaceName),
+				Kind:          "ticket_context_sync",
+				Command:       "",
+				Blocking:      true,
+				Ticket:        ticket,
+				WorkspaceName: workspaceName,
+				Status:        model.StepStatusPending,
+			})
+			index++
+		}
 
 		for _, agent := range spec.Agents {
 			steps = append(steps, model.PlanStep{
@@ -1188,6 +1210,139 @@ func isGitRepo(path string) bool {
 		return false
 	}
 	return info.IsDir() || info.Mode().IsRegular()
+}
+
+func syncTicketDocsToWorkspace(ctx context.Context, ticket string, workspacePath string) error {
+	sourcePath, relativePath, err := resolveTicketDocPath(ctx, ticket)
+	if err != nil {
+		return err
+	}
+	return syncTicketDocsDirectory(sourcePath, relativePath, workspacePath)
+}
+
+func resolveTicketDocPath(ctx context.Context, ticket string) (string, string, error) {
+	ticket = strings.TrimSpace(ticket)
+	if ticket == "" {
+		return "", "", fmt.Errorf("ticket is required for context sync")
+	}
+	cmd := exec.CommandContext(ctx, "docmgr", "ticket", "list", "--ticket", ticket)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", "", fmt.Errorf("docmgr ticket list --ticket %s failed: %w: %s", ticket, err, strings.TrimSpace(string(out)))
+	}
+	docsRoot, ticketRelativePath, err := parseDocmgrTicketListPaths(out)
+	if err != nil {
+		return "", "", err
+	}
+	ticketPath := filepath.Join(docsRoot, ticketRelativePath)
+	info, err := os.Stat(ticketPath)
+	if err != nil {
+		return "", "", fmt.Errorf("ticket path %s: %w", ticketPath, err)
+	}
+	if !info.IsDir() {
+		return "", "", fmt.Errorf("ticket path %s is not a directory", ticketPath)
+	}
+	return ticketPath, ticketRelativePath, nil
+}
+
+func parseDocmgrTicketListPaths(output []byte) (string, string, error) {
+	text := string(output)
+	docsRootMatch := docmgrDocsRootRegex.FindStringSubmatch(text)
+	if len(docsRootMatch) < 2 {
+		return "", "", fmt.Errorf("unable to parse docs root from docmgr ticket list output")
+	}
+	ticketPathMatch := docmgrTicketPathRegex.FindStringSubmatch(text)
+	if len(ticketPathMatch) < 2 {
+		return "", "", fmt.Errorf("unable to parse ticket path from docmgr ticket list output")
+	}
+
+	docsRoot := filepath.Clean(strings.TrimSpace(docsRootMatch[1]))
+	relativePath := filepath.Clean(filepath.FromSlash(strings.TrimSpace(ticketPathMatch[1])))
+	if relativePath == "." || relativePath == "" {
+		return "", "", fmt.Errorf("parsed empty ticket path from docmgr ticket list output")
+	}
+	if relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(os.PathSeparator)) {
+		return "", "", fmt.Errorf("unsafe ticket path parsed from docmgr output: %s", relativePath)
+	}
+	return docsRoot, relativePath, nil
+}
+
+func syncTicketDocsDirectory(sourcePath string, ticketRelativePath string, workspacePath string) error {
+	if strings.TrimSpace(sourcePath) == "" {
+		return fmt.Errorf("source ticket path is required")
+	}
+	if strings.TrimSpace(ticketRelativePath) == "" {
+		return fmt.Errorf("ticket relative path is required")
+	}
+	if strings.TrimSpace(workspacePath) == "" {
+		return fmt.Errorf("workspace path is required")
+	}
+	destinationPath := filepath.Join(workspacePath, "ttmp", ticketRelativePath)
+	if err := os.RemoveAll(destinationPath); err != nil {
+		return fmt.Errorf("remove destination ticket path %s: %w", destinationPath, err)
+	}
+	if err := copyDirectoryTree(sourcePath, destinationPath); err != nil {
+		return fmt.Errorf("copy ticket docs %s -> %s: %w", sourcePath, destinationPath, err)
+	}
+	return nil
+}
+
+func copyDirectoryTree(sourcePath string, destinationPath string) error {
+	sourcePath = filepath.Clean(sourcePath)
+	destinationPath = filepath.Clean(destinationPath)
+	return filepath.WalkDir(sourcePath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relativePath, err := filepath.Rel(sourcePath, path)
+		if err != nil {
+			return err
+		}
+		targetPath := filepath.Join(destinationPath, relativePath)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(targetPath, info.Mode().Perm())
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(linkTarget, targetPath)
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("unsupported file type at %s", path)
+		}
+		return copyFile(path, targetPath, info.Mode().Perm())
+	})
+}
+
+func copyFile(sourcePath string, destinationPath string, mode os.FileMode) error {
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
+		return err
+	}
+
+	destinationFile, err := os.OpenFile(destinationPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(destinationFile, sourceFile); err != nil {
+		_ = destinationFile.Close()
+		return err
+	}
+	if err := destinationFile.Close(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func resetRepoToBaseBranch(ctx context.Context, repoPath string, baseBranch string) error {
@@ -1350,6 +1505,8 @@ func tmuxKillSession(ctx context.Context, sessionName string) error {
 }
 
 var agentExitRegex = regexp.MustCompile(`\[metawsm\] agent command exited with status ([0-9]+)`)
+var docmgrDocsRootRegex = regexp.MustCompile("Docs root:\\s+`([^`]+)`")
+var docmgrTicketPathRegex = regexp.MustCompile("Path:\\s+`([^`]+)`")
 
 func readAgentExitCode(ctx context.Context, sessionName string) (int, bool) {
 	cmd := exec.CommandContext(ctx, "zsh", "-lc", fmt.Sprintf("tmux capture-pane -p -t %s:0 | tail -n 200", shellQuote(sessionName)))
