@@ -514,6 +514,10 @@ func (s *Service) Merge(ctx context.Context, options MergeOptions) (MergeResult,
 	return MergeResult{RunID: runID, Actions: actions}, nil
 }
 
+func (s *Service) ResolveRunID(explicitRunID string, ticket string) (string, error) {
+	return s.resolveRunID(explicitRunID, ticket)
+}
+
 func (s *Service) resolveRunID(explicitRunID string, ticket string) (string, error) {
 	runID := strings.TrimSpace(explicitRunID)
 	if runID != "" {
@@ -812,9 +816,15 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 
 	if record.Status == model.RunStatusComplete {
 		b.WriteString("Next:\n")
-		b.WriteString(fmt.Sprintf("  - metawsm merge --run-id %s --dry-run\n", runID))
-		b.WriteString(fmt.Sprintf("  - metawsm merge --run-id %s\n", runID))
-		b.WriteString(fmt.Sprintf("  - metawsm close --run-id %s\n", runID))
+		if len(tickets) == 1 {
+			b.WriteString(fmt.Sprintf("  - metawsm merge --ticket %s --dry-run\n", tickets[0]))
+			b.WriteString(fmt.Sprintf("  - metawsm merge --ticket %s\n", tickets[0]))
+			b.WriteString(fmt.Sprintf("  - metawsm close --ticket %s\n", tickets[0]))
+		} else {
+			b.WriteString(fmt.Sprintf("  - metawsm merge --run-id %s --dry-run\n", runID))
+			b.WriteString(fmt.Sprintf("  - metawsm merge --run-id %s\n", runID))
+			b.WriteString(fmt.Sprintf("  - metawsm close --run-id %s\n", runID))
+		}
 	}
 
 	b.WriteString(fmt.Sprintf("Steps: total=%d done=%d running=%d pending=%d failed=%d\n", len(steps), doneCount, runningCount, pendingCount, failedCount))

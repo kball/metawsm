@@ -238,22 +238,29 @@ func bootstrapCommand(args []string) error {
 func guideCommand(args []string) error {
 	fs := flag.NewFlagSet("guide", flag.ContinueOnError)
 	var runID string
+	var ticket string
 	var dbPath string
 	var answer string
 	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (guide latest run for this ticket)")
 	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
 	fs.StringVar(&answer, "answer", "", "Guidance answer for the pending question")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if strings.TrimSpace(runID) == "" {
-		return fmt.Errorf("--run-id is required")
-	}
 	if strings.TrimSpace(answer) == "" {
 		return fmt.Errorf("--answer is required")
 	}
+	runID, ticket, err := requireRunSelector(runID, ticket)
+	if err != nil {
+		return err
+	}
 
 	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	runID, err = service.ResolveRunID(runID, ticket)
 	if err != nil {
 		return err
 	}
@@ -268,17 +275,24 @@ func guideCommand(args []string) error {
 func statusCommand(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	var runID string
+	var ticket string
 	var dbPath string
 	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (status latest run for this ticket)")
 	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if strings.TrimSpace(runID) == "" {
-		return fmt.Errorf("--run-id is required")
+	runID, ticket, err := requireRunSelector(runID, ticket)
+	if err != nil {
+		return err
 	}
 
 	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	runID, err = service.ResolveRunID(runID, ticket)
 	if err != nil {
 		return err
 	}
@@ -293,17 +307,24 @@ func statusCommand(args []string) error {
 func resumeCommand(args []string) error {
 	fs := flag.NewFlagSet("resume", flag.ContinueOnError)
 	var runID string
+	var ticket string
 	var dbPath string
 	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (resume latest run for this ticket)")
 	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if strings.TrimSpace(runID) == "" {
-		return fmt.Errorf("--run-id is required")
+	runID, ticket, err := requireRunSelector(runID, ticket)
+	if err != nil {
+		return err
 	}
 
 	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	runID, err = service.ResolveRunID(runID, ticket)
 	if err != nil {
 		return err
 	}
@@ -317,17 +338,24 @@ func resumeCommand(args []string) error {
 func stopCommand(args []string) error {
 	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
 	var runID string
+	var ticket string
 	var dbPath string
 	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (stop latest run for this ticket)")
 	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if strings.TrimSpace(runID) == "" {
-		return fmt.Errorf("--run-id is required")
+	runID, ticket, err := requireRunSelector(runID, ticket)
+	if err != nil {
+		return err
 	}
 
 	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	runID, err = service.ResolveRunID(runID, ticket)
 	if err != nil {
 		return err
 	}
@@ -477,21 +505,28 @@ func mergeCommand(args []string) error {
 func closeCommand(args []string) error {
 	fs := flag.NewFlagSet("close", flag.ContinueOnError)
 	var runID string
+	var ticket string
 	var dbPath string
 	var dryRun bool
 	var changelogEntry string
 	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (close latest run for this ticket)")
 	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
 	fs.BoolVar(&dryRun, "dry-run", false, "Preview close actions")
 	fs.StringVar(&changelogEntry, "changelog-entry", "", "Changelog entry for docmgr ticket close")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if strings.TrimSpace(runID) == "" {
-		return fmt.Errorf("--run-id is required")
+	runID, ticket, err := requireRunSelector(runID, ticket)
+	if err != nil {
+		return err
 	}
 
 	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	runID, err = service.ResolveRunID(runID, ticket)
 	if err != nil {
 		return err
 	}
@@ -527,9 +562,11 @@ func policyInitCommand(args []string) error {
 func tuiCommand(args []string) error {
 	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
 	var runID string
+	var ticket string
 	var dbPath string
 	var intervalSeconds int
 	fs.StringVar(&runID, "run-id", "", "Specific run to monitor (optional)")
+	fs.StringVar(&ticket, "ticket", "", "Specific ticket to monitor (optional; resolves latest run)")
 	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
 	fs.IntVar(&intervalSeconds, "interval", 2, "Refresh interval in seconds")
 	if err := fs.Parse(args); err != nil {
@@ -542,6 +579,16 @@ func tuiCommand(args []string) error {
 	service, err := orchestrator.NewService(dbPath)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(runID) != "" || strings.TrimSpace(ticket) != "" {
+		runID, ticket, err = requireRunSelector(runID, ticket)
+		if err != nil {
+			return err
+		}
+		runID, err = service.ResolveRunID(runID, ticket)
+		if err != nil {
+			return err
+		}
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -827,14 +874,14 @@ func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  metawsm run --ticket T1 --ticket T2 --repos repo1,repo2 [--agent planner --agent coder] [--base-branch main]")
 	fmt.Println("  metawsm bootstrap --ticket T1 --repos repo1,repo2 [--agent planner] [--base-branch main]")
-	fmt.Println("  metawsm status --run-id RUN_ID")
-	fmt.Println("  metawsm guide --run-id RUN_ID --answer \"...\"")
-	fmt.Println("  metawsm resume --run-id RUN_ID")
-	fmt.Println("  metawsm stop --run-id RUN_ID")
+	fmt.Println("  metawsm status [--run-id RUN_ID | --ticket T1]")
+	fmt.Println("  metawsm guide [--run-id RUN_ID | --ticket T1] --answer \"...\"")
+	fmt.Println("  metawsm resume [--run-id RUN_ID | --ticket T1]")
+	fmt.Println("  metawsm stop [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm restart [--run-id RUN_ID | --ticket T1] [--dry-run]")
 	fmt.Println("  metawsm cleanup [--run-id RUN_ID | --ticket T1] [--keep-workspaces] [--dry-run]")
 	fmt.Println("  metawsm merge [--run-id RUN_ID | --ticket T1] [--dry-run]")
-	fmt.Println("  metawsm close --run-id RUN_ID [--dry-run]")
+	fmt.Println("  metawsm close [--run-id RUN_ID | --ticket T1] [--dry-run]")
 	fmt.Println("  metawsm policy-init")
-	fmt.Println("  metawsm tui [--run-id RUN_ID] [--interval 2]")
+	fmt.Println("  metawsm tui [--run-id RUN_ID | --ticket T1] [--interval 2]")
 }

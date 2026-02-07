@@ -457,6 +457,33 @@ func TestCleanupDryRunByTicketPrefersNonDryRun(t *testing.T) {
 	}
 }
 
+func TestResolveRunIDByTicketPrefersNonDryRun(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	svc := newTestService(t)
+	ticket := "METAWSM-009"
+	createRunWithTicketFixture(t, svc, "run-resolve-nondry", ticket, "ws-resolve-real", model.RunStatusRunning, false)
+	createRunWithTicketFixture(t, svc, "run-resolve-dry", ticket, "ws-resolve-dry", model.RunStatusPaused, true)
+
+	runID, err := svc.ResolveRunID("", ticket)
+	if err != nil {
+		t.Fatalf("resolve run id by ticket: %v", err)
+	}
+	if runID != "run-resolve-nondry" {
+		t.Fatalf("expected non-dry run id run-resolve-nondry, got %s", runID)
+	}
+
+	explicit, err := svc.ResolveRunID("run-explicit", ticket)
+	if err != nil {
+		t.Fatalf("resolve explicit run id: %v", err)
+	}
+	if explicit != "run-explicit" {
+		t.Fatalf("expected explicit run id passthrough, got %s", explicit)
+	}
+}
+
 func TestBootstrapStatusTransitionsRunToFailedWhenAgentFailed(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")
@@ -785,8 +812,8 @@ func TestStatusIncludesPerRepoDiffsForWorkspace(t *testing.T) {
 	if !strings.Contains(status, "?? dirty.txt") {
 		t.Fatalf("expected dirty file line in status output, got:\n%s", status)
 	}
-	if !strings.Contains(status, "metawsm merge --run-id "+runID) {
-		t.Fatalf("expected merge next-step guidance in status output, got:\n%s", status)
+	if !strings.Contains(status, "metawsm merge --ticket "+ticket) {
+		t.Fatalf("expected ticket-based merge next-step guidance in status output, got:\n%s", status)
 	}
 }
 
