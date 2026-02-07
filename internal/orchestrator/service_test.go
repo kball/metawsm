@@ -815,6 +815,117 @@ func TestStatusIncludesPerRepoDiffsForWorkspace(t *testing.T) {
 	if !strings.Contains(status, "metawsm merge --ticket "+ticket) {
 		t.Fatalf("expected ticket-based merge next-step guidance in status output, got:\n%s", status)
 	}
+	if !strings.Contains(status, "metawsm iterate --ticket "+ticket) {
+		t.Fatalf("expected iterate next-step guidance in status output, got:\n%s", status)
+	}
+}
+
+func TestIterateDryRunIncludesFeedbackAndRestartActions(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-iterate-dry"
+	ticket := "METAWSM-010"
+	workspaceName := "ws-iterate-dry"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	if err := os.MkdirAll(filepath.Join(workspacePath, ".metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspacePath, ".metawsm", "implementation-complete.json"), []byte(`{"status":"done"}`), 0o644); err != nil {
+		t.Fatalf("write completion marker: %v", err)
+	}
+	ticketDir := filepath.Join(workspacePath, "ttmp", "2026", "02", "07", strings.ToLower(ticket)+"--feedback-test", "reference")
+	if err := os.MkdirAll(ticketDir, 0o755); err != nil {
+		t.Fatalf("mkdir ticket reference dir: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+
+	result, err := svc.Iterate(t.Context(), IterateOptions{
+		RunID:    runID,
+		Feedback: "Please update the status page card layout and tighten tests.",
+		DryRun:   true,
+	})
+	if err != nil {
+		t.Fatalf("iterate dry-run: %v", err)
+	}
+	if result.RunID != runID {
+		t.Fatalf("expected run id %s, got %s", runID, result.RunID)
+	}
+	joined := strings.Join(result.Actions, "\n")
+	if !strings.Contains(joined, ".metawsm/operator-feedback.md") {
+		t.Fatalf("expected operator feedback action, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "99-operator-feedback.md") {
+		t.Fatalf("expected ticket feedback doc action, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "tmux new-session -d -s") {
+		t.Fatalf("expected restart action in iterate dry-run, got:\n%s", joined)
+	}
+	if _, err := os.Stat(filepath.Join(workspacePath, ".metawsm", "implementation-complete.json")); err != nil {
+		t.Fatalf("expected completion marker to remain during dry-run, err=%v", err)
+	}
+}
+
+func TestRecordIterationFeedbackWritesAndClearsSignals(t *testing.T) {
+	workspacePath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspacePath, ".metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir .metawsm: %v", err)
+	}
+	signalFiles := []string{
+		filepath.Join(workspacePath, ".metawsm", "implementation-complete.json"),
+		filepath.Join(workspacePath, ".metawsm", "validation-result.json"),
+		filepath.Join(workspacePath, ".metawsm", "guidance-request.json"),
+		filepath.Join(workspacePath, ".metawsm", "guidance-response.json"),
+	}
+	for _, path := range signalFiles {
+		if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+			t.Fatalf("write signal file %s: %v", path, err)
+		}
+	}
+
+	ticket := "METAWSM-011"
+	referenceDir := filepath.Join(workspacePath, "ttmp", "2026", "02", "07", strings.ToLower(ticket)+"--iteration-feedback", "reference")
+	if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+		t.Fatalf("mkdir reference dir: %v", err)
+	}
+	now := time.Date(2026, 2, 7, 10, 15, 0, 0, time.UTC)
+	feedback := "Address the button spacing regression and add a request spec."
+	if _, err := recordIterationFeedback(workspacePath, []string{ticket}, feedback, now, false); err != nil {
+		t.Fatalf("record iteration feedback: %v", err)
+	}
+
+	for _, path := range signalFiles {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected signal file removed %s, stat err=%v", path, err)
+		}
+	}
+
+	mainFeedback := filepath.Join(workspacePath, ".metawsm", "operator-feedback.md")
+	mainBytes, err := os.ReadFile(mainFeedback)
+	if err != nil {
+		t.Fatalf("read main feedback file: %v", err)
+	}
+	mainText := string(mainBytes)
+	if !strings.Contains(mainText, feedback) {
+		t.Fatalf("expected main feedback text in file, got:\n%s", mainText)
+	}
+	if !strings.Contains(mainText, "# Operator Feedback") {
+		t.Fatalf("expected main feedback header, got:\n%s", mainText)
+	}
+
+	ticketFeedback := filepath.Join(referenceDir, "99-operator-feedback.md")
+	ticketBytes, err := os.ReadFile(ticketFeedback)
+	if err != nil {
+		t.Fatalf("read ticket feedback file: %v", err)
+	}
+	ticketText := string(ticketBytes)
+	if !strings.Contains(ticketText, feedback) {
+		t.Fatalf("expected ticket feedback text in file, got:\n%s", ticketText)
+	}
 }
 
 func newTestService(t *testing.T) *Service {

@@ -39,6 +39,7 @@ var runTransitions = map[model.RunStatus]map[model.RunStatus]bool{
 	},
 	model.RunStatusComplete: {
 		model.RunStatusClosing: true,
+		model.RunStatusRunning: true,
 	},
 	model.RunStatusClosing: {
 		model.RunStatusClosed: true,

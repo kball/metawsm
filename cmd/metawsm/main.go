@@ -61,6 +61,8 @@ func main() {
 		err = cleanupCommand(args)
 	case "merge":
 		err = mergeCommand(args)
+	case "iterate":
+		err = iterateCommand(args)
 	case "close":
 		err = closeCommand(args)
 	case "policy-init":
@@ -502,6 +504,55 @@ func mergeCommand(args []string) error {
 	return nil
 }
 
+func iterateCommand(args []string) error {
+	fs := flag.NewFlagSet("iterate", flag.ContinueOnError)
+	var runID string
+	var ticket string
+	var dbPath string
+	var feedback string
+	var dryRun bool
+	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (iterate latest run for this ticket)")
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&feedback, "feedback", "", "Operator feedback to guide the next implementation iteration")
+	fs.BoolVar(&dryRun, "dry-run", false, "Preview iterate actions without executing them")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(feedback) == "" {
+		return fmt.Errorf("--feedback is required")
+	}
+
+	runID, ticket, err := requireRunSelector(runID, ticket)
+	if err != nil {
+		return err
+	}
+
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	result, err := service.Iterate(context.Background(), orchestrator.IterateOptions{
+		RunID:    runID,
+		Ticket:   ticket,
+		Feedback: feedback,
+		DryRun:   dryRun,
+	})
+	if err != nil {
+		return err
+	}
+
+	if dryRun {
+		fmt.Printf("Iterate dry-run for run %s:\n", result.RunID)
+	} else {
+		fmt.Printf("Iterate started for run %s.\n", result.RunID)
+	}
+	for _, action := range result.Actions {
+		fmt.Printf("  - %s\n", action)
+	}
+	return nil
+}
+
 func closeCommand(args []string) error {
 	fs := flag.NewFlagSet("close", flag.ContinueOnError)
 	var runID string
@@ -881,6 +932,7 @@ func printUsage() {
 	fmt.Println("  metawsm restart [--run-id RUN_ID | --ticket T1] [--dry-run]")
 	fmt.Println("  metawsm cleanup [--run-id RUN_ID | --ticket T1] [--keep-workspaces] [--dry-run]")
 	fmt.Println("  metawsm merge [--run-id RUN_ID | --ticket T1] [--dry-run]")
+	fmt.Println("  metawsm iterate [--run-id RUN_ID | --ticket T1] --feedback \"...\" [--dry-run]")
 	fmt.Println("  metawsm close [--run-id RUN_ID | --ticket T1] [--dry-run]")
 	fmt.Println("  metawsm policy-init")
 	fmt.Println("  metawsm tui [--run-id RUN_ID | --ticket T1] [--interval 2]")

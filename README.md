@@ -16,6 +16,8 @@ Implemented command surface:
 - `metawsm stop`
 - `metawsm restart`
 - `metawsm cleanup`
+- `metawsm merge`
+- `metawsm iterate`
 - `metawsm close`
 - `metawsm policy-init`
 - `metawsm tui`
@@ -57,13 +59,26 @@ go run ./cmd/metawsm bootstrap \
 Inspect status:
 
 ```bash
-go run ./cmd/metawsm status --run-id RUN_ID
+go run ./cmd/metawsm status --ticket METAWSM-003
 ```
 
 Answer pending guidance from an agent:
 
 ```bash
-go run ./cmd/metawsm guide --run-id RUN_ID --answer "Proceed with the sentinel JSON contract."
+go run ./cmd/metawsm guide --ticket METAWSM-003 --answer "Proceed with the sentinel JSON contract."
+```
+
+Review/merge workflow for completed runs:
+
+```bash
+go run ./cmd/metawsm merge --ticket METAWSM-003 --dry-run
+go run ./cmd/metawsm merge --ticket METAWSM-003
+```
+
+Send operator feedback and kick off another agent iteration:
+
+```bash
+go run ./cmd/metawsm iterate --ticket METAWSM-003 --feedback "Address the diff comments and add regression tests."
 ```
 
 Restart the latest run for a ticket:

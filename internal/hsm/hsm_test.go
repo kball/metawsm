@@ -16,6 +16,9 @@ func TestRunTransitions(t *testing.T) {
 	if !CanTransitionRun(model.RunStatusAwaitingGuidance, model.RunStatusRunning) {
 		t.Fatalf("expected awaiting_guidance -> running transition to be allowed")
 	}
+	if !CanTransitionRun(model.RunStatusComplete, model.RunStatusRunning) {
+		t.Fatalf("expected completed -> running transition to be allowed")
+	}
 	if CanTransitionRun(model.RunStatusCreated, model.RunStatusComplete) {
 		t.Fatalf("expected created -> completed transition to be disallowed")
 	}

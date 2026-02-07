@@ -72,6 +72,13 @@ type MergeOptions struct {
 	DryRun bool
 }
 
+type IterateOptions struct {
+	Ticket   string
+	RunID    string
+	Feedback string
+	DryRun   bool
+}
+
 type RunResult struct {
 	RunID string
 	Steps []model.PlanStep
@@ -96,6 +103,11 @@ type CleanupResult struct {
 }
 
 type MergeResult struct {
+	RunID   string
+	Actions []string
+}
+
+type IterateResult struct {
 	RunID   string
 	Actions []string
 }
@@ -514,6 +526,68 @@ func (s *Service) Merge(ctx context.Context, options MergeOptions) (MergeResult,
 	return MergeResult{RunID: runID, Actions: actions}, nil
 }
 
+func (s *Service) Iterate(ctx context.Context, options IterateOptions) (IterateResult, error) {
+	feedback := strings.TrimSpace(options.Feedback)
+	if feedback == "" {
+		return IterateResult{}, fmt.Errorf("feedback cannot be empty")
+	}
+	runID, err := s.resolveRunID(options.RunID, options.Ticket)
+	if err != nil {
+		return IterateResult{}, err
+	}
+
+	record, specJSON, _, err := s.store.GetRun(runID)
+	if err != nil {
+		return IterateResult{}, err
+	}
+	if record.Status == model.RunStatusClosed {
+		return IterateResult{}, fmt.Errorf("run %s is closed and cannot iterate", runID)
+	}
+
+	var spec model.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return IterateResult{}, fmt.Errorf("unmarshal run spec: %w", err)
+	}
+
+	agents, err := s.store.GetAgents(runID)
+	if err != nil {
+		return IterateResult{}, err
+	}
+	workspaces := workspaceNamesFromAgents(agents)
+	if len(workspaces) == 0 {
+		return IterateResult{}, fmt.Errorf("run %s has no workspaces for iteration", runID)
+	}
+
+	now := time.Now()
+	actions := []string{}
+	for _, workspaceName := range workspaces {
+		workspacePath, err := resolveWorkspacePath(workspaceName)
+		if err != nil {
+			return IterateResult{}, err
+		}
+		workspaceActions, err := recordIterationFeedback(workspacePath, spec.Tickets, feedback, now, options.DryRun)
+		if err != nil {
+			return IterateResult{}, err
+		}
+		actions = append(actions, workspaceActions...)
+	}
+
+	restartResult, err := s.Restart(ctx, RestartOptions{
+		RunID:  runID,
+		DryRun: options.DryRun,
+	})
+	if err != nil {
+		return IterateResult{}, err
+	}
+	actions = append(actions, restartResult.Actions...)
+
+	if options.DryRun {
+		return IterateResult{RunID: runID, Actions: actions}, nil
+	}
+	_ = s.store.AddEvent(runID, "run", runID, "iterate", "", "", fmt.Sprintf("iteration feedback recorded for %d workspace(s)", len(workspaces)))
+	return IterateResult{RunID: runID, Actions: actions}, nil
+}
+
 func (s *Service) ResolveRunID(explicitRunID string, ticket string) (string, error) {
 	return s.resolveRunID(explicitRunID, ticket)
 }
@@ -817,10 +891,12 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 	if record.Status == model.RunStatusComplete {
 		b.WriteString("Next:\n")
 		if len(tickets) == 1 {
+			b.WriteString(fmt.Sprintf("  - metawsm iterate --ticket %s --feedback \"<feedback from diff review>\"\n", tickets[0]))
 			b.WriteString(fmt.Sprintf("  - metawsm merge --ticket %s --dry-run\n", tickets[0]))
 			b.WriteString(fmt.Sprintf("  - metawsm merge --ticket %s\n", tickets[0]))
 			b.WriteString(fmt.Sprintf("  - metawsm close --ticket %s\n", tickets[0]))
 		} else {
+			b.WriteString(fmt.Sprintf("  - metawsm iterate --run-id %s --feedback \"<feedback from diff review>\"\n", runID))
 			b.WriteString(fmt.Sprintf("  - metawsm merge --run-id %s --dry-run\n", runID))
 			b.WriteString(fmt.Sprintf("  - metawsm merge --run-id %s\n", runID))
 			b.WriteString(fmt.Sprintf("  - metawsm close --run-id %s\n", runID))
@@ -1662,6 +1738,125 @@ func workspaceNamesFromAgents(agents []model.AgentRecord) []string {
 	}
 	sort.Strings(workspaces)
 	return workspaces
+}
+
+func recordIterationFeedback(workspacePath string, tickets []string, feedback string, at time.Time, dryRun bool) ([]string, error) {
+	actions := []string{}
+	signalFiles := []string{
+		filepath.Join(workspacePath, ".metawsm", "implementation-complete.json"),
+		filepath.Join(workspacePath, ".metawsm", "validation-result.json"),
+		filepath.Join(workspacePath, ".metawsm", "guidance-request.json"),
+		filepath.Join(workspacePath, ".metawsm", "guidance-response.json"),
+	}
+	for _, path := range signalFiles {
+		actions = append(actions, fmt.Sprintf("rm -f %s", shellQuote(path)))
+		if dryRun {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+	}
+
+	mainFeedbackPath := filepath.Join(workspacePath, ".metawsm", "operator-feedback.md")
+	actions = append(actions, fmt.Sprintf("append feedback %s", shellQuote(mainFeedbackPath)))
+	if !dryRun {
+		if err := appendIterationFeedback(mainFeedbackPath, feedback, at); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, ticket := range tickets {
+		ticketPaths, err := locateTicketDocDirsInWorkspace(workspacePath, ticket)
+		if err != nil {
+			return nil, err
+		}
+		for _, ticketPath := range ticketPaths {
+			referencePath := filepath.Join(ticketPath, "reference", "99-operator-feedback.md")
+			actions = append(actions, fmt.Sprintf("append feedback %s", shellQuote(referencePath)))
+			if dryRun {
+				continue
+			}
+			if err := appendIterationFeedback(referencePath, feedback, at); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return actions, nil
+}
+
+func appendIterationFeedback(path string, feedback string, at time.Time) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	_, statErr := os.Stat(path)
+	exists := statErr == nil
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return statErr
+	}
+
+	var b strings.Builder
+	if !exists {
+		b.WriteString("# Operator Feedback\n\n")
+	}
+	b.WriteString("## ")
+	b.WriteString(at.Format(time.RFC3339))
+	b.WriteString("\n\n")
+	b.WriteString(feedback)
+	if !strings.HasSuffix(feedback, "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(b.String()); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func locateTicketDocDirsInWorkspace(workspacePath string, ticket string) ([]string, error) {
+	root := filepath.Join(workspacePath, "ttmp")
+	info, err := os.Stat(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, nil
+	}
+
+	prefix := strings.ToLower(strings.TrimSpace(ticket))
+	if prefix == "" {
+		return nil, nil
+	}
+	prefix += "--"
+
+	paths := []string{}
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		if strings.HasPrefix(strings.ToLower(entry.Name()), prefix) {
+			paths = append(paths, path)
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 func evaluateHealth(ctx context.Context, cfg policy.Config, agent model.AgentRecord, now time.Time) (model.HealthState, model.AgentStatus, *time.Time) {
