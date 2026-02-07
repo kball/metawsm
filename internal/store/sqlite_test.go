@@ -23,6 +23,7 @@ func TestSQLiteStoreRoundTrip(t *testing.T) {
 
 	spec := model.RunSpec{
 		RunID:             "run-test",
+		Mode:              model.RunModeBootstrap,
 		Tickets:           []string{"METAWSM-001", "METAWSM-002"},
 		Repos:             []string{"metawsm"},
 		WorkspaceStrategy: model.WorkspaceStrategyCreate,
@@ -37,6 +38,23 @@ func TestSQLiteStoreRoundTrip(t *testing.T) {
 	}
 	if err := s.CreateRun(spec, string(policyJSON)); err != nil {
 		t.Fatalf("create run: %v", err)
+	}
+	brief := model.RunBrief{
+		RunID:        spec.RunID,
+		Ticket:       "METAWSM-001",
+		Goal:         "Implement bootstrap flow",
+		Scope:        "cmd and orchestrator",
+		DoneCriteria: "tests pass",
+		Constraints:  "no policy regressions",
+		MergeIntent:  "default merge flow",
+		QA: []model.IntakeQA{
+			{Question: "Goal?", Answer: "Implement bootstrap flow"},
+		},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := s.UpsertRunBrief(brief); err != nil {
+		t.Fatalf("upsert run brief: %v", err)
 	}
 
 	steps := []model.PlanStep{
@@ -113,5 +131,57 @@ func TestSQLiteStoreRoundTrip(t *testing.T) {
 	}
 	if runs[0].RunID != spec.RunID {
 		t.Fatalf("expected listed run id %s, got %s", spec.RunID, runs[0].RunID)
+	}
+
+	loadedBrief, err := s.GetRunBrief(spec.RunID)
+	if err != nil {
+		t.Fatalf("get run brief: %v", err)
+	}
+	if loadedBrief == nil {
+		t.Fatalf("expected run brief")
+	}
+	if loadedBrief.Goal != brief.Goal {
+		t.Fatalf("expected run brief goal %q, got %q", brief.Goal, loadedBrief.Goal)
+	}
+	if len(loadedBrief.QA) != 1 || loadedBrief.QA[0].Answer != "Implement bootstrap flow" {
+		t.Fatalf("expected run brief QA to round-trip")
+	}
+
+	reqID, err := s.AddGuidanceRequest(model.GuidanceRequest{
+		RunID:         spec.RunID,
+		WorkspaceName: "metawsm-001",
+		AgentName:     "agent",
+		Question:      "Need schema decision",
+		Context:       "migration",
+		Status:        model.GuidanceStatusPending,
+	})
+	if err != nil {
+		t.Fatalf("add guidance request: %v", err)
+	}
+	if reqID == 0 {
+		t.Fatalf("expected non-zero guidance request id")
+	}
+
+	pending, err := s.ListGuidanceRequests(spec.RunID, model.GuidanceStatusPending)
+	if err != nil {
+		t.Fatalf("list pending guidance: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected one pending guidance request, got %d", len(pending))
+	}
+
+	if err := s.MarkGuidanceAnswered(reqID, "Use workspace sentinel"); err != nil {
+		t.Fatalf("mark guidance answered: %v", err)
+	}
+
+	answered, err := s.ListGuidanceRequests(spec.RunID, model.GuidanceStatusAnswered)
+	if err != nil {
+		t.Fatalf("list answered guidance: %v", err)
+	}
+	if len(answered) != 1 {
+		t.Fatalf("expected one answered guidance request, got %d", len(answered))
+	}
+	if answered[0].Answer != "Use workspace sentinel" {
+		t.Fatalf("expected stored guidance answer, got %q", answered[0].Answer)
 	}
 }

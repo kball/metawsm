@@ -10,6 +10,12 @@ func TestRunTransitions(t *testing.T) {
 	if !CanTransitionRun(model.RunStatusPlanning, model.RunStatusPaused) {
 		t.Fatalf("expected planning -> paused transition to be allowed")
 	}
+	if !CanTransitionRun(model.RunStatusRunning, model.RunStatusAwaitingGuidance) {
+		t.Fatalf("expected running -> awaiting_guidance transition to be allowed")
+	}
+	if !CanTransitionRun(model.RunStatusAwaitingGuidance, model.RunStatusRunning) {
+		t.Fatalf("expected awaiting_guidance -> running transition to be allowed")
+	}
 	if CanTransitionRun(model.RunStatusCreated, model.RunStatusComplete) {
 		t.Fatalf("expected created -> completed transition to be disallowed")
 	}

@@ -39,6 +39,8 @@ type RunOptions struct {
 	WorkspaceStrategy model.WorkspaceStrategy
 	PolicyPath        string
 	DryRun            bool
+	Mode              model.RunMode
+	RunBrief          *model.RunBrief
 }
 
 type CloseOptions struct {
@@ -50,6 +52,14 @@ type CloseOptions struct {
 type RunResult struct {
 	RunID string
 	Steps []model.PlanStep
+}
+
+type GuideResult struct {
+	RunID         string
+	GuidanceID    int64
+	WorkspaceName string
+	AgentName     string
+	Question      string
 }
 
 func (s *Service) Run(ctx context.Context, options RunOptions) (RunResult, error) {
@@ -81,9 +91,14 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunResult, error
 	if runID == "" {
 		runID = generateRunID()
 	}
+	mode := options.Mode
+	if mode == "" {
+		mode = model.RunModeStandard
+	}
 
 	spec := model.RunSpec{
 		RunID:             runID,
+		Mode:              mode,
 		Tickets:           tickets,
 		Repos:             repos,
 		WorkspaceStrategy: strategy,
@@ -99,6 +114,21 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunResult, error
 	}
 	if err := s.store.CreateRun(spec, string(policyJSON)); err != nil {
 		return RunResult{}, err
+	}
+	if options.RunBrief != nil {
+		brief := *options.RunBrief
+		brief.RunID = spec.RunID
+		if strings.TrimSpace(brief.Ticket) == "" && len(tickets) > 0 {
+			brief.Ticket = tickets[0]
+		}
+		now := time.Now()
+		if brief.CreatedAt.IsZero() {
+			brief.CreatedAt = now
+		}
+		brief.UpdatedAt = now
+		if err := s.store.UpsertRunBrief(brief); err != nil {
+			return RunResult{}, err
+		}
 	}
 
 	if err := s.transitionRun(spec.RunID, model.RunStatusCreated, model.RunStatusPlanning, "planning run"); err != nil {
@@ -126,6 +156,10 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunResult, error
 	if err := s.executeSteps(ctx, spec, cfg, steps); err != nil {
 		_ = s.transitionRun(spec.RunID, model.RunStatusRunning, model.RunStatusFailed, err.Error())
 		return RunResult{}, err
+	}
+	if spec.Mode == model.RunModeBootstrap {
+		_ = s.store.AddEvent(spec.RunID, "run", spec.RunID, "bootstrap", string(model.RunStatusRunning), string(model.RunStatusRunning), "bootstrap setup complete; monitoring for guidance/completion signals")
+		return RunResult{RunID: spec.RunID, Steps: steps}, nil
 	}
 	if err := s.transitionRun(spec.RunID, model.RunStatusRunning, model.RunStatusComplete, "run completed"); err != nil {
 		return RunResult{}, err
@@ -179,6 +213,10 @@ func (s *Service) Resume(ctx context.Context, runID string) error {
 		_ = s.transitionRun(runID, model.RunStatusRunning, model.RunStatusFailed, err.Error())
 		return err
 	}
+	if spec.Mode == model.RunModeBootstrap {
+		_ = s.store.AddEvent(runID, "run", runID, "bootstrap", string(model.RunStatusRunning), string(model.RunStatusRunning), "resume completed; monitoring for guidance/completion signals")
+		return nil
+	}
 	return s.transitionRun(runID, model.RunStatusRunning, model.RunStatusComplete, "resume completed")
 }
 
@@ -204,6 +242,74 @@ func (s *Service) Stop(ctx context.Context, runID string) error {
 		_ = s.store.UpdateAgentStatus(runID, agent.Name, agent.WorkspaceName, model.AgentStatusStopped, model.HealthStateDead, &now, agent.LastProgressAt)
 	}
 	return s.transitionRun(runID, model.RunStatusStopping, model.RunStatusStopped, "run stopped")
+}
+
+func (s *Service) Guide(ctx context.Context, runID string, answer string) (GuideResult, error) {
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		return GuideResult{}, fmt.Errorf("guidance answer cannot be empty")
+	}
+
+	record, _, _, err := s.store.GetRun(runID)
+	if err != nil {
+		return GuideResult{}, err
+	}
+	if record.Status != model.RunStatusAwaitingGuidance {
+		return GuideResult{}, fmt.Errorf("run %s is not waiting for guidance (current: %s)", runID, record.Status)
+	}
+
+	pending, err := s.store.ListGuidanceRequests(runID, model.GuidanceStatusPending)
+	if err != nil {
+		return GuideResult{}, err
+	}
+	if len(pending) == 0 {
+		return GuideResult{}, fmt.Errorf("run %s has no pending guidance requests", runID)
+	}
+
+	req := pending[0]
+	workspacePath, err := resolveWorkspacePath(req.WorkspaceName)
+	if err != nil {
+		return GuideResult{}, err
+	}
+	responsePath := filepath.Join(workspacePath, ".metawsm", "guidance-response.json")
+	if err := os.MkdirAll(filepath.Dir(responsePath), 0o755); err != nil {
+		return GuideResult{}, err
+	}
+	answeredAt := time.Now().Format(time.RFC3339)
+	payload := model.GuidanceResponsePayload{
+		GuidanceID: req.ID,
+		RunID:      runID,
+		Agent:      req.AgentName,
+		Question:   req.Question,
+		Answer:     answer,
+		AnsweredAt: answeredAt,
+	}
+	encoded, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return GuideResult{}, err
+	}
+	if err := os.WriteFile(responsePath, append(encoded, '\n'), 0o644); err != nil {
+		return GuideResult{}, err
+	}
+
+	requestPath := filepath.Join(workspacePath, ".metawsm", "guidance-request.json")
+	_ = os.Remove(requestPath)
+
+	if err := s.store.MarkGuidanceAnswered(req.ID, answer); err != nil {
+		return GuideResult{}, err
+	}
+	_ = s.store.AddEvent(runID, "guidance", fmt.Sprintf("%d", req.ID), "answered", string(model.GuidanceStatusPending), string(model.GuidanceStatusAnswered), fmt.Sprintf("%s@%s", req.AgentName, req.WorkspaceName))
+
+	if err := s.transitionRun(runID, model.RunStatusAwaitingGuidance, model.RunStatusRunning, "guidance answered"); err != nil {
+		return GuideResult{}, err
+	}
+	return GuideResult{
+		RunID:         runID,
+		GuidanceID:    req.ID,
+		WorkspaceName: req.WorkspaceName,
+		AgentName:     req.AgentName,
+		Question:      req.Question,
+	}, nil
 }
 
 func (s *Service) Close(ctx context.Context, options CloseOptions) error {
@@ -288,9 +394,13 @@ func (s *Service) Close(ctx context.Context, options CloseOptions) error {
 }
 
 func (s *Service) Status(ctx context.Context, runID string) (string, error) {
-	record, _, _, err := s.store.GetRun(runID)
+	record, specJSON, _, err := s.store.GetRun(runID)
 	if err != nil {
 		return "", err
+	}
+	var spec model.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		spec = model.RunSpec{}
 	}
 	steps, err := s.store.GetSteps(runID)
 	if err != nil {
@@ -320,6 +430,14 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 		_ = s.store.UpdateAgentStatus(runID, agent.Name, agent.WorkspaceName, status, health, lastActivity, lastProgress)
 	}
 	agents, _ = s.store.GetAgents(runID)
+	if spec.Mode == model.RunModeBootstrap {
+		if err := s.syncBootstrapSignals(ctx, runID, record.Status, agents); err != nil {
+			return "", err
+		}
+		record, _, _, _ = s.store.GetRun(runID)
+	}
+	pendingGuidance, _ := s.store.ListGuidanceRequests(runID, model.GuidanceStatusPending)
+	brief, _ := s.store.GetRunBrief(runID)
 
 	var doneCount, failedCount, runningCount, pendingCount int
 	for _, step := range steps {
@@ -338,7 +456,24 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Run: %s\n", runID))
 	b.WriteString(fmt.Sprintf("Status: %s\n", record.Status))
+	if spec.Mode != "" {
+		b.WriteString(fmt.Sprintf("Mode: %s\n", spec.Mode))
+	}
 	b.WriteString(fmt.Sprintf("Tickets: %s\n", strings.Join(tickets, ", ")))
+	if brief != nil {
+		b.WriteString("Brief:\n")
+		b.WriteString(fmt.Sprintf("  goal=%s\n", brief.Goal))
+		b.WriteString(fmt.Sprintf("  scope=%s\n", brief.Scope))
+		b.WriteString(fmt.Sprintf("  done=%s\n", brief.DoneCriteria))
+		b.WriteString(fmt.Sprintf("  constraints=%s\n", brief.Constraints))
+		b.WriteString(fmt.Sprintf("  merge_intent=%s\n", brief.MergeIntent))
+	}
+	if len(pendingGuidance) > 0 {
+		b.WriteString("Guidance:\n")
+		for _, item := range pendingGuidance {
+			b.WriteString(fmt.Sprintf("  - id=%d %s@%s question=%s\n", item.ID, item.AgentName, item.WorkspaceName, item.Question))
+		}
+	}
 	b.WriteString(fmt.Sprintf("Steps: total=%d done=%d running=%d pending=%d failed=%d\n", len(steps), doneCount, runningCount, pendingCount, failedCount))
 	b.WriteString("Agents:\n")
 	if len(agents) == 0 {
@@ -365,6 +500,71 @@ func (s *Service) ActiveRuns() ([]model.RunRecord, error) {
 		}
 	}
 	return out, nil
+}
+
+func (s *Service) syncBootstrapSignals(ctx context.Context, runID string, currentStatus model.RunStatus, agents []model.AgentRecord) error {
+	if currentStatus != model.RunStatusRunning && currentStatus != model.RunStatusAwaitingGuidance {
+		return nil
+	}
+
+	existingPending, err := s.store.ListGuidanceRequests(runID, model.GuidanceStatusPending)
+	if err != nil {
+		return err
+	}
+	pendingByKey := make(map[string]struct{}, len(existingPending))
+	for _, item := range existingPending {
+		key := guidanceKey(item.WorkspaceName, item.AgentName, item.Question)
+		pendingByKey[key] = struct{}{}
+	}
+
+	allComplete := len(agents) > 0
+	for _, agent := range agents {
+		workspacePath, err := resolveWorkspacePath(agent.WorkspaceName)
+		if err != nil {
+			allComplete = false
+			continue
+		}
+
+		if req, ok := readGuidanceRequestFile(workspacePath); ok {
+			if strings.TrimSpace(req.RunID) == "" || req.RunID == runID {
+				if strings.TrimSpace(req.Agent) == "" {
+					req.Agent = agent.Name
+				}
+				key := guidanceKey(agent.WorkspaceName, req.Agent, req.Question)
+				if _, exists := pendingByKey[key]; !exists && strings.TrimSpace(req.Question) != "" {
+					id, err := s.store.AddGuidanceRequest(model.GuidanceRequest{
+						RunID:         runID,
+						WorkspaceName: agent.WorkspaceName,
+						AgentName:     req.Agent,
+						Question:      strings.TrimSpace(req.Question),
+						Context:       strings.TrimSpace(req.Context),
+						Status:        model.GuidanceStatusPending,
+					})
+					if err != nil {
+						return err
+					}
+					_ = s.store.AddEvent(runID, "guidance", fmt.Sprintf("%d", id), "requested", "", string(model.GuidanceStatusPending), fmt.Sprintf("%s@%s", req.Agent, agent.WorkspaceName))
+					pendingByKey[key] = struct{}{}
+				}
+			}
+		}
+
+		if !hasCompletionSignal(workspacePath, runID, agent.Name) {
+			allComplete = false
+		}
+	}
+
+	pendingAfter, err := s.store.ListGuidanceRequests(runID, model.GuidanceStatusPending)
+	if err != nil {
+		return err
+	}
+	if currentStatus == model.RunStatusRunning && len(pendingAfter) > 0 {
+		return s.transitionRun(runID, model.RunStatusRunning, model.RunStatusAwaitingGuidance, "awaiting operator guidance")
+	}
+	if currentStatus == model.RunStatusRunning && len(pendingAfter) == 0 && allComplete {
+		return s.transitionRun(runID, model.RunStatusRunning, model.RunStatusComplete, "completion signal detected")
+	}
+	return nil
 }
 
 func (s *Service) transitionRun(runID string, from model.RunStatus, to model.RunStatus, message string) error {
@@ -700,6 +900,45 @@ func tmuxKillSession(ctx context.Context, sessionName string) error {
 	return err
 }
 
+func guidanceKey(workspaceName string, agentName string, question string) string {
+	return workspaceName + "|" + agentName + "|" + strings.TrimSpace(question)
+}
+
+func readGuidanceRequestFile(workspacePath string) (model.GuidanceRequestPayload, bool) {
+	path := filepath.Join(workspacePath, ".metawsm", "guidance-request.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return model.GuidanceRequestPayload{}, false
+	}
+	var payload model.GuidanceRequestPayload
+	if err := json.Unmarshal(b, &payload); err != nil {
+		return model.GuidanceRequestPayload{}, false
+	}
+	if strings.TrimSpace(payload.Question) == "" {
+		return model.GuidanceRequestPayload{}, false
+	}
+	return payload, true
+}
+
+func hasCompletionSignal(workspacePath string, runID string, agentName string) bool {
+	path := filepath.Join(workspacePath, ".metawsm", "implementation-complete.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var payload model.CompletionSignalPayload
+	if err := json.Unmarshal(b, &payload); err != nil {
+		return false
+	}
+	if strings.TrimSpace(payload.RunID) != "" && payload.RunID != runID {
+		return false
+	}
+	if strings.TrimSpace(payload.Agent) != "" && payload.Agent != agentName {
+		return false
+	}
+	return true
+}
+
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
@@ -729,7 +968,7 @@ func normalizeTokens(values []string) []string {
 
 func isActiveRunStatus(status model.RunStatus) bool {
 	switch status {
-	case model.RunStatusPlanning, model.RunStatusRunning, model.RunStatusPaused, model.RunStatusStopping, model.RunStatusClosing:
+	case model.RunStatusPlanning, model.RunStatusRunning, model.RunStatusAwaitingGuidance, model.RunStatusPaused, model.RunStatusStopping, model.RunStatusClosing:
 		return true
 	default:
 		return false

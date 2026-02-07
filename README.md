@@ -9,7 +9,9 @@
 
 Implemented command surface:
 - `metawsm run`
+- `metawsm bootstrap`
 - `metawsm status`
+- `metawsm guide`
 - `metawsm resume`
 - `metawsm stop`
 - `metawsm close`
@@ -41,10 +43,24 @@ go run ./cmd/metawsm run \
   --dry-run
 ```
 
+Start a bootstrap run with interactive intake:
+
+```bash
+go run ./cmd/metawsm bootstrap \
+  --ticket METAWSM-002 \
+  --repos metawsm
+```
+
 Inspect status:
 
 ```bash
 go run ./cmd/metawsm status --run-id RUN_ID
+```
+
+Answer pending guidance from an agent:
+
+```bash
+go run ./cmd/metawsm guide --run-id RUN_ID --answer "Proceed with the sentinel JSON contract."
 ```
 
 Run initial TUI monitor:
@@ -69,6 +85,13 @@ Important fields:
 - `health.activity_stalled_seconds`
 - `health.progress_stalled_seconds`
 - `close.require_clean_git`
+
+## Bootstrap Signals
+
+For bootstrap runs, agents communicate through workspace files:
+- Guidance request: `<workspace>/.metawsm/guidance-request.json`
+- Guidance response (written by `metawsm guide`): `<workspace>/.metawsm/guidance-response.json`
+- Completion marker: `<workspace>/.metawsm/implementation-complete.json`
 
 ## Build & Test
 

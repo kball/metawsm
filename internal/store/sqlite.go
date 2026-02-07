@@ -91,6 +91,30 @@ CREATE TABLE IF NOT EXISTS events (
   to_state TEXT NOT NULL DEFAULT '',
   message TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS run_briefs (
+  run_id TEXT PRIMARY KEY,
+  ticket TEXT NOT NULL,
+  goal TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  done_criteria TEXT NOT NULL,
+  constraints_text TEXT NOT NULL,
+  merge_intent TEXT NOT NULL,
+  qa_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS guidance_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  workspace_name TEXT NOT NULL,
+  agent_name TEXT NOT NULL,
+  question TEXT NOT NULL,
+  context_text TEXT NOT NULL DEFAULT '',
+  answer_text TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  answered_at TEXT NOT NULL DEFAULT ''
 );`
 
 	return s.execSQL(schema)
@@ -124,6 +148,179 @@ VALUES (%s, %s, %s, %s, %s, %s, '');`,
 		}
 	}
 	return nil
+}
+
+func (s *SQLiteStore) UpsertRunBrief(brief model.RunBrief) error {
+	qaJSON, err := json.Marshal(brief.QA)
+	if err != nil {
+		return fmt.Errorf("marshal run brief QA: %w", err)
+	}
+	now := time.Now()
+	createdAt := brief.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	updatedAt := brief.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = now
+	}
+	sql := fmt.Sprintf(
+		`INSERT OR REPLACE INTO run_briefs
+  (run_id, ticket, goal, scope, done_criteria, constraints_text, merge_intent, qa_json, created_at, updated_at)
+VALUES
+  (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);`,
+		quote(brief.RunID),
+		quote(brief.Ticket),
+		quote(brief.Goal),
+		quote(brief.Scope),
+		quote(brief.DoneCriteria),
+		quote(brief.Constraints),
+		quote(brief.MergeIntent),
+		quote(string(qaJSON)),
+		quote(createdAt.Format(time.RFC3339)),
+		quote(updatedAt.Format(time.RFC3339)),
+	)
+	return s.execSQL(sql)
+}
+
+func (s *SQLiteStore) GetRunBrief(runID string) (*model.RunBrief, error) {
+	sql := fmt.Sprintf(
+		`SELECT run_id, ticket, goal, scope, done_criteria, constraints_text, merge_intent, qa_json, created_at, updated_at
+FROM run_briefs WHERE run_id=%s;`,
+		quote(runID),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	row := rows[0]
+	createdAt, err := time.Parse(time.RFC3339, asString(row["created_at"]))
+	if err != nil {
+		return nil, fmt.Errorf("parse run_briefs created_at: %w", err)
+	}
+	updatedAt, err := time.Parse(time.RFC3339, asString(row["updated_at"]))
+	if err != nil {
+		return nil, fmt.Errorf("parse run_briefs updated_at: %w", err)
+	}
+	qa := []model.IntakeQA{}
+	qaValue := strings.TrimSpace(asString(row["qa_json"]))
+	if qaValue != "" {
+		if err := json.Unmarshal([]byte(qaValue), &qa); err != nil {
+			return nil, fmt.Errorf("parse run_briefs qa_json: %w", err)
+		}
+	}
+	brief := &model.RunBrief{
+		RunID:        asString(row["run_id"]),
+		Ticket:       asString(row["ticket"]),
+		Goal:         asString(row["goal"]),
+		Scope:        asString(row["scope"]),
+		DoneCriteria: asString(row["done_criteria"]),
+		Constraints:  asString(row["constraints_text"]),
+		MergeIntent:  asString(row["merge_intent"]),
+		QA:           qa,
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
+	}
+	return brief, nil
+}
+
+func (s *SQLiteStore) AddGuidanceRequest(req model.GuidanceRequest) (int64, error) {
+	now := time.Now()
+	createdAt := req.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	status := req.Status
+	if status == "" {
+		status = model.GuidanceStatusPending
+	}
+	sql := fmt.Sprintf(
+		`INSERT INTO guidance_requests
+  (run_id, workspace_name, agent_name, question, context_text, answer_text, status, created_at, answered_at)
+VALUES
+  (%s, %s, %s, %s, %s, %s, %s, %s, '');`,
+		quote(req.RunID),
+		quote(req.WorkspaceName),
+		quote(req.AgentName),
+		quote(req.Question),
+		quote(req.Context),
+		quote(req.Answer),
+		quote(string(status)),
+		quote(createdAt.Format(time.RFC3339)),
+	)
+	if err := s.execSQL(sql); err != nil {
+		return 0, err
+	}
+	idRows, err := s.queryJSON(fmt.Sprintf(
+		`SELECT id FROM guidance_requests
+WHERE run_id=%s
+ORDER BY id DESC
+LIMIT 1;`,
+		quote(req.RunID),
+	))
+	if err != nil {
+		return 0, err
+	}
+	if len(idRows) == 0 {
+		return 0, fmt.Errorf("missing row id after guidance insert")
+	}
+	return int64(asInt(idRows[0]["id"])), nil
+}
+
+func (s *SQLiteStore) ListGuidanceRequests(runID string, status model.GuidanceStatus) ([]model.GuidanceRequest, error) {
+	clauses := []string{fmt.Sprintf("run_id=%s", quote(runID))}
+	if strings.TrimSpace(string(status)) != "" {
+		clauses = append(clauses, fmt.Sprintf("status=%s", quote(string(status))))
+	}
+	sql := fmt.Sprintf(
+		`SELECT id, run_id, workspace_name, agent_name, question, context_text, answer_text, status, created_at, answered_at
+FROM guidance_requests
+WHERE %s
+ORDER BY id;`,
+		strings.Join(clauses, " AND "),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.GuidanceRequest, 0, len(rows))
+	for _, row := range rows {
+		createdAt, err := time.Parse(time.RFC3339, asString(row["created_at"]))
+		if err != nil {
+			return nil, fmt.Errorf("parse guidance created_at: %w", err)
+		}
+		item := model.GuidanceRequest{
+			ID:            int64(asInt(row["id"])),
+			RunID:         asString(row["run_id"]),
+			WorkspaceName: asString(row["workspace_name"]),
+			AgentName:     asString(row["agent_name"]),
+			Question:      asString(row["question"]),
+			Context:       asString(row["context_text"]),
+			Answer:        asString(row["answer_text"]),
+			Status:        model.GuidanceStatus(asString(row["status"])),
+			CreatedAt:     createdAt,
+			AnsweredAt:    parseTimePtr(asString(row["answered_at"])),
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) MarkGuidanceAnswered(id int64, answer string) error {
+	now := time.Now().Format(time.RFC3339)
+	sql := fmt.Sprintf(
+		`UPDATE guidance_requests
+SET status=%s, answer_text=%s, answered_at=%s
+WHERE id=%d;`,
+		quote(string(model.GuidanceStatusAnswered)),
+		quote(answer),
+		quote(now),
+		id,
+	)
+	return s.execSQL(sql)
 }
 
 func (s *SQLiteStore) SaveSteps(runID string, steps []model.PlanStep) error {

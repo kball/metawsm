@@ -13,16 +13,24 @@ const (
 type RunStatus string
 
 const (
-	RunStatusCreated  RunStatus = "created"
-	RunStatusPlanning RunStatus = "planning"
-	RunStatusRunning  RunStatus = "running"
-	RunStatusPaused   RunStatus = "paused"
-	RunStatusFailed   RunStatus = "failed"
-	RunStatusStopping RunStatus = "stopping"
-	RunStatusStopped  RunStatus = "stopped"
-	RunStatusClosing  RunStatus = "closing"
-	RunStatusClosed   RunStatus = "closed"
-	RunStatusComplete RunStatus = "completed"
+	RunStatusCreated          RunStatus = "created"
+	RunStatusPlanning         RunStatus = "planning"
+	RunStatusRunning          RunStatus = "running"
+	RunStatusAwaitingGuidance RunStatus = "awaiting_guidance"
+	RunStatusPaused           RunStatus = "paused"
+	RunStatusFailed           RunStatus = "failed"
+	RunStatusStopping         RunStatus = "stopping"
+	RunStatusStopped          RunStatus = "stopped"
+	RunStatusClosing          RunStatus = "closing"
+	RunStatusClosed           RunStatus = "closed"
+	RunStatusComplete         RunStatus = "completed"
+)
+
+type RunMode string
+
+const (
+	RunModeStandard  RunMode = "run"
+	RunModeBootstrap RunMode = "bootstrap"
 )
 
 type StepStatus string
@@ -64,6 +72,7 @@ type AgentSpec struct {
 
 type RunSpec struct {
 	RunID             string            `json:"run_id"`
+	Mode              RunMode           `json:"mode"`
 	Tickets           []string          `json:"tickets"`
 	Repos             []string          `json:"repos"`
 	WorkspaceStrategy WorkspaceStrategy `json:"workspace_strategy"`
@@ -118,4 +127,64 @@ type AgentRecord struct {
 	HealthState    HealthState `json:"health_state"`
 	LastActivityAt *time.Time  `json:"last_activity_at,omitempty"`
 	LastProgressAt *time.Time  `json:"last_progress_at,omitempty"`
+}
+
+type IntakeQA struct {
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+}
+
+type RunBrief struct {
+	RunID        string     `json:"run_id"`
+	Ticket       string     `json:"ticket"`
+	Goal         string     `json:"goal"`
+	Scope        string     `json:"scope"`
+	DoneCriteria string     `json:"done_criteria"`
+	Constraints  string     `json:"constraints"`
+	MergeIntent  string     `json:"merge_intent"`
+	QA           []IntakeQA `json:"qa"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+type GuidanceStatus string
+
+const (
+	GuidanceStatusPending  GuidanceStatus = "pending"
+	GuidanceStatusAnswered GuidanceStatus = "answered"
+)
+
+type GuidanceRequest struct {
+	ID            int64          `json:"id"`
+	RunID         string         `json:"run_id"`
+	WorkspaceName string         `json:"workspace_name"`
+	AgentName     string         `json:"agent_name"`
+	Question      string         `json:"question"`
+	Context       string         `json:"context,omitempty"`
+	Answer        string         `json:"answer,omitempty"`
+	Status        GuidanceStatus `json:"status"`
+	CreatedAt     time.Time      `json:"created_at"`
+	AnsweredAt    *time.Time     `json:"answered_at,omitempty"`
+}
+
+type GuidanceRequestPayload struct {
+	RunID    string `json:"run_id,omitempty"`
+	Agent    string `json:"agent,omitempty"`
+	Question string `json:"question"`
+	Context  string `json:"context,omitempty"`
+}
+
+type GuidanceResponsePayload struct {
+	GuidanceID int64  `json:"guidance_id"`
+	RunID      string `json:"run_id"`
+	Agent      string `json:"agent,omitempty"`
+	Question   string `json:"question"`
+	Answer     string `json:"answer"`
+	AnsweredAt string `json:"answered_at"`
+}
+
+type CompletionSignalPayload struct {
+	RunID   string `json:"run_id,omitempty"`
+	Agent   string `json:"agent,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
