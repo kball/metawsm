@@ -31,7 +31,7 @@ RelatedFiles:
       Note: Operator-ready manual test and execution flow
 ExternalSources: []
 Summary: Implementation diary for bootstrap and guide command rollout with durable run-brief and guidance state support
-LastUpdated: 2026-02-07T08:42:43-08:00
+LastUpdated: 2026-02-07T09:05:50-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
@@ -717,5 +717,57 @@ After the runtime fix, `metawsm cleanup --ticket METAWSM-003` still failed in yo
 ### Technical details
 - Files changed in this step:
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go`
+
+## Step 9: Fix false-healthy agent state and tmux retry loophole
+
+You reported that bootstrap runs showed the agent healthy even when the agent had failed to spawn. I reproduced this by reading the tmux pane for the live session and confirmed the underlying command was exiting non-zero while an interactive shell remained open.
+
+### Prompt Context
+
+**User prompt (verbatim):** "The agent failed to spawn. And yet the run seems to think it is healthy (maybe because the tmux session is still open?). Please analyze and fix."
+
+**Assistant interpretation:** Diagnose mismatch between actual agent execution and reported health/state, then make orchestration behavior accurate.
+
+**Inferred user intent:** A failed agent startup must be clearly surfaced as failed, and bootstrap should not report success when agent startup actually failed.
+
+### What I found
+- Live pane output from `agent-metawsm-003-0260207-084728` showed:
+  - `Not inside a trusted directory and --skip-git-repo-check was not specified.`
+  - `[metawsm] agent command exited with status 1 ...`
+- Prior implementation wrapped agent command with `exec bash`, which kept tmux session alive.
+- Retry behavior for `tmux_start` had a loophole:
+  - first attempt detected failure,
+  - second attempt could pass by reusing the still-open shell session.
+
+### What I changed
+- Added pane-based exit detection:
+  - parse `[metawsm] agent command exited with status <N>` from `tmux capture-pane`.
+- Hardened startup checks:
+  - `tmux_start` now always kills/recreates session on each attempt,
+  - waits for early startup window and fails step if non-zero exit is detected.
+- Hardened restart behavior:
+  - `Restart` now uses the same wrapped command and startup verification.
+- Improved status truthfulness:
+  - if pane reports non-zero agent exit, agent status is `failed`/`dead`,
+  - removed synthetic last-progress bump on every status poll,
+  - bootstrap run transitions to `failed` when an agent is marked failed.
+- Added codex-specific startup normalization:
+  - when agent command contains `codex exec` and omits `--skip-git-repo-check`, metawsm inserts that flag automatically.
+
+### Validation
+- `go test ./... -count=1` passes.
+- Reproduced pre-fix behavior on a live run (`run-20260207-085729`), then verified status now reports:
+  - `agent status=failed health=dead`,
+  - run status transitions to `failed` on status refresh.
+- Verified bootstrap now fails fast when agent exits non-zero:
+  - `run-20260207-090304` ended `Status: failed`, step 3 failed with explicit message.
+- Verified codex spawn succeeds with normalized command:
+  - `run-20260207-090419` starts and remains `status=running health=healthy`,
+  - pane shows active Codex session instead of immediate exit.
+
+### Technical details
+- Files changed in this step:
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go`
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go`

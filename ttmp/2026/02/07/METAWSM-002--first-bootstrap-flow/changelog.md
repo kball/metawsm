@@ -115,3 +115,13 @@ Fixed ticket-based cleanup/restart run selection to skip dry-run runs and made w
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Ticket resolver now prefers non-dry-run runs; cleanup ignores missing workspace deletes
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go — Added run-id listing API for ticket-based selection
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Added regression tests for non-dry-run selection and missing-workspace output matching
+
+
+## 2026-02-07
+
+Fixed false-healthy bootstrap agent reporting and hardened tmux startup retries
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Added pane-based agent exit-code detection, startup wait checks, restart verification, and bootstrap run failure transition on failed agents
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Added tests for exit-code parsing, codex command normalization, and failed-agent run transition

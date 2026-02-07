@@ -327,6 +327,33 @@ func TestCleanupDryRunByTicketPrefersNonDryRun(t *testing.T) {
 	}
 }
 
+func TestBootstrapStatusTransitionsRunToFailedWhenAgentFailed(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	svc := newTestService(t)
+	workspaceName := "ws-failed-agent"
+	createRunWithTicketFixture(t, svc, "run-agent-failed", "METAWSM-006", workspaceName, model.RunStatusRunning, false)
+	if err := svc.syncBootstrapSignals(t.Context(), "run-agent-failed", model.RunStatusRunning, []model.AgentRecord{
+		{
+			RunID:         "run-agent-failed",
+			Name:          "agent",
+			WorkspaceName: workspaceName,
+			Status:        model.AgentStatusFailed,
+		},
+	}); err != nil {
+		t.Fatalf("sync bootstrap signals: %v", err)
+	}
+	record, _, _, err := svc.store.GetRun("run-agent-failed")
+	if err != nil {
+		t.Fatalf("get run after sync: %v", err)
+	}
+	if record.Status != model.RunStatusFailed {
+		t.Fatalf("expected run status failed, got %s", record.Status)
+	}
+}
+
 func TestResetRepoToBaseBranchUsesLocalBranchWhenOriginMissing(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -377,6 +404,40 @@ func TestWrapAgentCommandForTmuxKeepsShellAlive(t *testing.T) {
 	}
 	if !strings.Contains(wrapped, "exec bash") {
 		t.Fatalf("expected wrapped command to keep shell alive, got %q", wrapped)
+	}
+}
+
+func TestParseAgentExitCode(t *testing.T) {
+	if _, ok := parseAgentExitCode("no marker"); ok {
+		t.Fatalf("expected no exit code match")
+	}
+	code, ok := parseAgentExitCode("[metawsm] agent command exited with status 1 at 2026-02-07T08:47:30-08:00")
+	if !ok || code != 1 {
+		t.Fatalf("expected exit code 1, got %d ok=%v", code, ok)
+	}
+	code, ok = parseAgentExitCode(
+		"[metawsm] agent command exited with status 1 at 2026-02-07T08:47:30-08:00\n" +
+			"[metawsm] agent command exited with status 0 at 2026-02-07T08:49:30-08:00\n",
+	)
+	if !ok || code != 0 {
+		t.Fatalf("expected latest exit code 0, got %d ok=%v", code, ok)
+	}
+}
+
+func TestNormalizeAgentCommand(t *testing.T) {
+	normalized := normalizeAgentCommand("codex exec --full-auto \"do work\"")
+	if !strings.Contains(normalized, "--skip-git-repo-check") {
+		t.Fatalf("expected codex command to include skip git repo check flag, got %q", normalized)
+	}
+
+	already := normalizeAgentCommand("codex exec --skip-git-repo-check --full-auto \"do work\"")
+	if strings.Count(already, "--skip-git-repo-check") != 1 {
+		t.Fatalf("expected skip flag not to be duplicated, got %q", already)
+	}
+
+	other := normalizeAgentCommand("bash")
+	if other != "bash" {
+		t.Fatalf("expected non-codex command unchanged, got %q", other)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -325,6 +326,8 @@ func (s *Service) Restart(ctx context.Context, options RestartOptions) (RestartR
 		if command == "" {
 			command = "bash"
 		}
+		command = normalizeAgentCommand(command)
+		command = wrapAgentCommandForTmux(command)
 		sessionName := strings.TrimSpace(agent.SessionName)
 		if sessionName == "" {
 			sessionName = policy.RenderSessionName("{agent}-{workspace}", agent.Name, agent.WorkspaceName)
@@ -339,6 +342,13 @@ func (s *Service) Restart(ctx context.Context, options RestartOptions) (RestartR
 		}
 		_ = tmuxKillSession(ctx, sessionName)
 		if err := runShell(ctx, startCmd); err != nil {
+			return RestartResult{}, err
+		}
+		time.Sleep(200 * time.Millisecond)
+		if !tmuxHasSession(ctx, sessionName) {
+			return RestartResult{}, fmt.Errorf("tmux session %s exited immediately after restart", sessionName)
+		}
+		if err := waitForAgentStartup(ctx, sessionName, 4*time.Second); err != nil {
 			return RestartResult{}, err
 		}
 		if err := s.store.UpdateAgentStatus(runID, agent.Name, agent.WorkspaceName, model.AgentStatusRunning, model.HealthStateHealthy, &now, &now); err != nil {
@@ -647,11 +657,7 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 	now := time.Now()
 	for _, agent := range agents {
 		health, status, lastActivity := evaluateHealth(ctx, cfg, agent, now)
-		lastProgress := agent.LastProgressAt
-		if status == model.AgentStatusRunning || status == model.AgentStatusIdle || status == model.AgentStatusStalled {
-			lastProgress = &now
-		}
-		_ = s.store.UpdateAgentStatus(runID, agent.Name, agent.WorkspaceName, status, health, lastActivity, lastProgress)
+		_ = s.store.UpdateAgentStatus(runID, agent.Name, agent.WorkspaceName, status, health, lastActivity, agent.LastProgressAt)
 	}
 	agents, _ = s.store.GetAgents(runID)
 	if spec.Mode == model.RunModeBootstrap {
@@ -729,6 +735,11 @@ func (s *Service) ActiveRuns() ([]model.RunRecord, error) {
 func (s *Service) syncBootstrapSignals(ctx context.Context, runID string, currentStatus model.RunStatus, agents []model.AgentRecord) error {
 	if currentStatus != model.RunStatusRunning && currentStatus != model.RunStatusAwaitingGuidance {
 		return nil
+	}
+	for _, agent := range agents {
+		if agent.Status == model.AgentStatusFailed {
+			return s.transitionRun(runID, currentStatus, model.RunStatusFailed, fmt.Sprintf("agent %s@%s failed", agent.Name, agent.WorkspaceName))
+		}
 	}
 
 	existingPending, err := s.store.ListGuidanceRequests(runID, model.GuidanceStatusPending)
@@ -924,19 +935,21 @@ func (s *Service) executeSingleStep(ctx context.Context, spec model.RunSpec, cfg
 		if strings.TrimSpace(command) == "" {
 			command = "bash"
 		}
+		command = normalizeAgentCommand(command)
 		command = wrapAgentCommandForTmux(command)
 		sessionName := policy.RenderSessionName(cfg.Tmux.SessionPattern, step.Agent, step.WorkspaceName)
 
-		hasSession := tmuxHasSession(ctx, sessionName)
-		if !hasSession {
-			tmuxCmd := fmt.Sprintf("tmux new-session -d -s %s -c %s %s", shellQuote(sessionName), shellQuote(workspacePath), shellQuote(command))
-			if err := runShell(ctx, tmuxCmd); err != nil {
-				return err
-			}
-			time.Sleep(200 * time.Millisecond)
-			if !tmuxHasSession(ctx, sessionName) {
-				return fmt.Errorf("tmux session %s exited immediately after start", sessionName)
-			}
+		_ = tmuxKillSession(ctx, sessionName)
+		tmuxCmd := fmt.Sprintf("tmux new-session -d -s %s -c %s %s", shellQuote(sessionName), shellQuote(workspacePath), shellQuote(command))
+		if err := runShell(ctx, tmuxCmd); err != nil {
+			return err
+		}
+		time.Sleep(200 * time.Millisecond)
+		if !tmuxHasSession(ctx, sessionName) {
+			return fmt.Errorf("tmux session %s exited immediately after start", sessionName)
+		}
+		if err := waitForAgentStartup(ctx, sessionName, 4*time.Second); err != nil {
+			return err
 		}
 		now := time.Now()
 		return s.store.UpdateAgentStatus(spec.RunID, step.Agent, step.WorkspaceName, model.AgentStatusRunning, model.HealthStateHealthy, &now, &now)
@@ -1231,6 +1244,17 @@ func wrapAgentCommandForTmux(command string) string {
 	return fmt.Sprintf("bash -lc %s", shellQuote(script))
 }
 
+func normalizeAgentCommand(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "bash"
+	}
+	if strings.Contains(command, "codex exec") && !strings.Contains(command, "--skip-git-repo-check") {
+		command = strings.Replace(command, "codex exec", "codex exec --skip-git-repo-check", 1)
+	}
+	return command
+}
+
 func runShell(ctx context.Context, command string) error {
 	cmd := exec.CommandContext(ctx, "zsh", "-lc", command)
 	cmd.Stdout = os.Stdout
@@ -1251,6 +1275,12 @@ func evaluateHealth(ctx context.Context, cfg policy.Config, agent model.AgentRec
 	hasSession := tmuxHasSession(ctx, agent.SessionName)
 	if !hasSession {
 		return model.HealthStateDead, model.AgentStatusDead, agent.LastActivityAt
+	}
+	if exitCode, found := readAgentExitCode(ctx, agent.SessionName); found {
+		if exitCode != 0 {
+			return model.HealthStateDead, model.AgentStatusFailed, agent.LastActivityAt
+		}
+		return model.HealthStateIdle, model.AgentStatusIdle, agent.LastActivityAt
 	}
 
 	activityEpoch := fetchSessionActivity(ctx, agent.SessionName)
@@ -1317,6 +1347,52 @@ func tmuxKillSession(ctx context.Context, sessionName string) error {
 		return nil
 	}
 	return err
+}
+
+var agentExitRegex = regexp.MustCompile(`\[metawsm\] agent command exited with status ([0-9]+)`)
+
+func readAgentExitCode(ctx context.Context, sessionName string) (int, bool) {
+	cmd := exec.CommandContext(ctx, "zsh", "-lc", fmt.Sprintf("tmux capture-pane -p -t %s:0 | tail -n 200", shellQuote(sessionName)))
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, false
+	}
+	return parseAgentExitCode(string(out))
+}
+
+func parseAgentExitCode(output string) (int, bool) {
+	matches := agentExitRegex.FindAllStringSubmatch(output, -1)
+	if len(matches) == 0 {
+		return 0, false
+	}
+	last := matches[len(matches)-1]
+	if len(last) < 2 {
+		return 0, false
+	}
+	code, err := strconv.Atoi(strings.TrimSpace(last[1]))
+	if err != nil {
+		return 0, false
+	}
+	return code, true
+}
+
+func waitForAgentStartup(ctx context.Context, sessionName string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if !tmuxHasSession(ctx, sessionName) {
+			return fmt.Errorf("tmux session %s exited during startup", sessionName)
+		}
+		if exitCode, found := readAgentExitCode(ctx, sessionName); found {
+			if exitCode != 0 {
+				return fmt.Errorf("agent command in %s exited with status %d", sessionName, exitCode)
+			}
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 func guidanceKey(workspaceName string, agentName string, question string) string {
