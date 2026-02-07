@@ -265,6 +265,23 @@ func (s *SQLiteStore) GetRun(runID string) (model.RunRecord, string, string, err
 	return record, specJSON, policyJSON, nil
 }
 
+func (s *SQLiteStore) ListRuns() ([]model.RunRecord, error) {
+	sql := `SELECT run_id, status, created_at, updated_at, error_text, spec_json, policy_json FROM runs ORDER BY updated_at DESC;`
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.RunRecord, 0, len(rows))
+	for _, row := range rows {
+		record, err := parseRunRecord(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, record)
+	}
+	return out, nil
+}
+
 func (s *SQLiteStore) GetTickets(runID string) ([]string, error) {
 	sql := fmt.Sprintf(`SELECT ticket FROM run_tickets WHERE run_id=%s ORDER BY ticket;`, quote(runID))
 	rows, err := s.queryJSON(sql)

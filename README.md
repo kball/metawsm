@@ -14,6 +14,7 @@ Implemented command surface:
 - `metawsm stop`
 - `metawsm close`
 - `metawsm policy-init`
+- `metawsm tui`
 
 Key implementation decisions:
 - HSM-driven lifecycle transitions for run/step/agent states.
@@ -44,6 +45,16 @@ Inspect status:
 
 ```bash
 go run ./cmd/metawsm status --run-id RUN_ID
+```
+
+Run initial TUI monitor:
+
+```bash
+# Monitor one run
+go run ./cmd/metawsm tui --run-id RUN_ID
+
+# Monitor all active runs
+go run ./cmd/metawsm tui
 ```
 
 ## Policy

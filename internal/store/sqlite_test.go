@@ -103,4 +103,15 @@ func TestSQLiteStoreRoundTrip(t *testing.T) {
 	if len(agents) != 1 {
 		t.Fatalf("expected 1 agent, got %d", len(agents))
 	}
+
+	runs, err := s.ListRuns()
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 listed run, got %d", len(runs))
+	}
+	if runs[0].RunID != spec.RunID {
+		t.Fatalf("expected listed run id %s, got %s", spec.RunID, runs[0].RunID)
+	}
 }

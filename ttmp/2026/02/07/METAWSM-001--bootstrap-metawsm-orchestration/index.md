@@ -8,13 +8,20 @@ Topics:
 DocType: index
 Intent: long-term
 Owners: []
-RelatedFiles: []
+RelatedFiles:
+    - Path: cmd/metawsm/main.go
+      Note: Primary CLI surface including TUI
+    - Path: internal/orchestrator/service.go
+      Note: Core orchestration and lifecycle transitions
+    - Path: internal/store/sqlite.go
+      Note: Durable SQLite run/step/agent/event store
 ExternalSources: []
 Summary: ""
 LastUpdated: 2026-02-07T06:39:51.30244-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 # Bootstrap metawsm orchestration
 

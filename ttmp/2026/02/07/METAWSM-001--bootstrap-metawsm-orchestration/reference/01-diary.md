@@ -12,27 +12,40 @@ Intent: long-term
 Owners: []
 RelatedFiles:
     - Path: README.md
-      Note: Operator usage and policy documentation
+      Note: |-
+        Operator usage and policy documentation
+        Documents TUI usage
     - Path: cmd/metawsm/main.go
-      Note: Initial CLI with run/status/resume/stop/close/policy-init
+      Note: |-
+        Initial CLI with run/status/resume/stop/close/policy-init
+        Added initial TUI monitor command and loop
     - Path: internal/hsm/hsm.go
       Note: Lifecycle transition guards
     - Path: internal/model/types.go
       Note: Shared state models
     - Path: internal/orchestrator/service.go
-      Note: Core orchestration engine and HSM-driven execution
+      Note: |-
+        Core orchestration engine and HSM-driven execution
+        Added ActiveRuns and quiet tmux helpers for monitor stability
+    - Path: internal/orchestrator/service_test.go
+      Note: Covers ActiveRuns behavior
     - Path: internal/policy/policy.go
       Note: Declarative policy defaults and validation
     - Path: internal/store/sqlite.go
-      Note: SQLite durable state store and migration bootstrap
+      Note: |-
+        SQLite durable state store and migration bootstrap
+        Added ListRuns query for active-run dashboard
+    - Path: internal/store/sqlite_test.go
+      Note: Covers ListRuns persistence behavior
     - Path: ttmp/2026/02/07/METAWSM-001--bootstrap-metawsm-orchestration/design-doc/01-core-orchestrator-capabilities.md
       Note: Design decisions driving implementation
 ExternalSources: []
-Summary: Implementation diary for initial metawsm MVP scaffolding (CLI, policy, HSM, SQLite state store, orchestration engine, tests, and smoke validation).
-LastUpdated: 2026-02-07T07:06:30-08:00
+Summary: Implementation diary for initial metawsm MVP scaffolding and follow-up TUI monitor implementation.
+LastUpdated: 2026-02-07T07:16:43-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 
 # Diary
@@ -157,3 +170,89 @@ This step intentionally prioritizes explicit state transitions and durable persi
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/.gitignore`
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/go.mod`
   - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/go.work`
+
+## Step 2: Commit MVP Snapshot and Implement Initial TUI Monitor
+
+I committed the MVP baseline and then implemented the remaining open task: an initial live TUI monitor command. This keeps the operator loop inside the terminal and makes active-run inspection practical without repeatedly invoking ad-hoc status commands.
+
+The TUI implementation is intentionally lightweight: full-screen refresh with periodic polling and signal-aware shutdown. It supports both single-run and all-active-runs views.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Commit your progress, then ontinue"
+
+**Assistant interpretation:** Commit the current work first, then keep implementing the next planned backlog item.
+
+**Inferred user intent:** Preserve a stable checkpoint and continue forward momentum without stopping for additional planning.
+
+**Commit (code):** `e4f6c66` — "feat: bootstrap metawsm MVP orchestration core"
+
+### What I did
+- Committed current progress:
+  - `git add .`
+  - `git commit -m "feat: bootstrap metawsm MVP orchestration core"`
+- Added initial TUI command and loop:
+  - `metawsm tui --run-id <id>` for single-run monitoring.
+  - `metawsm tui` for active-runs monitoring.
+- Added active-runs query path:
+  - `internal/store/sqlite.go` `ListRuns`.
+  - `internal/orchestrator/service.go` `ActiveRuns`.
+- Updated docs for TUI usage in `README.md`.
+- Extended tests for newly added store/orchestrator paths.
+- Checked task #17 complete in ticket task list.
+
+### Why
+- The ticket backlog had one remaining open implementation task (TUI run monitor).
+- A simple monitor command is enough to provide operator visibility before building a richer interactive interface.
+
+### What worked
+- Commit succeeded after sandbox escalation:
+  - hash: `e4f6c66`
+- Test/build stayed green after TUI additions:
+  - `go test ./... -count=1`
+  - `go build ./...`
+- TUI smoke test rendered successive frames:
+  - `go run ./cmd/metawsm tui --run-id run-20260207-070531 --interval 1`
+
+### What didn't work
+- Initial commit attempt failed due worktree git metadata outside sandbox:
+  - Error: `fatal: Unable to create .../index.lock: Operation not permitted`
+  - Resolution: reran with escalated permissions and approved git prefix.
+- TUI smoke command emitted environment warning:
+  - `zsh:1: nice(5) failed: operation not permitted`
+  - Observed in this execution environment; did not block functionality.
+
+### What I learned
+- Worktree-backed repos may require escalated permissions for commit operations when `.git` data is outside writable roots.
+- A polling-based full-screen monitor is a low-risk bridge to a richer TUI while still meeting operator needs.
+
+### What was tricky to build
+- Keeping TUI output stable while reusing `Status` logic that updates health state.
+- Ensuring tmux state checks remain quiet to avoid clutter in refreshed monitor frames.
+
+### What warrants a second pair of eyes
+- TUI refresh cadence and output formatting under many active runs.
+- Potential performance impact of repeatedly calling `Status` for each active run every interval.
+
+### What should be done in the future
+- Add interactive keybindings/filtering for run/agent selection.
+- Add incremental render optimization instead of full-screen redraw.
+- Introduce a separate "snapshot" API to avoid repeated per-run status recomputation.
+
+### Code review instructions
+- TUI entry and loop: `cmd/metawsm/main.go`.
+- Active-run service hook: `internal/orchestrator/service.go`.
+- Run listing query: `internal/store/sqlite.go`.
+- Validate:
+  - `go test ./... -count=1`
+  - `go run ./cmd/metawsm tui --run-id run-stop-test --interval 1`
+  - `go run ./cmd/metawsm tui --interval 2`
+
+### Technical details
+- Updated files:
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_test.go`
+  - `/Users/kball/workspaces/2026-02-07/metawsm/metawsm/README.md`

@@ -352,6 +352,21 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 	return b.String(), nil
 }
 
+func (s *Service) ActiveRuns() ([]model.RunRecord, error) {
+	runs, err := s.store.ListRuns()
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]model.RunRecord, 0, len(runs))
+	for _, run := range runs {
+		if isActiveRunStatus(run.Status) {
+			out = append(out, run)
+		}
+	}
+	return out, nil
+}
+
 func (s *Service) transitionRun(runID string, from model.RunStatus, to model.RunStatus, message string) error {
 	if !hsm.CanTransitionRun(from, to) {
 		return fmt.Errorf("illegal run transition %s -> %s", from, to)
@@ -710,4 +725,13 @@ func normalizeTokens(values []string) []string {
 		}
 	}
 	return out
+}
+
+func isActiveRunStatus(status model.RunStatus) bool {
+	switch status {
+	case model.RunStatusPlanning, model.RunStatusRunning, model.RunStatusPaused, model.RunStatusStopping, model.RunStatusClosing:
+		return true
+	default:
+		return false
+	}
 }

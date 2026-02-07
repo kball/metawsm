@@ -19,7 +19,7 @@
 - [x] Implement resume and stop flows as HSM transitions
 - [x] Implement close flow with clean-git preflight gate before any merge
 - [x] Integrate close flow with wsm merge and docmgr ticket close after gate passes
-- [ ] Create initial TUI run monitor for active runs and per-agent state
+- [x] Create initial TUI run monitor for active runs and per-agent state
 - [x] Add tests for HSM transition legality and recovery paths
 - [x] Add tests for SQLite persistence and migration compatibility
 - [x] Add integration tests for multi-ticket dry-run and execution planning

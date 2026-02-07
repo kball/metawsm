@@ -50,4 +50,15 @@ func TestRunDryRunPersistsPlan(t *testing.T) {
 	if len(steps) < 4 {
 		t.Fatalf("expected >= 4 steps for two tickets, got %d", len(steps))
 	}
+
+	activeRuns, err := svc.ActiveRuns()
+	if err != nil {
+		t.Fatalf("active runs: %v", err)
+	}
+	if len(activeRuns) != 1 {
+		t.Fatalf("expected one active run, got %d", len(activeRuns))
+	}
+	if activeRuns[0].RunID != result.RunID {
+		t.Fatalf("expected active run id %s, got %s", result.RunID, activeRuns[0].RunID)
+	}
 }
