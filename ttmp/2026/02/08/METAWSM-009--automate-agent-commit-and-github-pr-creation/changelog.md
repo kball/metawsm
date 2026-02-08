@@ -132,3 +132,15 @@ Step 9: added operator/agent commit-PR playbook with Proposal A setup, assist/au
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 9 documentation work
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/tasks.md — Marked tasks 10 and 19 complete
 
+
+## 2026-02-08
+
+Step 10: implemented git_pr validation framework and enforced required checks for commit/pr workflows (tasks 14-16, commit d31a862).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/git_pr_validation.go — New extensible validation checks and require_all semantics
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Commit/PR gate enforcement and validation report persistence
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Regression tests for check failures and require_all behavior
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy.go — git_pr schema and validation updates for test commands and forbidden patterns
+

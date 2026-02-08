@@ -9,6 +9,8 @@ DocType: reference
 Intent: long-term
 Owners: []
 RelatedFiles:
+    - Path: README.md
+      Note: Documented new git_pr validation policy knobs (commit d31a862)
     - Path: cmd/metawsm/main.go
       Note: |-
         Added Proposal A auth check command and readiness helpers (commit 6148470)
@@ -29,31 +31,38 @@ RelatedFiles:
       Note: |-
         Added git_pr policy block defaults for Proposal A rollout (commit d3f13f6)
         Added git_pr policy defaults (commit d3f13f6)
+        Documented new git_pr validation configuration fields (commit d31a862)
     - Path: internal/model/types.go
       Note: |-
         Added RunPullRequest model and pull request state enums (commit d3f13f6)
         Added RunPullRequest model and PR state enums (commit d3f13f6)
+    - Path: internal/orchestrator/git_pr_validation.go
+      Note: Added extensible required-check validation framework and built-in checks (commit d31a862)
     - Path: internal/orchestrator/service.go
       Note: |-
         Surfaced persisted run PR metadata in status output (commit 283a68b)
         Commit service primitive implementation (commit 678b936)
         Added OpenPullRequests primitive and credential/actor run event recording for commit/pr actions (commit 180a976)
+        Wired commit/PR gate enforcement and validation_json persistence (commit d31a862)
     - Path: internal/orchestrator/service_test.go
       Note: |-
         Added status test for pull request section (commit 283a68b)
         Commit primitive tests (commit 678b936)
         Added OpenPullRequests dry-run and fake-gh integration tests (commit 180a976)
         Added commit/pr preflight rejection coverage for mode-off and invalid-state scenarios (commit 299a096)
+        Added validation-gate regression tests including require_all semantics and forbidden/clean-tree paths (commit d31a862)
     - Path: internal/policy/policy.go
       Note: |-
         Added git_pr config schema/defaults/validation (commit d3f13f6)
         Added git_pr policy contract defaults/validation (commit d3f13f6)
         Branch template rendering helper (commit 678b936)
+        Extended git_pr schema with test_commands and forbidden_file_patterns plus supported-check validation (commit d31a862)
     - Path: internal/policy/policy_test.go
       Note: |-
         Added tests for git_pr defaults and validation failures (commit d3f13f6)
         Added git_pr validation coverage (commit d3f13f6)
         Branch template rendering tests (commit 678b936)
+        Added policy validation coverage for required-check and command/pattern constraints (commit d31a862)
     - Path: internal/store/sqlite.go
       Note: |-
         Added run_pull_requests schema and store CRUD methods (commit d3f13f6)
@@ -70,6 +79,7 @@ LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -816,3 +826,110 @@ I added a playbook document with prerequisites, command sequences for assist/aut
   - `git_pr.mode=auto`
 - Documented critical preflight dependency path:
   - `metawsm auth check` must be green before `metawsm commit` / `metawsm pr`.
+
+## Step 10: Implement Validation Framework and Enforce Required Commit/PR Gates
+
+This step implemented the remaining validation architecture tasks so commit/PR automation now enforces policy-configured checks before mutating git state or opening PRs. The focus was to add an extensible check runner with explicit `require_all` semantics, then wire it directly into `Service.Commit` and `Service.OpenPullRequests`.
+
+I added a dedicated validation module with named checks (`tests`, `forbidden_files`, `clean_tree`), extended policy schema with test command and forbidden-pattern configuration, and added regression tests for failure and mixed-pass behavior. This closes tasks 14, 15, and 16.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Ignore them for now, continue with METAWSM-009"
+
+**Assistant interpretation:** Continue implementing the next open METAWSM-009 backlog items while ignoring unrelated untracked ticket directories.
+
+**Inferred user intent:** Finish the remaining high-priority code tasks for commit/PR automation and keep the ticket record updated.
+
+**Commit (code):** d31a862 — "Add git_pr validation framework and required gates"
+
+### What I did
+- Added `internal/orchestrator/git_pr_validation.go` with:
+  - an extensible check interface,
+  - policy-driven required-check runner,
+  - `require_all` pass/fail semantics,
+  - validation report serialization for persistence.
+- Implemented validation checks:
+  - `tests`: runs all configured `git_pr.test_commands` in repo context,
+  - `forbidden_files`: blocks changed files matching `git_pr.forbidden_file_patterns`,
+  - `clean_tree`: requires clean git working tree for PR workflow.
+- Wired validation gates into `internal/orchestrator/service.go`:
+  - commit path: checks run before branch/commit mutation,
+  - PR path: checks run before `gh pr create` execution,
+  - persisted validation report JSON into `run_pull_requests.validation_json`.
+- Extended policy contract in `internal/policy/policy.go`:
+  - added `git_pr.test_commands` and `git_pr.forbidden_file_patterns`,
+  - expanded default `required_checks` to `tests`, `forbidden_files`, `clean_tree`,
+  - validated supported check names and non-empty command/pattern entries.
+- Updated policy tests and orchestrator tests to cover:
+  - unsupported/invalid policy values,
+  - failing test command rejections for commit and PR,
+  - forbidden-file rejection,
+  - `require_all=false` allowing mixed pass/fail outcomes,
+  - clean-tree PR rejection.
+- Updated `examples/policy.example.json` and `README.md` policy field docs for the new validation settings.
+- Checked ticket tasks 14, 15, and 16 complete via `docmgr task check --ticket METAWSM-009 --id 14,15,16`.
+
+### Why
+- Tasks 14-16 required a reusable validation framework and actual enforcement of required checks before commit/PR operations.
+- Without this gate, operator auto mode could perform commit/PR actions on invalid repos or unverified test states.
+
+### What worked
+- Focused tests passed:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/policy -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+- Commit/PR service methods now fail with clear validation errors when required checks do not pass.
+- Validation outcomes are persisted per repo in run PR metadata for traceability.
+
+### What didn't work
+- Early exploration commands failed because I accidentally ran them from the parent workspace instead of `metawsm/`:
+  - Command: `rg -n "type CommitOptions|func \(s \*Service\) Commit|OpenPullRequests|required_checks|require_all|validation|forbidden|dirty" internal/orchestrator/service.go internal/policy/policy.go internal/orchestrator/service_test.go internal/policy/policy_test.go`
+  - Error: `rg: internal/orchestrator/service.go: No such file or directory (os error 2)`
+- Similar path errors repeated once while scanning docs/files from the wrong directory.
+- Fix: reran all commands with `workdir=/Users/kball/workspaces/2026-02-07/metawsm/metawsm`.
+
+### What I learned
+- A separate validation module keeps commit/PR orchestration code significantly clearer than embedding per-check logic in `service.go`.
+- `require_all=false` is easiest to reason about when implemented as “at least one applicable required check passed.”
+
+### What was tricky to build
+- Adding meaningful defaults (`forbidden_files`, `clean_tree`) without breaking existing commit tests that intentionally operate on dirty repos before committing.
+- Ensuring PR validation remains deterministic in tests that use fixture metadata and dry-run paths.
+
+### What warrants a second pair of eyes
+- The exact default forbidden-file pattern set may need tuning to reduce false positives in some repos.
+- Whether `tests` should remain a pass when `git_pr.test_commands` is empty, or be treated as a policy error in stricter environments.
+
+### What should be done in the future
+- Implement task 17 (per repo/ticket branch+PR fanout orchestration for multi-repo runs).
+- Implement task 18 (enforce human-only merge policy in operator and CLI surfaces).
+- Implement task 20 (end-to-end local-auth commit+push+PR success test).
+
+### Code review instructions
+- Start with validation framework:
+  - `internal/orchestrator/git_pr_validation.go`
+- Then review service integration points:
+  - `internal/orchestrator/service.go` (`Commit`, `OpenPullRequests` validation gate calls)
+- Review policy schema and validation:
+  - `internal/policy/policy.go`
+  - `examples/policy.example.json`
+  - `README.md`
+- Review regression coverage:
+  - `internal/orchestrator/service_test.go`
+  - `internal/policy/policy_test.go`
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/policy -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+
+### Technical details
+- New policy keys:
+  - `git_pr.required_checks` (supports `tests`, `forbidden_files`, `clean_tree`)
+  - `git_pr.test_commands` (shell commands run in repo root)
+  - `git_pr.forbidden_file_patterns` (glob patterns matched against changed files)
+- Validation report persistence:
+  - serialized check results stored in `run_pull_requests.validation_json`.
+- Gate semantics:
+  - `require_all=true`: all applicable required checks must pass,
+  - `require_all=false`: at least one applicable required check must pass.
