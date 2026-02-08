@@ -83,3 +83,15 @@ Step 2: Added SQLite-backed operator restart state (attempts/cooldown) with reop
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go — operator_run_states schema + store methods
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_test.go — Persistence test for operator run state
 
+
+## 2026-02-08
+
+Step 3: Implemented hybrid operator loop with Codex adapter, deterministic policy gate, restart-safe action execution, and workspace escalation summary writes (commit ae63c3d).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/README.md — Operator and escalation summary documentation
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Operator command/decision/action flow
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/operator_llm.go — LLM adapter and merge gate
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Operator state/context wrappers
+

@@ -9,10 +9,20 @@ DocType: reference
 Intent: long-term
 Owners: []
 RelatedFiles:
+    - Path: README.md
+      Note: Documented operator command and workspace escalation-summary behavior (commit ae63c3d)
+    - Path: cmd/metawsm/main.go
+      Note: Implemented operator loop
+    - Path: cmd/metawsm/operator_llm.go
+      Note: Added Codex adapter
+    - Path: cmd/metawsm/operator_llm_test.go
+      Note: Added tests for assist/auto safety and malformed llm output handling (commit ae63c3d)
     - Path: examples/policy.example.json
       Note: Documented operator policy block and Codex assist defaults (commit ca5ed93)
     - Path: internal/model/types.go
       Note: Added OperatorRunState model persisted by store methods (commit 1aa8086)
+    - Path: internal/orchestrator/service.go
+      Note: Exposed operator run context/state wrappers for command integration (commit ae63c3d)
     - Path: internal/policy/policy.go
       Note: Added operator policy schema/defaults/validation (commit ca5ed93)
     - Path: internal/policy/policy_test.go
@@ -27,6 +37,7 @@ LastUpdated: 2026-02-08T09:01:08.218858-08:00
 WhatFor: Implementation diary for METAWSM-007 hybrid deterministic+LLM operator work.
 WhenToUse: Use to review what changed, why, failures encountered, and how to validate each commit.
 ---
+
 
 
 
@@ -198,3 +209,115 @@ This unlocks restart-safe enforcement of retry budgets and cooldown windows in t
 - `last_restart_at` (RFC3339 string)
 - `cooldown_until` (RFC3339 string)
 - `updated_at` (RFC3339 string)
+
+## Step 3: Implement Hybrid Operator Loop (Rule Engine + Codex Adapter)
+
+This step delivered the operator runtime itself: a new `metawsm operator` command, deterministic rule evaluation, Codex CLI proposal integration, allowlist policy-gate merging, and controlled execution behavior across `off|assist|auto` modes.
+
+It also wired escalation summary writes into workspace-authoritative ticket docs and added README coverage so operators can run and validate the workflow immediately.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok implement. Keep a diary along the way. Commit as you go"
+
+**Assistant interpretation:** Continue implementation through the remaining planned phases, commit each meaningful increment, and keep diary/changelog/task bookkeeping synchronized.
+
+**Inferred user intent:** Ship a usable V1 operator agent with explicit safety controls, Codex-in-the-loop behavior, restart-safe limits, and auditable escalation trails.
+
+**Commit (code):** `ae63c3d` — "Implement hybrid operator loop with Codex policy gate"
+
+### What I did
+- Added `metawsm operator` command flow in `cmd/metawsm/main.go`:
+- selector/interval/notify/bell/dry-run handling
+- mode resolution (`off|assist|auto`)
+- deterministic decision pipeline:
+  - guidance escalation
+  - stale-run candidate classification + runtime verification via tmux signals
+  - unhealthy corroboration + persisted restart budget/cooldown checks
+- action execution plumbing:
+  - `auto_restart` -> `service.Restart`
+  - `auto_stop_stale` -> `service.Stop`
+  - persisted restart counter + cooldown updates via store-backed state
+- Added workspace doc escalation-summary writing in operator flow:
+- append entries to workspace ticket `changelog.md` under `<workspace>/<doc_home_repo>/ttmp/.../<ticket>/`
+- Added Codex CLI adapter and policy-gate logic in `cmd/metawsm/operator_llm.go`:
+- strict allowed intent schema
+- output JSON extraction/parsing
+- `assist` no-execute behavior
+- auto-mode merge behavior with deterministic rule precedence
+- Added tests in `cmd/metawsm/operator_llm_test.go`:
+- response parsing
+- assist-mode non-execution semantics
+- auto-mode llm escalation handling
+- adapter error propagation handling
+- Added orchestration wrapper methods in `internal/orchestrator/service.go`:
+- `GetOperatorRunState`
+- `UpsertOperatorRunState`
+- `OperatorRunContext`
+- Updated README command and policy docs in `README.md`.
+
+### Why
+- This is the core delivery: an operator loop that remains deterministic/safe while still using an LLM in the decision path.
+- Workspace-authoritative escalation logging was required to keep decisions traceable where active work happens.
+
+### What worked
+- Command compiles and package tests passed for updated areas:
+- `go test ./cmd/metawsm -count=1`
+- `go test ./internal/store -count=1`
+- `go test ./internal/policy -count=1`
+- `go test ./internal/orchestrator -count=1`
+- LLM adapter path is modular/testable and degrades safely when proposal execution fails.
+
+### What didn't work
+- Full-suite run hit a sandbox networking restriction in `internal/docfederation` tests:
+- Command: `go test ./... -count=1`
+- Error: `httptest: failed to listen on a port: listen tcp6 [::1]:0: bind: operation not permitted`
+- This environment limitation prevented a fully green `./...` run; targeted package tests for changed code passed.
+
+### What I learned
+- Keeping deterministic rule intent as primary and treating LLM output as gated augmentation keeps behavior predictable without losing LLM utility.
+- Escalation-doc writing needs robust workspace/doc-root resolution because runtime context spans multiple workspaces and doc homes.
+
+### What was tricky to build
+- Threading decision semantics cleanly across three runtime modes:
+- `off` should stay deterministic,
+- `assist` should never execute,
+- `auto` should execute only allowlisted intents after gate checks.
+- Preserving clear operator output while deduplicating repeated alerts.
+
+### What warrants a second pair of eyes
+- Merge semantics in `mergeOperatorDecisions` for future expansion of LLM-authorized intents.
+- Escalation summary append path resolution in `appendOperatorEscalationSummary` for multi-ticket/multi-workspace runs.
+- Whether restart attempt reset strategy should be tied to sustained healthy windows in a follow-up.
+
+### What should be done in the future
+- Add integration coverage for workspace escalation file writing with realistic workspace-manager fixture data.
+- Consider structured event emission for easier downstream alerting/analytics.
+
+### Code review instructions
+- Start in `cmd/metawsm/main.go`:
+- `operatorCommand`
+- `buildOperatorRuleDecision`
+- `executeOperatorAction`
+- `appendOperatorEscalationSummary`
+- Review `cmd/metawsm/operator_llm.go`:
+- `codexCLIAdapter`
+- `mergeOperatorDecisions`
+- `parseOperatorLLMResponse`
+- Review service wrappers in `internal/orchestrator/service.go`.
+- Validate with:
+- `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+- `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+
+### Technical details
+- New operator intents:
+- `noop`
+- `escalate_guidance`
+- `escalate_blocked`
+- `auto_restart`
+- `auto_stop_stale`
+- Execution policy:
+- `assist` mode always non-executing
+- `auto` mode executes only allowlisted auto intents after deterministic gate acceptance
+- Escalation write target:
+- `<workspace>/<doc_home_repo>/ttmp/<ticket-relative-path>/changelog.md`
