@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -104,9 +103,6 @@ func (c *codexCLIAdapter) Propose(ctx context.Context, req operatorLLMRequest) (
 	args := []string{"exec"}
 	if c.model != "" {
 		args = append(args, "--model", c.model)
-	}
-	if c.maxTokens > 0 {
-		args = append(args, "--max-tokens", strconv.Itoa(c.maxTokens))
 	}
 	args = append(args, prompt)
 

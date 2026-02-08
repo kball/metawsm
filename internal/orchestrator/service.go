@@ -718,7 +718,7 @@ func (s *Service) Guide(ctx context.Context, runID string, answer string) (Guide
 		return GuideResult{}, fmt.Errorf("guidance answer cannot be empty")
 	}
 
-	record, _, _, err := s.store.GetRun(runID)
+	record, specJSON, _, err := s.store.GetRun(runID)
 	if err != nil {
 		return GuideResult{}, err
 	}
@@ -733,13 +733,25 @@ func (s *Service) Guide(ctx context.Context, runID string, answer string) (Guide
 	if len(pending) == 0 {
 		return GuideResult{}, fmt.Errorf("run %s has no pending guidance requests", runID)
 	}
+	var spec model.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return GuideResult{}, fmt.Errorf("unmarshal run spec: %w", err)
+	}
 
 	req := pending[0]
 	workspacePath, err := resolveWorkspacePath(req.WorkspaceName)
 	if err != nil {
 		return GuideResult{}, err
 	}
-	responsePath := filepath.Join(workspacePath, ".metawsm", "guidance-response.json")
+	signalRoots := bootstrapSignalRoots(workspacePath, spec)
+	responseRoot := firstSignalRootWithFile(signalRoots, "guidance-request.json")
+	if responseRoot == "" && len(signalRoots) > 0 {
+		responseRoot = signalRoots[0]
+	}
+	if responseRoot == "" {
+		responseRoot = workspacePath
+	}
+	responsePath := filepath.Join(responseRoot, ".metawsm", "guidance-response.json")
 	if err := os.MkdirAll(filepath.Dir(responsePath), 0o755); err != nil {
 		return GuideResult{}, err
 	}
@@ -760,8 +772,10 @@ func (s *Service) Guide(ctx context.Context, runID string, answer string) (Guide
 		return GuideResult{}, err
 	}
 
-	requestPath := filepath.Join(workspacePath, ".metawsm", "guidance-request.json")
-	_ = os.Remove(requestPath)
+	for _, root := range signalRoots {
+		requestPath := filepath.Join(root, ".metawsm", "guidance-request.json")
+		_ = os.Remove(requestPath)
+	}
 
 	if err := s.store.MarkGuidanceAnswered(req.ID, answer); err != nil {
 		return GuideResult{}, err
@@ -901,7 +915,7 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 	}
 	agents, _ = s.store.GetAgents(runID)
 	if spec.Mode == model.RunModeBootstrap {
-		if err := s.syncBootstrapSignals(ctx, runID, record.Status, agents); err != nil {
+		if err := s.syncBootstrapSignals(ctx, runID, record.Status, spec, agents); err != nil {
 			return "", err
 		}
 		record, _, _, _ = s.store.GetRun(runID)
@@ -1119,7 +1133,7 @@ func (s *Service) ActiveDocContexts() ([]ActiveDocContext, error) {
 	return out, nil
 }
 
-func (s *Service) syncBootstrapSignals(ctx context.Context, runID string, currentStatus model.RunStatus, agents []model.AgentRecord) error {
+func (s *Service) syncBootstrapSignals(ctx context.Context, runID string, currentStatus model.RunStatus, spec model.RunSpec, agents []model.AgentRecord) error {
 	if currentStatus != model.RunStatusRunning && currentStatus != model.RunStatusAwaitingGuidance {
 		return nil
 	}
@@ -1146,8 +1160,9 @@ func (s *Service) syncBootstrapSignals(ctx context.Context, runID string, curren
 			allComplete = false
 			continue
 		}
+		signalRoots := bootstrapSignalRoots(workspacePath, spec)
 
-		if req, ok := readGuidanceRequestFile(workspacePath); ok {
+		if req, ok := readGuidanceRequestFileFromRoots(signalRoots); ok {
 			if strings.TrimSpace(req.RunID) == "" || req.RunID == runID {
 				if strings.TrimSpace(req.Agent) == "" {
 					req.Agent = agent.Name
@@ -1171,7 +1186,7 @@ func (s *Service) syncBootstrapSignals(ctx context.Context, runID string, curren
 			}
 		}
 
-		if !hasCompletionSignal(workspacePath, runID, agent.Name) {
+		if !hasCompletionSignalFromRoots(signalRoots, runID, agent.Name) {
 			allComplete = false
 		}
 	}
@@ -1190,6 +1205,15 @@ func (s *Service) syncBootstrapSignals(ctx context.Context, runID string, curren
 }
 
 func (s *Service) ensureBootstrapCloseChecks(runID string, workspaceNames []string) error {
+	_, specJSON, _, err := s.store.GetRun(runID)
+	if err != nil {
+		return err
+	}
+	var spec model.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return fmt.Errorf("unmarshal run spec: %w", err)
+	}
+
 	brief, err := s.store.GetRunBrief(runID)
 	if err != nil {
 		return err
@@ -1214,7 +1238,7 @@ func (s *Service) ensureBootstrapCloseChecks(runID string, workspaceNames []stri
 		if err != nil {
 			return err
 		}
-		result, ok := readValidationResult(workspacePath)
+		result, ok := readValidationResultFromRoots(bootstrapSignalRoots(workspacePath, spec))
 		if !ok {
 			return fmt.Errorf("workspace %s is missing .metawsm/validation-result.json; close blocked", workspaceName)
 		}
@@ -2379,20 +2403,89 @@ func guidanceKey(workspaceName string, agentName string, question string) string
 	return workspaceName + "|" + agentName + "|" + strings.TrimSpace(question)
 }
 
+func bootstrapSignalRoots(workspacePath string, spec model.RunSpec) []string {
+	roots := []string{workspacePath}
+	docRoot, err := resolveDocRepoPath(workspacePath, effectiveDocHomeRepo(spec), spec.Repos)
+	if err != nil {
+		return roots
+	}
+	docRoot = filepath.Clean(strings.TrimSpace(docRoot))
+	workspacePath = filepath.Clean(strings.TrimSpace(workspacePath))
+	if docRoot != "" && docRoot != workspacePath {
+		roots = append(roots, docRoot)
+	}
+	return roots
+}
+
+func firstSignalRootWithFile(roots []string, filename string) string {
+	for _, root := range roots {
+		path := filepath.Join(root, ".metawsm", filename)
+		if _, err := os.Stat(path); err == nil {
+			return root
+		}
+	}
+	return ""
+}
+
 func readGuidanceRequestFile(workspacePath string) (model.GuidanceRequestPayload, bool) {
 	path := filepath.Join(workspacePath, ".metawsm", "guidance-request.json")
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return model.GuidanceRequestPayload{}, false
 	}
-	var payload model.GuidanceRequestPayload
-	if err := json.Unmarshal(b, &payload); err != nil {
+	var raw struct {
+		RunID    string          `json:"run_id,omitempty"`
+		Agent    string          `json:"agent,omitempty"`
+		Question string          `json:"question"`
+		Context  json.RawMessage `json:"context,omitempty"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
 		return model.GuidanceRequestPayload{}, false
+	}
+	payload := model.GuidanceRequestPayload{
+		RunID:    strings.TrimSpace(raw.RunID),
+		Agent:    strings.TrimSpace(raw.Agent),
+		Question: strings.TrimSpace(raw.Question),
+		Context:  parseGuidanceContext(raw.Context),
 	}
 	if strings.TrimSpace(payload.Question) == "" {
 		return model.GuidanceRequestPayload{}, false
 	}
 	return payload, true
+}
+
+func readGuidanceRequestFileFromRoots(roots []string) (model.GuidanceRequestPayload, bool) {
+	for _, root := range roots {
+		if payload, ok := readGuidanceRequestFile(root); ok {
+			return payload, true
+		}
+	}
+	return model.GuidanceRequestPayload{}, false
+}
+
+func parseGuidanceContext(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return strings.TrimSpace(asString)
+	}
+
+	var generic any
+	if err := json.Unmarshal(raw, &generic); err == nil {
+		encoded, err := json.Marshal(generic)
+		if err == nil {
+			return strings.TrimSpace(string(encoded))
+		}
+	}
+
+	return trimmed
 }
 
 func hasCompletionSignal(workspacePath string, runID string, agentName string) bool {
@@ -2412,6 +2505,15 @@ func hasCompletionSignal(workspacePath string, runID string, agentName string) b
 		return false
 	}
 	return true
+}
+
+func hasCompletionSignalFromRoots(roots []string, runID string, agentName string) bool {
+	for _, root := range roots {
+		if hasCompletionSignal(root, runID, agentName) {
+			return true
+		}
+	}
+	return false
 }
 
 func readValidationResult(workspacePath string) (struct {
@@ -2437,6 +2539,23 @@ func readValidationResult(workspacePath string) (struct {
 		return payload, false
 	}
 	return payload, true
+}
+
+func readValidationResultFromRoots(roots []string) (struct {
+	RunID        string `json:"run_id,omitempty"`
+	Status       string `json:"status"`
+	DoneCriteria string `json:"done_criteria"`
+}, bool) {
+	for _, root := range roots {
+		if payload, ok := readValidationResult(root); ok {
+			return payload, true
+		}
+	}
+	return struct {
+		RunID        string `json:"run_id,omitempty"`
+		Status       string `json:"status"`
+		DoneCriteria string `json:"done_criteria"`
+	}{}, false
 }
 
 func shellQuote(value string) string {

@@ -310,6 +310,147 @@ func TestGuideAnswersPendingRequest(t *testing.T) {
 	}
 }
 
+func TestReadGuidanceRequestFileSupportsStructuredContext(t *testing.T) {
+	workspacePath := t.TempDir()
+	requestDir := filepath.Join(workspacePath, ".metawsm")
+	if err := os.MkdirAll(requestDir, 0o755); err != nil {
+		t.Fatalf("mkdir .metawsm: %v", err)
+	}
+
+	content := `{
+  "run_id": "run-structured",
+  "agent": "agent",
+  "question": "Can we defer npm install?",
+  "context": {
+    "blocked_checks": [
+      "npm --prefix ui install"
+    ],
+    "reason": "network unavailable"
+  }
+}`
+	if err := os.WriteFile(filepath.Join(requestDir, "guidance-request.json"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write guidance request file: %v", err)
+	}
+
+	payload, ok := readGuidanceRequestFile(workspacePath)
+	if !ok {
+		t.Fatalf("expected structured guidance request to parse")
+	}
+	if payload.Question != "Can we defer npm install?" {
+		t.Fatalf("unexpected question: %q", payload.Question)
+	}
+	if !strings.Contains(payload.Context, "blocked_checks") {
+		t.Fatalf("expected serialized context payload, got %q", payload.Context)
+	}
+}
+
+func TestReadGuidanceRequestFileFromRootsFindsDocHomeRepo(t *testing.T) {
+	workspacePath := t.TempDir()
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(filepath.Join(repoPath, ".metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir repo .metawsm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, ".metawsm", "guidance-request.json"), []byte(`{"question":"Need decision","context":{"reason":"blocked"}}`), 0o644); err != nil {
+		t.Fatalf("write guidance request file: %v", err)
+	}
+
+	spec := model.RunSpec{
+		Repos:       []string{"metawsm"},
+		DocHomeRepo: "metawsm",
+	}
+	roots := bootstrapSignalRoots(workspacePath, spec)
+	payload, ok := readGuidanceRequestFileFromRoots(roots)
+	if !ok {
+		t.Fatalf("expected to find guidance request in doc-home repo")
+	}
+	if payload.Question != "Need decision" {
+		t.Fatalf("unexpected question: %q", payload.Question)
+	}
+	if !strings.Contains(payload.Context, "blocked") {
+		t.Fatalf("expected serialized context in payload, got %q", payload.Context)
+	}
+}
+
+func TestGuideWritesResponseInDocHomeRepoAndRemovesRequest(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	svc, err := NewService(dbPath)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	spec := model.RunSpec{
+		RunID:             "run-guide-doc-root",
+		Mode:              model.RunModeBootstrap,
+		Tickets:           []string{"METAWSM-002"},
+		Repos:             []string{"metawsm"},
+		DocHomeRepo:       "metawsm",
+		WorkspaceStrategy: model.WorkspaceStrategyCreate,
+		Agents:            []model.AgentSpec{{Name: "agent", Command: "bash"}},
+		PolicyPath:        ".metawsm/policy.json",
+		CreatedAt:         time.Now(),
+	}
+	if err := svc.store.CreateRun(spec, `{"version":1}`); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := svc.store.UpdateRunStatus(spec.RunID, model.RunStatusRunning, ""); err != nil {
+		t.Fatalf("set running status: %v", err)
+	}
+	if err := svc.transitionRun(spec.RunID, model.RunStatusRunning, model.RunStatusAwaitingGuidance, "test awaiting"); err != nil {
+		t.Fatalf("transition to awaiting: %v", err)
+	}
+
+	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(filepath.Join(repoPath, ".metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir repo workspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, ".metawsm", "guidance-request.json"), []byte(`{"question":"Need API decision?"}`), 0o644); err != nil {
+		t.Fatalf("write guidance request file: %v", err)
+	}
+
+	homeDir := filepath.Join(t.TempDir(), "home")
+	t.Setenv("HOME", homeDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, ".config"))
+	workspaceConfigDir := filepath.Join(homeDir, "Library", "Application Support", "workspace-manager", "workspaces")
+	if err := os.MkdirAll(workspaceConfigDir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace config dir: %v", err)
+	}
+	configPayload, err := json.Marshal(map[string]string{"path": workspacePath})
+	if err != nil {
+		t.Fatalf("marshal config payload: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceConfigDir, "ws-guide-doc-root.json"), configPayload, 0o644); err != nil {
+		t.Fatalf("write workspace config: %v", err)
+	}
+
+	_, err = svc.store.AddGuidanceRequest(model.GuidanceRequest{
+		RunID:         spec.RunID,
+		WorkspaceName: "ws-guide-doc-root",
+		AgentName:     "agent",
+		Question:      "Need API decision?",
+		Context:       "Pick schema",
+		Status:        model.GuidanceStatusPending,
+	})
+	if err != nil {
+		t.Fatalf("add guidance request: %v", err)
+	}
+
+	if _, err := svc.Guide(t.Context(), spec.RunID, "Use JSON payload format"); err != nil {
+		t.Fatalf("guide: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(repoPath, ".metawsm", "guidance-response.json")); err != nil {
+		t.Fatalf("expected guidance-response file in doc-home repo: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, ".metawsm", "guidance-request.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected guidance-request file to be removed from doc-home repo")
+	}
+}
+
 func TestWorkspaceNameForUsesUniqueRunToken(t *testing.T) {
 	a := workspaceNameFor("METAWSM-003", "run-20260207-075350")
 	b := workspaceNameFor("METAWSM-003", "run-20260207-075412")
@@ -667,7 +808,7 @@ func TestBootstrapStatusTransitionsRunToFailedWhenAgentFailed(t *testing.T) {
 	svc := newTestService(t)
 	workspaceName := "ws-failed-agent"
 	createRunWithTicketFixture(t, svc, "run-agent-failed", "METAWSM-006", workspaceName, model.RunStatusRunning, false)
-	if err := svc.syncBootstrapSignals(t.Context(), "run-agent-failed", model.RunStatusRunning, []model.AgentRecord{
+	if err := svc.syncBootstrapSignals(t.Context(), "run-agent-failed", model.RunStatusRunning, model.RunSpec{}, []model.AgentRecord{
 		{
 			RunID:         "run-agent-failed",
 			Name:          "agent",

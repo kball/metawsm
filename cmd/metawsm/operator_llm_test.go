@@ -53,7 +53,9 @@ func TestMergeOperatorDecisionsAutoAllowsLLMEscalateWhenRuleNoop(t *testing.T) {
 }
 
 func TestCodexCLIAdapterValidateAndFallback(t *testing.T) {
+	var capturedArgs []string
 	adapter := newCodexCLIAdapter("codex", "", 200, time.Second, func(ctx context.Context, name string, args []string, stdin string) (string, string, error) {
+		capturedArgs = append([]string(nil), args...)
 		return "{\"intent\":\"noop\",\"reason\":\"ok\"}", "", nil
 	})
 	resp, err := adapter.Propose(context.Background(), operatorLLMRequest{RunID: "run-1"})
@@ -65,6 +67,11 @@ func TestCodexCLIAdapterValidateAndFallback(t *testing.T) {
 	}
 	if resp.TargetRun != "run-1" {
 		t.Fatalf("expected target run fallback to request run id, got %q", resp.TargetRun)
+	}
+	for i := range capturedArgs {
+		if capturedArgs[i] == "--max-tokens" {
+			t.Fatalf("did not expect unsupported --max-tokens arg: %v", capturedArgs)
+		}
 	}
 }
 
