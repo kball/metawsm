@@ -51,6 +51,8 @@ func main() {
 		err = bootstrapCommand(args)
 	case "status":
 		err = statusCommand(args)
+	case "watch":
+		err = watchCommand(args)
 	case "guide":
 		err = guideCommand(args)
 	case "resume":
@@ -332,6 +334,202 @@ func statusCommand(args []string) error {
 	}
 	fmt.Print(status)
 	return nil
+}
+
+type watchSnapshot struct {
+	RunID              string
+	RunStatus          string
+	Tickets            string
+	HasGuidance        bool
+	HasUnhealthyAgents bool
+}
+
+func watchCommand(args []string) error {
+	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
+	var runID string
+	var ticket string
+	var dbPath string
+	var intervalSeconds int
+	var notifyCmd string
+	var bell bool
+	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (watch latest run for this ticket)")
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.IntVar(&intervalSeconds, "interval", 15, "Heartbeat interval in seconds")
+	fs.StringVar(&notifyCmd, "notify-cmd", "", "Optional shell command to run on alert (receives METAWSM_* env vars)")
+	fs.BoolVar(&bell, "bell", true, "Emit terminal bell on alert")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if intervalSeconds <= 0 {
+		return fmt.Errorf("--interval must be > 0")
+	}
+	runID, ticket, err := requireRunSelector(runID, ticket)
+	if err != nil {
+		return err
+	}
+
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	runID, err = service.ResolveRunID(runID, ticket)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	fmt.Printf("Watching run %s (interval=%ds).\n", runID, intervalSeconds)
+	fmt.Println("Alerts: guidance needed, run done/failed/stopped, agent unhealthy.")
+
+	ticker := time.NewTicker(time.Duration(intervalSeconds) * time.Second)
+	defer ticker.Stop()
+
+	alerted := map[string]struct{}{}
+	for {
+		statusText, err := statusWithRetry(ctx, service, runID)
+		if err != nil {
+			return err
+		}
+		snapshot := parseWatchSnapshot(statusText)
+		if strings.TrimSpace(snapshot.RunID) == "" {
+			snapshot.RunID = runID
+		}
+		if strings.TrimSpace(snapshot.Tickets) == "" {
+			snapshot.Tickets = ticket
+		}
+
+		now := time.Now().Format(time.RFC3339)
+		fmt.Printf("[%s] heartbeat run=%s status=%s guidance=%t unhealthy_agents=%t\n",
+			now,
+			snapshot.RunID,
+			emptyValue(snapshot.RunStatus, "unknown"),
+			snapshot.HasGuidance,
+			snapshot.HasUnhealthyAgents,
+		)
+
+		event, message, terminal := classifyWatchEvent(snapshot)
+		if event != "" {
+			if _, seen := alerted[event]; !seen || terminal {
+				alerted[event] = struct{}{}
+				fmt.Printf("[%s] ALERT %s: %s\n", now, event, message)
+				if bell {
+					fmt.Print("\a")
+				}
+				if err := runWatchNotifyCommand(ctx, notifyCmd, event, message, snapshot); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: notify command failed: %v\n", err)
+				}
+			}
+			if terminal {
+				return nil
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			fmt.Println("\nWatch stopped.")
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func statusWithRetry(ctx context.Context, service *orchestrator.Service, runID string) (string, error) {
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		status, err := service.Status(ctx, runID)
+		if err == nil {
+			return status, nil
+		}
+		lastErr = err
+		if !strings.Contains(strings.ToLower(err.Error()), "database is locked") {
+			return "", err
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return "", lastErr
+}
+
+func parseWatchSnapshot(statusText string) watchSnapshot {
+	snapshot := watchSnapshot{}
+	inAgents := false
+	scanner := bufio.NewScanner(strings.NewReader(statusText))
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "Run:"):
+			snapshot.RunID = strings.TrimSpace(strings.TrimPrefix(line, "Run:"))
+			inAgents = false
+		case strings.HasPrefix(line, "Status:"):
+			snapshot.RunStatus = strings.TrimSpace(strings.TrimPrefix(line, "Status:"))
+			inAgents = false
+		case strings.HasPrefix(line, "Tickets:"):
+			snapshot.Tickets = strings.TrimSpace(strings.TrimPrefix(line, "Tickets:"))
+			inAgents = false
+		case strings.HasPrefix(line, "Guidance:"):
+			snapshot.HasGuidance = true
+			inAgents = false
+		case strings.HasPrefix(line, "Agents:"):
+			inAgents = true
+		default:
+			if !inAgents {
+				continue
+			}
+			if !strings.HasPrefix(line, "  ") {
+				inAgents = false
+				continue
+			}
+			lower := strings.ToLower(line)
+			if strings.Contains(lower, "health=dead") || strings.Contains(lower, "health=stalled") || strings.Contains(lower, "status=failed") || strings.Contains(lower, "status=dead") {
+				snapshot.HasUnhealthyAgents = true
+			}
+		}
+	}
+	if strings.EqualFold(snapshot.RunStatus, string(model.RunStatusAwaitingGuidance)) {
+		snapshot.HasGuidance = true
+	}
+	return snapshot
+}
+
+func classifyWatchEvent(snapshot watchSnapshot) (event string, message string, terminal bool) {
+	status := strings.TrimSpace(snapshot.RunStatus)
+	switch status {
+	case string(model.RunStatusFailed):
+		return "run_failed", "run entered failed state", true
+	case string(model.RunStatusStopped):
+		return "run_stopped", "run entered stopped state", true
+	}
+	if snapshot.HasGuidance {
+		return "guidance_needed", "operator input is required", true
+	}
+	switch status {
+	case string(model.RunStatusComplete), string(model.RunStatusClosed):
+		return "run_done", fmt.Sprintf("run reached %s", status), true
+	}
+	if snapshot.HasUnhealthyAgents {
+		return "agent_unhealthy", "one or more agents are stalled/dead/failed", false
+	}
+	return "", "", false
+}
+
+func runWatchNotifyCommand(ctx context.Context, notifyCmd string, event string, message string, snapshot watchSnapshot) error {
+	notifyCmd = strings.TrimSpace(notifyCmd)
+	if notifyCmd == "" {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "zsh", "-lc", notifyCmd)
+	cmd.Env = append(os.Environ(),
+		"METAWSM_EVENT="+event,
+		"METAWSM_MESSAGE="+message,
+		"METAWSM_RUN_ID="+snapshot.RunID,
+		"METAWSM_RUN_STATUS="+snapshot.RunStatus,
+		"METAWSM_TICKETS="+snapshot.Tickets,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func resumeCommand(args []string) error {
@@ -1064,6 +1262,7 @@ func printUsage() {
 	fmt.Println("  metawsm run --ticket T1 --ticket T2 --repos repo1,repo2 [--doc-home-repo repo1] [--doc-authority-mode workspace_active] [--doc-seed-mode copy_from_repo_on_start] [--agent planner --agent coder] [--base-branch main]")
 	fmt.Println("  metawsm bootstrap --ticket T1 --repos repo1,repo2 [--doc-home-repo repo1] [--doc-authority-mode workspace_active] [--doc-seed-mode copy_from_repo_on_start] [--agent planner] [--base-branch main]")
 	fmt.Println("  metawsm status [--run-id RUN_ID | --ticket T1]")
+	fmt.Println("  metawsm watch [--run-id RUN_ID | --ticket T1] [--interval 15] [--notify-cmd \"...\"] [--bell=true]")
 	fmt.Println("  metawsm guide [--run-id RUN_ID | --ticket T1] --answer \"...\"")
 	fmt.Println("  metawsm resume [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm stop [--run-id RUN_ID | --ticket T1]")

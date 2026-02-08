@@ -161,3 +161,73 @@ func TestSelectFederationEndpointsByName(t *testing.T) {
 		t.Fatalf("expected sorted selection ending with workspace-a, got %q", selected[1].Name)
 	}
 }
+
+func TestParseWatchSnapshot(t *testing.T) {
+	status := `Run: run-123
+Status: awaiting_guidance
+Mode: bootstrap
+Tickets: METAWSM-006
+Guidance:
+  - id=7 agent@ws question=Need operator decision
+Agents:
+  - agent@ws session=s1 status=stalled health=stalled last_activity=2026-02-08T00:00:00Z activity_age=1h last_progress=2026-02-08T00:00:00Z progress_age=1h
+`
+	snapshot := parseWatchSnapshot(status)
+	if snapshot.RunID != "run-123" {
+		t.Fatalf("expected run id run-123, got %q", snapshot.RunID)
+	}
+	if snapshot.RunStatus != "awaiting_guidance" {
+		t.Fatalf("expected awaiting_guidance, got %q", snapshot.RunStatus)
+	}
+	if snapshot.Tickets != "METAWSM-006" {
+		t.Fatalf("expected tickets METAWSM-006, got %q", snapshot.Tickets)
+	}
+	if !snapshot.HasGuidance {
+		t.Fatalf("expected guidance=true")
+	}
+	if !snapshot.HasUnhealthyAgents {
+		t.Fatalf("expected unhealthy agents=true")
+	}
+}
+
+func TestClassifyWatchEventPrioritizesGuidance(t *testing.T) {
+	event, message, terminal := classifyWatchEvent(watchSnapshot{
+		RunStatus:          string(model.RunStatusRunning),
+		HasGuidance:        true,
+		HasUnhealthyAgents: true,
+	})
+	if event != "guidance_needed" {
+		t.Fatalf("expected guidance_needed event, got %q", event)
+	}
+	if message == "" {
+		t.Fatalf("expected non-empty alert message")
+	}
+	if !terminal {
+		t.Fatalf("expected guidance alert to be terminal")
+	}
+}
+
+func TestClassifyWatchEventDone(t *testing.T) {
+	event, _, terminal := classifyWatchEvent(watchSnapshot{
+		RunStatus: string(model.RunStatusComplete),
+	})
+	if event != "run_done" {
+		t.Fatalf("expected run_done event, got %q", event)
+	}
+	if !terminal {
+		t.Fatalf("expected run_done to be terminal")
+	}
+}
+
+func TestClassifyWatchEventUnhealthyNonTerminal(t *testing.T) {
+	event, _, terminal := classifyWatchEvent(watchSnapshot{
+		RunStatus:          string(model.RunStatusRunning),
+		HasUnhealthyAgents: true,
+	})
+	if event != "agent_unhealthy" {
+		t.Fatalf("expected agent_unhealthy event, got %q", event)
+	}
+	if terminal {
+		t.Fatalf("expected agent_unhealthy to be non-terminal")
+	}
+}
