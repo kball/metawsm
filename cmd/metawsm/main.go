@@ -342,7 +342,25 @@ type watchSnapshot struct {
 	Tickets            string
 	HasGuidance        bool
 	HasUnhealthyAgents bool
+	GuidanceItems      []string
+	UnhealthyAgents    []watchAgentIssue
 }
+
+type watchAgentIssue struct {
+	Agent       string
+	Status      string
+	Health      string
+	ActivityAge string
+	ProgressAge string
+	Reason      string
+}
+
+type watchMode int
+
+const (
+	watchModeSingleRun watchMode = iota
+	watchModeAllActiveRuns
+)
 
 func watchCommand(args []string) error {
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
@@ -352,19 +370,21 @@ func watchCommand(args []string) error {
 	var intervalSeconds int
 	var notifyCmd string
 	var bell bool
+	var all bool
 	fs.StringVar(&runID, "run-id", "", "Run identifier")
 	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (watch latest run for this ticket)")
 	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
 	fs.IntVar(&intervalSeconds, "interval", 15, "Heartbeat interval in seconds")
 	fs.StringVar(&notifyCmd, "notify-cmd", "", "Optional shell command to run on alert (receives METAWSM_* env vars)")
 	fs.BoolVar(&bell, "bell", true, "Emit terminal bell on alert")
+	fs.BoolVar(&all, "all", false, "Watch all active runs/tickets/agents")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if intervalSeconds <= 0 {
 		return fmt.Errorf("--interval must be > 0")
 	}
-	runID, ticket, err := requireRunSelector(runID, ticket)
+	mode, err := resolveWatchMode(runID, ticket, all)
 	if err != nil {
 		return err
 	}
@@ -373,48 +393,90 @@ func watchCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	runID, err = service.ResolveRunID(runID, ticket)
-	if err != nil {
-		return err
+	selectedRunID := ""
+	selectedTicket := strings.TrimSpace(ticket)
+	if mode == watchModeSingleRun {
+		runID, ticket, err = requireRunSelector(runID, ticket)
+		if err != nil {
+			return err
+		}
+		selectedRunID, err = service.ResolveRunID(runID, ticket)
+		if err != nil {
+			return err
+		}
+		selectedTicket = strings.TrimSpace(ticket)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	fmt.Printf("Watching run %s (interval=%ds).\n", runID, intervalSeconds)
+	if mode == watchModeAllActiveRuns {
+		fmt.Printf("Watching all active runs (interval=%ds).\n", intervalSeconds)
+	} else {
+		fmt.Printf("Watching run %s (interval=%ds).\n", selectedRunID, intervalSeconds)
+	}
 	fmt.Println("Alerts: guidance needed, run done/failed/stopped, agent unhealthy.")
 
 	ticker := time.NewTicker(time.Duration(intervalSeconds) * time.Second)
 	defer ticker.Stop()
 
-	alerted := map[string]struct{}{}
+	lastAlertByRun := map[string]string{}
+	trackedRuns := map[string]struct{}{}
+	if mode == watchModeSingleRun {
+		trackedRuns[selectedRunID] = struct{}{}
+	}
+
 	for {
-		statusText, err := statusWithRetry(ctx, service, runID)
-		if err != nil {
-			return err
+		snapshots := []watchSnapshot{}
+		if mode == watchModeSingleRun {
+			snapshot, err := loadWatchSnapshot(ctx, service, selectedRunID, selectedTicket)
+			if err != nil {
+				if isWatchStopError(ctx, err) {
+					fmt.Println("\nWatch stopped.")
+					return nil
+				}
+				return err
+			}
+			snapshots = append(snapshots, snapshot)
+		} else {
+			var err error
+			snapshots, err = loadWatchSnapshotsAll(ctx, service, trackedRuns)
+			if err != nil {
+				if isWatchStopError(ctx, err) {
+					fmt.Println("\nWatch stopped.")
+					return nil
+				}
+				return err
+			}
 		}
-		snapshot := parseWatchSnapshot(statusText)
-		if strings.TrimSpace(snapshot.RunID) == "" {
-			snapshot.RunID = runID
-		}
-		if strings.TrimSpace(snapshot.Tickets) == "" {
-			snapshot.Tickets = ticket
-		}
+		sort.Slice(snapshots, func(i, j int) bool { return snapshots[i].RunID < snapshots[j].RunID })
 
 		now := time.Now().Format(time.RFC3339)
-		fmt.Printf("[%s] heartbeat run=%s status=%s guidance=%t unhealthy_agents=%t\n",
-			now,
-			snapshot.RunID,
-			emptyValue(snapshot.RunStatus, "unknown"),
-			snapshot.HasGuidance,
-			snapshot.HasUnhealthyAgents,
-		)
+		if len(snapshots) == 0 {
+			fmt.Printf("[%s] heartbeat active_runs=0\n", now)
+		}
 
-		event, message, terminal := classifyWatchEvent(snapshot)
-		if event != "" {
-			if _, seen := alerted[event]; !seen || terminal {
-				alerted[event] = struct{}{}
+		for _, snapshot := range snapshots {
+			fmt.Printf("[%s] heartbeat run=%s status=%s guidance=%t unhealthy_agents=%t\n",
+				now,
+				snapshot.RunID,
+				emptyValue(snapshot.RunStatus, "unknown"),
+				snapshot.HasGuidance,
+				snapshot.HasUnhealthyAgents,
+			)
+
+			event, message, terminal := classifyWatchEvent(snapshot)
+			lastEvent := lastAlertByRun[snapshot.RunID]
+			if event == "" {
+				delete(lastAlertByRun, snapshot.RunID)
+				continue
+			}
+			if lastEvent != event || terminal {
+				lastAlertByRun[snapshot.RunID] = event
 				fmt.Printf("[%s] ALERT %s: %s\n", now, event, message)
+				for _, line := range buildWatchDirectionHints(snapshot, event) {
+					fmt.Printf("  %s\n", line)
+				}
 				if bell {
 					fmt.Print("\a")
 				}
@@ -422,8 +484,12 @@ func watchCommand(args []string) error {
 					fmt.Fprintf(os.Stderr, "warning: notify command failed: %v\n", err)
 				}
 			}
-			if terminal {
+			if mode == watchModeSingleRun && terminal {
 				return nil
+			}
+			if mode == watchModeAllActiveRuns && isTerminalRunStatus(snapshot.RunStatus) {
+				delete(trackedRuns, snapshot.RunID)
+				delete(lastAlertByRun, snapshot.RunID)
 			}
 		}
 
@@ -434,6 +500,17 @@ func watchCommand(args []string) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func resolveWatchMode(runID string, ticket string, all bool) (watchMode, error) {
+	hasSelector := strings.TrimSpace(runID) != "" || strings.TrimSpace(ticket) != ""
+	if all && hasSelector {
+		return watchModeSingleRun, fmt.Errorf("--all cannot be combined with --run-id or --ticket")
+	}
+	if all || !hasSelector {
+		return watchModeAllActiveRuns, nil
+	}
+	return watchModeSingleRun, nil
 }
 
 func statusWithRetry(ctx context.Context, service *orchestrator.Service, runID string) (string, error) {
@@ -452,9 +529,64 @@ func statusWithRetry(ctx context.Context, service *orchestrator.Service, runID s
 	return "", lastErr
 }
 
+func loadWatchSnapshot(ctx context.Context, service *orchestrator.Service, runID string, ticketFallback string) (watchSnapshot, error) {
+	statusText, err := statusWithRetry(ctx, service, runID)
+	if err != nil {
+		return watchSnapshot{}, err
+	}
+	snapshot := parseWatchSnapshot(statusText)
+	if strings.TrimSpace(snapshot.RunID) == "" {
+		snapshot.RunID = runID
+	}
+	if strings.TrimSpace(snapshot.Tickets) == "" {
+		snapshot.Tickets = strings.TrimSpace(ticketFallback)
+	}
+	return snapshot, nil
+}
+
+func loadWatchSnapshotsAll(ctx context.Context, service *orchestrator.Service, trackedRuns map[string]struct{}) ([]watchSnapshot, error) {
+	activeRuns, err := service.ActiveRuns()
+	if err != nil {
+		return nil, err
+	}
+	activeSet := map[string]struct{}{}
+	snapshots := []watchSnapshot{}
+
+	for _, run := range activeRuns {
+		runID := strings.TrimSpace(run.RunID)
+		if runID == "" {
+			continue
+		}
+		activeSet[runID] = struct{}{}
+		trackedRuns[runID] = struct{}{}
+		snapshot, err := loadWatchSnapshot(ctx, service, runID, "")
+		if err != nil {
+			return nil, err
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+
+	for runID := range trackedRuns {
+		if _, active := activeSet[runID]; active {
+			continue
+		}
+		snapshot, err := loadWatchSnapshot(ctx, service, runID, "")
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "not found") {
+				delete(trackedRuns, runID)
+				continue
+			}
+			return nil, err
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	return snapshots, nil
+}
+
 func parseWatchSnapshot(statusText string) watchSnapshot {
 	snapshot := watchSnapshot{}
 	inAgents := false
+	inGuidance := false
 	scanner := bufio.NewScanner(strings.NewReader(statusText))
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -462,18 +594,34 @@ func parseWatchSnapshot(statusText string) watchSnapshot {
 		case strings.HasPrefix(line, "Run:"):
 			snapshot.RunID = strings.TrimSpace(strings.TrimPrefix(line, "Run:"))
 			inAgents = false
+			inGuidance = false
 		case strings.HasPrefix(line, "Status:"):
 			snapshot.RunStatus = strings.TrimSpace(strings.TrimPrefix(line, "Status:"))
 			inAgents = false
+			inGuidance = false
 		case strings.HasPrefix(line, "Tickets:"):
 			snapshot.Tickets = strings.TrimSpace(strings.TrimPrefix(line, "Tickets:"))
 			inAgents = false
+			inGuidance = false
 		case strings.HasPrefix(line, "Guidance:"):
 			snapshot.HasGuidance = true
 			inAgents = false
+			inGuidance = true
 		case strings.HasPrefix(line, "Agents:"):
 			inAgents = true
+			inGuidance = false
 		default:
+			if inGuidance {
+				if !strings.HasPrefix(line, "  ") {
+					inGuidance = false
+				} else {
+					item := strings.TrimSpace(strings.TrimPrefix(line, "- "))
+					if item != "" {
+						snapshot.GuidanceItems = append(snapshot.GuidanceItems, item)
+					}
+					continue
+				}
+			}
 			if !inAgents {
 				continue
 			}
@@ -481,9 +629,10 @@ func parseWatchSnapshot(statusText string) watchSnapshot {
 				inAgents = false
 				continue
 			}
-			lower := strings.ToLower(line)
-			if strings.Contains(lower, "health=dead") || strings.Contains(lower, "health=stalled") || strings.Contains(lower, "status=failed") || strings.Contains(lower, "status=dead") {
+			agentIssue, unhealthy := parseWatchAgentLine(line)
+			if unhealthy {
 				snapshot.HasUnhealthyAgents = true
+				snapshot.UnhealthyAgents = append(snapshot.UnhealthyAgents, agentIssue)
 			}
 		}
 	}
@@ -508,10 +657,19 @@ func classifyWatchEvent(snapshot watchSnapshot) (event string, message string, t
 	case string(model.RunStatusComplete), string(model.RunStatusClosed):
 		return "run_done", fmt.Sprintf("run reached %s", status), true
 	}
-	if snapshot.HasUnhealthyAgents {
-		return "agent_unhealthy", "one or more agents are stalled/dead/failed", false
+	if snapshot.HasUnhealthyAgents && strings.EqualFold(status, string(model.RunStatusRunning)) {
+		return "agent_unhealthy", summarizeUnhealthyAgents(snapshot), false
 	}
 	return "", "", false
+}
+
+func isTerminalRunStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case string(model.RunStatusComplete), string(model.RunStatusClosed), string(model.RunStatusFailed), string(model.RunStatusStopped):
+		return true
+	default:
+		return false
+	}
 }
 
 func runWatchNotifyCommand(ctx context.Context, notifyCmd string, event string, message string, snapshot watchSnapshot) error {
@@ -530,6 +688,99 @@ func runWatchNotifyCommand(ctx context.Context, notifyCmd string, event string, 
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func isWatchStopError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx.Err() != nil {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "signal: interrupt") || strings.Contains(lower, "context canceled")
+}
+
+func parseWatchAgentLine(line string) (watchAgentIssue, bool) {
+	issue := watchAgentIssue{Agent: strings.TrimSpace(line)}
+	trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- "))
+	if trimmed == "" {
+		return issue, false
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) > 0 {
+		issue.Agent = fields[0]
+	}
+	values := map[string]string{}
+	for _, field := range fields[1:] {
+		parts := strings.SplitN(field, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		values[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+	}
+	issue.Status = values["status"]
+	issue.Health = values["health"]
+	issue.ActivityAge = values["activity_age"]
+	issue.ProgressAge = values["progress_age"]
+	issue.Reason = describeUnhealthyReason(issue)
+	unhealthy := issue.Health == "dead" || issue.Health == "stalled" || issue.Status == "failed" || issue.Status == "dead"
+	return issue, unhealthy
+}
+
+func describeUnhealthyReason(issue watchAgentIssue) string {
+	switch {
+	case issue.Status == "failed":
+		return "agent process exited with failure"
+	case issue.Health == "dead" || issue.Status == "dead":
+		return "agent session is not running"
+	case issue.Health == "stalled" || issue.Status == "stalled":
+		return fmt.Sprintf("no recent activity/progress (activity_age=%s progress_age=%s)", emptyValue(issue.ActivityAge, "?"), emptyValue(issue.ProgressAge, "?"))
+	default:
+		return "agent reported unhealthy state"
+	}
+}
+
+func summarizeUnhealthyAgents(snapshot watchSnapshot) string {
+	if len(snapshot.UnhealthyAgents) == 0 {
+		return "one or more agents are stalled/dead/failed"
+	}
+	first := snapshot.UnhealthyAgents[0]
+	if len(snapshot.UnhealthyAgents) == 1 {
+		return fmt.Sprintf("%s: %s", first.Agent, first.Reason)
+	}
+	return fmt.Sprintf("%s: %s (+%d more unhealthy agent(s))", first.Agent, first.Reason, len(snapshot.UnhealthyAgents)-1)
+}
+
+func buildWatchDirectionHints(snapshot watchSnapshot, event string) []string {
+	hints := []string{
+		fmt.Sprintf("Direction needed for run %s.", emptyValue(snapshot.RunID, "unknown")),
+	}
+	switch event {
+	case "guidance_needed":
+		if len(snapshot.GuidanceItems) > 0 {
+			hints = append(hints, fmt.Sprintf("Pending question: %s", snapshot.GuidanceItems[0]))
+		}
+		hints = append(hints, fmt.Sprintf("Answer with: metawsm guide --run-id %s --answer \"<decision>\"", snapshot.RunID))
+		hints = append(hints, fmt.Sprintf("Or inspect first: metawsm status --run-id %s", snapshot.RunID))
+	case "agent_unhealthy":
+		if len(snapshot.UnhealthyAgents) > 0 {
+			issue := snapshot.UnhealthyAgents[0]
+			hints = append(hints, fmt.Sprintf("Likely cause: %s (%s)", issue.Reason, issue.Agent))
+		}
+		hints = append(hints, fmt.Sprintf("If you want to re-run the agent: metawsm restart --run-id %s", snapshot.RunID))
+		hints = append(hints, fmt.Sprintf("If this needs operator guidance: metawsm guide --run-id %s --answer \"<direction>\"", snapshot.RunID))
+		hints = append(hints, fmt.Sprintf("Inspect details: metawsm status --run-id %s", snapshot.RunID))
+	case "run_failed":
+		hints = append(hints, fmt.Sprintf("Inspect failure context: metawsm status --run-id %s", snapshot.RunID))
+		hints = append(hints, fmt.Sprintf("Then decide to restart or stop: metawsm restart --run-id %s", snapshot.RunID))
+	case "run_stopped":
+		hints = append(hints, fmt.Sprintf("Resume if desired: metawsm resume --run-id %s", snapshot.RunID))
+	case "run_done":
+		hints = append(hints, fmt.Sprintf("Review and merge: metawsm merge --run-id %s --dry-run", snapshot.RunID))
+		hints = append(hints, fmt.Sprintf("Close when ready: metawsm close --run-id %s", snapshot.RunID))
+	}
+	return hints
 }
 
 func resumeCommand(args []string) error {
@@ -1262,7 +1513,7 @@ func printUsage() {
 	fmt.Println("  metawsm run --ticket T1 --ticket T2 --repos repo1,repo2 [--doc-home-repo repo1] [--doc-authority-mode workspace_active] [--doc-seed-mode copy_from_repo_on_start] [--agent planner --agent coder] [--base-branch main]")
 	fmt.Println("  metawsm bootstrap --ticket T1 --repos repo1,repo2 [--doc-home-repo repo1] [--doc-authority-mode workspace_active] [--doc-seed-mode copy_from_repo_on_start] [--agent planner] [--base-branch main]")
 	fmt.Println("  metawsm status [--run-id RUN_ID | --ticket T1]")
-	fmt.Println("  metawsm watch [--run-id RUN_ID | --ticket T1] [--interval 15] [--notify-cmd \"...\"] [--bell=true]")
+	fmt.Println("  metawsm watch [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--notify-cmd \"...\"] [--bell=true]")
 	fmt.Println("  metawsm guide [--run-id RUN_ID | --ticket T1] --answer \"...\"")
 	fmt.Println("  metawsm resume [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm stop [--run-id RUN_ID | --ticket T1]")

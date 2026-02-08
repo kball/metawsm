@@ -188,6 +188,15 @@ Agents:
 	if !snapshot.HasUnhealthyAgents {
 		t.Fatalf("expected unhealthy agents=true")
 	}
+	if len(snapshot.GuidanceItems) != 1 {
+		t.Fatalf("expected one guidance item, got %d", len(snapshot.GuidanceItems))
+	}
+	if len(snapshot.UnhealthyAgents) != 1 {
+		t.Fatalf("expected one unhealthy agent, got %d", len(snapshot.UnhealthyAgents))
+	}
+	if !strings.Contains(snapshot.UnhealthyAgents[0].Reason, "no recent activity/progress") {
+		t.Fatalf("expected stalled reason, got %q", snapshot.UnhealthyAgents[0].Reason)
+	}
 }
 
 func TestClassifyWatchEventPrioritizesGuidance(t *testing.T) {
@@ -229,5 +238,95 @@ func TestClassifyWatchEventUnhealthyNonTerminal(t *testing.T) {
 	}
 	if terminal {
 		t.Fatalf("expected agent_unhealthy to be non-terminal")
+	}
+}
+
+func TestClassifyWatchEventSuppressesUnhealthyForPausedRuns(t *testing.T) {
+	event, _, terminal := classifyWatchEvent(watchSnapshot{
+		RunStatus:          string(model.RunStatusPaused),
+		HasUnhealthyAgents: true,
+	})
+	if event != "" {
+		t.Fatalf("expected no unhealthy alert for paused run, got %q", event)
+	}
+	if terminal {
+		t.Fatalf("expected no terminal alert for paused unhealthy state")
+	}
+}
+
+func TestBuildWatchDirectionHintsIncludesLikelyCause(t *testing.T) {
+	snapshot := watchSnapshot{
+		RunID: "run-123",
+		UnhealthyAgents: []watchAgentIssue{
+			{
+				Agent:  "agent@ws",
+				Reason: "agent session is not running",
+			},
+		},
+	}
+	hints := buildWatchDirectionHints(snapshot, "agent_unhealthy")
+	joined := strings.Join(hints, "\n")
+	if !strings.Contains(joined, "Likely cause: agent session is not running (agent@ws)") {
+		t.Fatalf("expected likely-cause hint, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "metawsm restart --run-id run-123") {
+		t.Fatalf("expected restart direction hint, got:\n%s", joined)
+	}
+}
+
+func TestResolveWatchMode(t *testing.T) {
+	mode, err := resolveWatchMode("", "", false)
+	if err != nil {
+		t.Fatalf("resolve watch mode default all: %v", err)
+	}
+	if mode != watchModeAllActiveRuns {
+		t.Fatalf("expected all-active mode, got %v", mode)
+	}
+
+	mode, err = resolveWatchMode("", "", true)
+	if err != nil {
+		t.Fatalf("resolve watch mode explicit all: %v", err)
+	}
+	if mode != watchModeAllActiveRuns {
+		t.Fatalf("expected all-active mode, got %v", mode)
+	}
+
+	mode, err = resolveWatchMode("run-1", "", false)
+	if err != nil {
+		t.Fatalf("resolve watch mode single run: %v", err)
+	}
+	if mode != watchModeSingleRun {
+		t.Fatalf("expected single mode, got %v", mode)
+	}
+
+	mode, err = resolveWatchMode("", "METAWSM-006", false)
+	if err != nil {
+		t.Fatalf("resolve watch mode ticket: %v", err)
+	}
+	if mode != watchModeSingleRun {
+		t.Fatalf("expected single mode, got %v", mode)
+	}
+
+	_, err = resolveWatchMode("run-1", "", true)
+	if err == nil {
+		t.Fatalf("expected selector conflict error when --all is combined with --run-id")
+	}
+}
+
+func TestIsTerminalRunStatus(t *testing.T) {
+	if !isTerminalRunStatus(string(model.RunStatusComplete)) {
+		t.Fatalf("expected completed to be terminal")
+	}
+	if !isTerminalRunStatus(string(model.RunStatusClosed)) {
+		t.Fatalf("expected closed to be terminal")
+	}
+	if !isTerminalRunStatus(string(model.RunStatusFailed)) {
+		t.Fatalf("expected failed to be terminal")
+	}
+	if !isTerminalRunStatus(string(model.RunStatusStopped)) {
+		t.Fatalf("expected stopped to be terminal")
+	}
+	if isTerminalRunStatus(string(model.RunStatusRunning)) {
+		t.Fatalf("expected running to be non-terminal")
 	}
 }

@@ -7,9 +7,10 @@ var runTransitions = map[model.RunStatus]map[model.RunStatus]bool{
 		model.RunStatusPlanning: true,
 	},
 	model.RunStatusPlanning: {
-		model.RunStatusRunning: true,
-		model.RunStatusPaused:  true,
-		model.RunStatusFailed:  true,
+		model.RunStatusRunning:  true,
+		model.RunStatusPaused:   true,
+		model.RunStatusFailed:   true,
+		model.RunStatusStopping: true,
 	},
 	model.RunStatusRunning: {
 		model.RunStatusAwaitingGuidance: true,
