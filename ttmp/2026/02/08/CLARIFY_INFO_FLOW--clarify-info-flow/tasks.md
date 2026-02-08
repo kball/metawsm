@@ -8,8 +8,8 @@
 - [x] [Phase 2] Generalize ticket_context_sync planning so seeding is available in both run and bootstrap modes.
 - [x] [Phase 2] Implement one-way seeding only (repo -> workspace on start) and persist seed status/revision in metawsm DB.
 - [x] [Phase 2] Update status/TUI output with doc authority + freshness, including warning-only stale index messaging.
-- [ ] [Phase 3] Implement close enforcement: hard-fail on missing/unsynced workspace ticket-doc state.
-- [ ] [Phase 3] Implement close behavior: ensure agent-authored workspace docs are committed/merged before canonical doc close actions.
+- [x] [Phase 3] Implement close enforcement: hard-fail on missing/unsynced workspace ticket-doc state.
+- [x] [Phase 3] Implement close behavior: ensure agent-authored workspace docs are committed/merged before canonical doc close actions.
 - [ ] [Phase 4] Add docmgr API endpoint configuration for workspace and repo roots (workspace-first, repo fallback).
 - [ ] [Phase 4] Build metawsm federation client to query multiple docmgr /api/v1 endpoints and normalize results.
 - [ ] [Phase 4] Implement ticket merge/dedupe rules keyed by ticket + doc_home_repo + active run context.

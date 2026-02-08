@@ -127,3 +127,75 @@ I kept compatibility with existing behavior by retaining `--doc-repo` as an alia
 - `doc_sync_states(run_id, ticket, workspace_name, doc_home_repo, doc_authority_mode, doc_seed_mode, status, revision, error_text, updated_at)`
 - Seed revision format:
 - UTC unix nanos string (`strconv.FormatInt(time.Now().UTC().UnixNano(), 10)`).
+
+## Step 2: Enforce close-time workspace doc sync gates
+
+This step implemented Phase 3 close enforcement for workspace-authoritative docs. Close now hard-fails when workspace ticket doc state is missing or unsynced.
+
+I also added explicit checks that ticket docs exist in workspace doc roots and that doc-home repositories are clean before close proceeds to canonical close actions.
+
+### Prompt Context
+
+**User prompt (verbatim):** "use docmgr. Pick up ticket CLARIFY_INFO_FLOW. Read the plan, and then start on the task list. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue executing the task list with incremental implementation and commits, including close-gate behavior.
+
+**Inferred user intent:** Make ticket behavior safer and explicit so operators cannot accidentally close runs with invalid/missing workspace doc state.
+
+**Commit (code):** 6d5505261c97fad6dcb0244080f2a5e963f33ea4 — "Enforce close-time workspace doc sync gates"
+
+### What I did
+- Added `ensureWorkspaceDocCloseChecks(...)` in `internal/orchestrator/service.go`.
+- Wired close flow to run doc-state checks before merge/close actions.
+- Enforced:
+- seed-mode-aware close checks (`copy_from_repo_on_start`),
+- required synced doc state per ticket/workspace,
+- required sync revision presence,
+- required workspace ticket doc directory presence,
+- required clean doc-home git state.
+- Expanded `internal/orchestrator/service_test.go` with close-gate coverage:
+- missing doc sync state blocks close,
+- failed doc sync state blocks close,
+- existing close tests updated to satisfy new preconditions.
+
+### Why
+- Phase 3 explicitly requires hard-fail behavior for missing/unsynced workspace ticket-doc state.
+- Close should not proceed to canonical ticket close operations unless workspace doc authority is in a known-good state.
+
+### What worked
+- Close now fails fast with actionable messages for missing/failed sync state.
+- Updated tests validate the new behavior and existing close flows still pass.
+
+### What didn't work
+- Initial test updates left workspace doc-home repos dirty, which caused earlier failures than intended:
+- `expected validation-result close error, got: workspace ws-close-missing doc home repo ... has uncommitted changes; close blocked`
+- `expected failed doc sync state error, got: workspace ws-close-failed-sync doc home repo ... has uncommitted changes; close blocked`
+- Fix: committed fixture ticket docs in the test repos and reordered checks so sync-state failures are evaluated before doc-home dirtiness.
+
+### What I learned
+- Close-gate ordering matters for operator-grade error messages; the first failing invariant should match the most relevant missing precondition.
+
+### What was tricky to build
+- Keeping deterministic test fixtures when close now validates both semantic doc sync state and low-level git cleanliness.
+
+### What warrants a second pair of eyes
+- Whether close checks should apply when `doc_seed_mode=none` in future policy variants.
+- Error precedence choices when multiple invariants fail simultaneously.
+
+### What should be done in the future
+- Proceed with Phase 4 federation endpoints/client/dedupe and refresh actions.
+
+### Code review instructions
+- Start in `internal/orchestrator/service.go`:
+- `Close(...)`
+- `ensureWorkspaceDocCloseChecks(...)`
+- Then review new/updated tests in `internal/orchestrator/service_test.go`:
+- `TestCloseDryRunBlocksWhenDocSyncStateMissing`
+- `TestCloseDryRunBlocksWhenDocSyncFailed`
+- updated bootstrap close tests around validation/dirty repo behavior
+- Validate with:
+- `go test ./...`
+
+### Technical details
+- Close gate key is `ticket + workspace_name` against `doc_sync_states`.
+- Required sync status for close: `synced`.
