@@ -163,7 +163,31 @@ CREATE TABLE IF NOT EXISTS run_pull_requests (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (run_id, ticket, repo)
-);`
+);
+CREATE TABLE IF NOT EXISTS run_review_feedback (
+  run_id TEXT NOT NULL,
+  ticket TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  workspace_name TEXT NOT NULL DEFAULT '',
+  pr_number INTEGER NOT NULL DEFAULT 0,
+  pr_url TEXT NOT NULL DEFAULT '',
+  source_type TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  source_url TEXT NOT NULL DEFAULT '',
+  author TEXT NOT NULL DEFAULT '',
+  body_text TEXT NOT NULL DEFAULT '',
+  file_path TEXT NOT NULL DEFAULT '',
+  line_number INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT '',
+  error_text TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  addressed_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (run_id, ticket, repo, pr_number, source_type, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_run_review_feedback_run_status
+  ON run_review_feedback (run_id, status);`
 
 	return s.execSQL(schema)
 }
@@ -612,6 +636,156 @@ ORDER BY ticket, repo;`,
 			ErrorText:      asString(row["error_text"]),
 			CreatedAt:      createdAt,
 			UpdatedAt:      updatedAt,
+		})
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) UpsertRunReviewFeedback(record model.RunReviewFeedback) error {
+	now := time.Now()
+	createdAt := record.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	updatedAt := record.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = now
+	}
+	lastSeenAt := record.LastSeenAt
+	if lastSeenAt.IsZero() {
+		lastSeenAt = updatedAt
+	}
+	addressedAt := ""
+	if record.AddressedAt != nil {
+		addressedAt = record.AddressedAt.Format(time.RFC3339)
+	}
+	sql := fmt.Sprintf(
+		`INSERT OR REPLACE INTO run_review_feedback
+  (run_id, ticket, repo, workspace_name, pr_number, pr_url, source_type, source_id, source_url, author, body_text, file_path, line_number, status, error_text, created_at, updated_at, last_seen_at, addressed_at)
+VALUES
+  (%s, %s, %s, %s, %d, %s, %s, %s, %s, %s, %s, %s, %d, %s, %s, %s, %s, %s, %s);`,
+		quote(record.RunID),
+		quote(record.Ticket),
+		quote(record.Repo),
+		quote(record.WorkspaceName),
+		record.PRNumber,
+		quote(record.PRURL),
+		quote(string(record.SourceType)),
+		quote(record.SourceID),
+		quote(record.SourceURL),
+		quote(record.Author),
+		quote(record.Body),
+		quote(record.FilePath),
+		record.Line,
+		quote(string(record.Status)),
+		quote(record.ErrorText),
+		quote(createdAt.Format(time.RFC3339)),
+		quote(updatedAt.Format(time.RFC3339)),
+		quote(lastSeenAt.Format(time.RFC3339)),
+		quote(addressedAt),
+	)
+	return s.execSQL(sql)
+}
+
+func (s *SQLiteStore) ListRunReviewFeedback(runID string) ([]model.RunReviewFeedback, error) {
+	sql := fmt.Sprintf(
+		`SELECT run_id, ticket, repo, workspace_name, pr_number, pr_url, source_type, source_id, source_url, author, body_text, file_path, line_number, status, error_text, created_at, updated_at, last_seen_at, addressed_at
+FROM run_review_feedback
+WHERE run_id=%s
+ORDER BY ticket, repo, pr_number, source_type, source_id;`,
+		quote(runID),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	return parseRunReviewFeedbackRows(rows)
+}
+
+func (s *SQLiteStore) ListRunReviewFeedbackByStatus(runID string, status model.ReviewFeedbackStatus) ([]model.RunReviewFeedback, error) {
+	sql := fmt.Sprintf(
+		`SELECT run_id, ticket, repo, workspace_name, pr_number, pr_url, source_type, source_id, source_url, author, body_text, file_path, line_number, status, error_text, created_at, updated_at, last_seen_at, addressed_at
+FROM run_review_feedback
+WHERE run_id=%s AND status=%s
+ORDER BY ticket, repo, pr_number, source_type, source_id;`,
+		quote(runID),
+		quote(string(status)),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	return parseRunReviewFeedbackRows(rows)
+}
+
+func (s *SQLiteStore) UpdateRunReviewFeedbackStatus(
+	runID string,
+	ticket string,
+	repo string,
+	prNumber int,
+	sourceType model.ReviewFeedbackSourceType,
+	sourceID string,
+	status model.ReviewFeedbackStatus,
+	errorText string,
+	addressedAt *time.Time,
+) error {
+	addressedAtValue := ""
+	if addressedAt != nil {
+		addressedAtValue = addressedAt.Format(time.RFC3339)
+	}
+	sql := fmt.Sprintf(
+		`UPDATE run_review_feedback
+SET status=%s, error_text=%s, addressed_at=%s, updated_at=%s
+WHERE run_id=%s AND ticket=%s AND repo=%s AND pr_number=%d AND source_type=%s AND source_id=%s;`,
+		quote(string(status)),
+		quote(errorText),
+		quote(addressedAtValue),
+		quote(time.Now().Format(time.RFC3339)),
+		quote(runID),
+		quote(ticket),
+		quote(repo),
+		prNumber,
+		quote(string(sourceType)),
+		quote(sourceID),
+	)
+	return s.execSQL(sql)
+}
+
+func parseRunReviewFeedbackRows(rows []map[string]any) ([]model.RunReviewFeedback, error) {
+	out := make([]model.RunReviewFeedback, 0, len(rows))
+	for _, row := range rows {
+		createdAt, err := time.Parse(time.RFC3339, asString(row["created_at"]))
+		if err != nil {
+			return nil, fmt.Errorf("parse run_review_feedback created_at: %w", err)
+		}
+		updatedAt, err := time.Parse(time.RFC3339, asString(row["updated_at"]))
+		if err != nil {
+			return nil, fmt.Errorf("parse run_review_feedback updated_at: %w", err)
+		}
+		lastSeenAt, err := time.Parse(time.RFC3339, asString(row["last_seen_at"]))
+		if err != nil {
+			return nil, fmt.Errorf("parse run_review_feedback last_seen_at: %w", err)
+		}
+		out = append(out, model.RunReviewFeedback{
+			RunID:         asString(row["run_id"]),
+			Ticket:        asString(row["ticket"]),
+			Repo:          asString(row["repo"]),
+			WorkspaceName: asString(row["workspace_name"]),
+			PRNumber:      asInt(row["pr_number"]),
+			PRURL:         asString(row["pr_url"]),
+			SourceType:    model.ReviewFeedbackSourceType(asString(row["source_type"])),
+			SourceID:      asString(row["source_id"]),
+			SourceURL:     asString(row["source_url"]),
+			Author:        asString(row["author"]),
+			Body:          asString(row["body_text"]),
+			FilePath:      asString(row["file_path"]),
+			Line:          asInt(row["line_number"]),
+			Status:        model.ReviewFeedbackStatus(asString(row["status"])),
+			ErrorText:     asString(row["error_text"]),
+			CreatedAt:     createdAt,
+			UpdatedAt:     updatedAt,
+			LastSeenAt:    lastSeenAt,
+			AddressedAt:   parseTimePtr(asString(row["addressed_at"])),
 		})
 	}
 	return out, nil

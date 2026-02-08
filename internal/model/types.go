@@ -268,3 +268,40 @@ type RunPullRequest struct {
 	CreatedAt      time.Time        `json:"created_at"`
 	UpdatedAt      time.Time        `json:"updated_at"`
 }
+
+type ReviewFeedbackStatus string
+
+const (
+	ReviewFeedbackStatusNew       ReviewFeedbackStatus = "new"
+	ReviewFeedbackStatusQueued    ReviewFeedbackStatus = "queued"
+	ReviewFeedbackStatusAddressed ReviewFeedbackStatus = "addressed"
+	ReviewFeedbackStatusIgnored   ReviewFeedbackStatus = "ignored"
+)
+
+type ReviewFeedbackSourceType string
+
+const (
+	ReviewFeedbackSourceTypePRReviewComment ReviewFeedbackSourceType = "pr_review_comment"
+)
+
+type RunReviewFeedback struct {
+	RunID         string                   `json:"run_id"`
+	Ticket        string                   `json:"ticket"`
+	Repo          string                   `json:"repo"`
+	WorkspaceName string                   `json:"workspace_name,omitempty"`
+	PRNumber      int                      `json:"pr_number,omitempty"`
+	PRURL         string                   `json:"pr_url,omitempty"`
+	SourceType    ReviewFeedbackSourceType `json:"source_type"`
+	SourceID      string                   `json:"source_id"`
+	SourceURL     string                   `json:"source_url,omitempty"`
+	Author        string                   `json:"author,omitempty"`
+	Body          string                   `json:"body,omitempty"`
+	FilePath      string                   `json:"file_path,omitempty"`
+	Line          int                      `json:"line,omitempty"`
+	Status        ReviewFeedbackStatus     `json:"status"`
+	ErrorText     string                   `json:"error_text,omitempty"`
+	CreatedAt     time.Time                `json:"created_at"`
+	UpdatedAt     time.Time                `json:"updated_at"`
+	LastSeenAt    time.Time                `json:"last_seen_at"`
+	AddressedAt   *time.Time               `json:"addressed_at,omitempty"`
+}

@@ -409,3 +409,147 @@ func TestRunPullRequestStatePersistsAcrossStoreReopen(t *testing.T) {
 		t.Fatalf("expected created_at and updated_at to be populated")
 	}
 }
+
+func TestRunReviewFeedbackPersistsAcrossStoreReopen(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	s := NewSQLiteStore(dbPath)
+	if err := s.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Second)
+	if err := s.UpsertRunReviewFeedback(model.RunReviewFeedback{
+		RunID:         "run-review-1",
+		Ticket:        "METAWSM-009",
+		Repo:          "metawsm",
+		WorkspaceName: "metawsm-009-ws",
+		PRNumber:      42,
+		PRURL:         "https://github.com/example/metawsm/pull/42",
+		SourceType:    model.ReviewFeedbackSourceTypePRReviewComment,
+		SourceID:      "9001",
+		SourceURL:     "https://github.com/example/metawsm/pull/42#discussion_r9001",
+		Author:        "reviewer",
+		Body:          "Please add regression coverage for this path.",
+		FilePath:      "internal/orchestrator/service.go",
+		Line:          1044,
+		Status:        model.ReviewFeedbackStatusQueued,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		LastSeenAt:    now,
+	}); err != nil {
+		t.Fatalf("upsert run review feedback: %v", err)
+	}
+
+	reopened := NewSQLiteStore(dbPath)
+	if err := reopened.Init(); err != nil {
+		t.Fatalf("re-init reopened store: %v", err)
+	}
+
+	rows, err := reopened.ListRunReviewFeedback("run-review-1")
+	if err != nil {
+		t.Fatalf("list run review feedback: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one run review feedback row, got %d", len(rows))
+	}
+	row := rows[0]
+	if row.SourceType != model.ReviewFeedbackSourceTypePRReviewComment || row.SourceID != "9001" {
+		t.Fatalf("unexpected source metadata: %s/%s", row.SourceType, row.SourceID)
+	}
+	if row.Status != model.ReviewFeedbackStatusQueued {
+		t.Fatalf("expected queued status, got %s", row.Status)
+	}
+
+	addressedAt := now.Add(10 * time.Minute).Truncate(time.Second)
+	if err := reopened.UpdateRunReviewFeedbackStatus(
+		"run-review-1",
+		"METAWSM-009",
+		"metawsm",
+		42,
+		model.ReviewFeedbackSourceTypePRReviewComment,
+		"9001",
+		model.ReviewFeedbackStatusAddressed,
+		"",
+		&addressedAt,
+	); err != nil {
+		t.Fatalf("update run review feedback status: %v", err)
+	}
+
+	addressedRows, err := reopened.ListRunReviewFeedbackByStatus("run-review-1", model.ReviewFeedbackStatusAddressed)
+	if err != nil {
+		t.Fatalf("list addressed review feedback: %v", err)
+	}
+	if len(addressedRows) != 1 {
+		t.Fatalf("expected one addressed feedback row, got %d", len(addressedRows))
+	}
+	if addressedRows[0].AddressedAt == nil {
+		t.Fatalf("expected addressed_at to be populated")
+	}
+	if !addressedRows[0].AddressedAt.Equal(addressedAt) {
+		t.Fatalf("unexpected addressed_at: got %s want %s", addressedRows[0].AddressedAt.Format(time.RFC3339), addressedAt.Format(time.RFC3339))
+	}
+}
+
+func TestRunReviewFeedbackUpsertDedupesByCompositeKey(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	s := NewSQLiteStore(dbPath)
+	if err := s.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	firstSeen := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	secondSeen := firstSeen.Add(7 * time.Minute).Truncate(time.Second)
+	first := model.RunReviewFeedback{
+		RunID:      "run-review-2",
+		Ticket:     "METAWSM-009",
+		Repo:       "metawsm",
+		PRNumber:   99,
+		SourceType: model.ReviewFeedbackSourceTypePRReviewComment,
+		SourceID:   "r-12345",
+		Author:     "reviewer-a",
+		Body:       "Original comment body.",
+		Status:     model.ReviewFeedbackStatusNew,
+		CreatedAt:  firstSeen,
+		UpdatedAt:  firstSeen,
+		LastSeenAt: firstSeen,
+	}
+	if err := s.UpsertRunReviewFeedback(first); err != nil {
+		t.Fatalf("upsert initial review feedback: %v", err)
+	}
+
+	second := first
+	second.Author = "reviewer-b"
+	second.Body = "Updated comment body after edit."
+	second.Status = model.ReviewFeedbackStatusQueued
+	second.UpdatedAt = secondSeen
+	second.LastSeenAt = secondSeen
+	if err := s.UpsertRunReviewFeedback(second); err != nil {
+		t.Fatalf("upsert updated review feedback: %v", err)
+	}
+
+	rows, err := s.ListRunReviewFeedback("run-review-2")
+	if err != nil {
+		t.Fatalf("list run review feedback: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one deduped review feedback row, got %d", len(rows))
+	}
+	row := rows[0]
+	if row.Author != "reviewer-b" || row.Body != "Updated comment body after edit." {
+		t.Fatalf("expected latest row data to win, got author=%q body=%q", row.Author, row.Body)
+	}
+	if row.Status != model.ReviewFeedbackStatusQueued {
+		t.Fatalf("expected queued status, got %s", row.Status)
+	}
+	if !row.LastSeenAt.Equal(secondSeen) {
+		t.Fatalf("expected last_seen_at %s, got %s", secondSeen.Format(time.RFC3339), row.LastSeenAt.Format(time.RFC3339))
+	}
+}

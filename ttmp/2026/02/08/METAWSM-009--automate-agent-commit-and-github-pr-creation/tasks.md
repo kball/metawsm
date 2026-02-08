@@ -38,3 +38,13 @@
 - [x] Phase 2C.4: expand commit/pr CLI output with preflight diagnostics and remediation hints
 - [x] Phase 2D.1: update operator playbook for native stale-base handling and lock contention behavior
 - [x] Phase 2D.2: add e2e test for stale-base workspace commit->push->PR without manual git intervention
+- [x] Review feedback V1: add model types for PR review feedback records and lifecycle statuses
+- [x] Review feedback V1: add SQLite schema and store methods for review feedback upsert/list/status transitions
+- [x] Review feedback V1: add store persistence and dedupe tests across reopen
+- [ ] Review feedback policy: add git_pr.review_feedback config defaults and validation (review comments only, empty ignore_authors, auto cap)
+- [ ] Orchestrator: implement gh api sync primitive for PR review comments into queued feedback records
+- [ ] Orchestrator: implement queued feedback dispatch via Iterate flow and lifecycle handling for queued->addressed
+- [ ] CLI: add metawsm review sync command with dry-run previews
+- [ ] Status/watch/operator: surface review feedback counts and add review_feedback_ready intent with per-interval cap
+- [ ] Validation: add fake-gh orchestrator tests for sync/dispatch and operator decision coverage
+- [ ] Docs: update playbook/README and diary for review-feedback loop workflow
