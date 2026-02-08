@@ -1261,6 +1261,59 @@ func TestStatusShowsWarningOnlyForStaleDocFreshness(t *testing.T) {
 	}
 }
 
+func TestStatusShowsPersistedRunPullRequests(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-status-prs"
+	ticket := "METAWSM-012"
+	workspaceName := "ws-status-prs"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+	if err := svc.UpsertRunPullRequest(model.RunPullRequest{
+		RunID:      runID,
+		Ticket:     ticket,
+		Repo:       "metawsm",
+		HeadBranch: "METAWSM-012/metawsm/run-status-prs",
+		BaseBranch: "main",
+		PRNumber:   17,
+		PRURL:      "https://github.com/example/metawsm/pull/17",
+		PRState:    model.PullRequestStateOpen,
+		Actor:      "kball",
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert run pull request: %v", err)
+	}
+
+	status, err := svc.Status(t.Context(), runID)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(status, "Pull Requests:") {
+		t.Fatalf("expected pull requests section in status output, got:\n%s", status)
+	}
+	if !strings.Contains(status, "METAWSM-012/metawsm state=open") {
+		t.Fatalf("expected ticket/repo/state line in status output, got:\n%s", status)
+	}
+	if !strings.Contains(status, "https://github.com/example/metawsm/pull/17") {
+		t.Fatalf("expected pr url in status output, got:\n%s", status)
+	}
+}
+
 func TestIterateDryRunIncludesFeedbackAndRestartActions(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")

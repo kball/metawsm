@@ -654,6 +654,14 @@ func (s *Service) UpsertOperatorRunState(state model.OperatorRunState) error {
 	return s.store.UpsertOperatorRunState(state)
 }
 
+func (s *Service) UpsertRunPullRequest(record model.RunPullRequest) error {
+	return s.store.UpsertRunPullRequest(record)
+}
+
+func (s *Service) ListRunPullRequests(runID string) ([]model.RunPullRequest, error) {
+	return s.store.ListRunPullRequests(runID)
+}
+
 func (s *Service) OperatorRunContext(runID string) (OperatorRunContext, error) {
 	_, specJSON, _, err := s.store.GetRun(runID)
 	if err != nil {
@@ -923,6 +931,7 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 	pendingGuidance, _ := s.store.ListGuidanceRequests(runID, model.GuidanceStatusPending)
 	brief, _ := s.store.GetRunBrief(runID)
 	docSyncStates, _ := s.store.ListDocSyncStates(runID)
+	runPullRequests, _ := s.store.ListRunPullRequests(runID)
 
 	var doneCount, failedCount, runningCount, pendingCount int
 	for _, step := range steps {
@@ -1047,6 +1056,29 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 					b.WriteString(fmt.Sprintf("      ... (%d more)\n", len(repo.StatusLines)-limit))
 				}
 			}
+		}
+	}
+	if len(runPullRequests) > 0 {
+		b.WriteString("Pull Requests:\n")
+		for _, item := range runPullRequests {
+			repoLabel := strings.TrimSpace(item.Repo)
+			if repoLabel == "" {
+				repoLabel = "unknown-repo"
+			}
+			ticketLabel := strings.TrimSpace(item.Ticket)
+			if ticketLabel == "" {
+				ticketLabel = "unknown-ticket"
+			}
+			b.WriteString(fmt.Sprintf("  - %s/%s state=%s head=%s base=%s number=%d url=%s actor=%s\n",
+				ticketLabel,
+				repoLabel,
+				valueOrDefault(string(item.PRState), "unknown"),
+				valueOrDefault(item.HeadBranch, "-"),
+				valueOrDefault(item.BaseBranch, "-"),
+				item.PRNumber,
+				valueOrDefault(item.PRURL, "-"),
+				valueOrDefault(item.Actor, "-"),
+			))
 		}
 	}
 
@@ -2680,6 +2712,14 @@ func emptyAsUnknown(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "unknown"
+	}
+	return value
+}
+
+func valueOrDefault(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
 	}
 	return value
 }
