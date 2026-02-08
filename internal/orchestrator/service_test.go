@@ -1500,6 +1500,104 @@ func TestCommitSkipsCleanRepoWithoutPersistingRow(t *testing.T) {
 	}
 }
 
+func TestCommitRejectsWhenRunNotComplete(t *testing.T) {
+	svc := newTestService(t)
+	runID := "run-commit-reject-status"
+	ticket := "METAWSM-009"
+	createRunWithTicketFixture(t, svc, runID, ticket, "ws-commit-reject-status", model.RunStatusRunning, false)
+
+	_, err := svc.Commit(t.Context(), CommitOptions{RunID: runID})
+	if err == nil {
+		t.Fatalf("expected commit status preflight error")
+	}
+	if !strings.Contains(err.Error(), "must be completed before commit") {
+		t.Fatalf("unexpected commit preflight error: %v", err)
+	}
+}
+
+func TestCommitRejectsWhenGitPRModeOff(t *testing.T) {
+	svc := newTestService(t)
+	runID := "run-commit-reject-mode"
+	ticket := "METAWSM-009"
+	spec := model.RunSpec{
+		RunID:             runID,
+		Mode:              model.RunModeBootstrap,
+		Tickets:           []string{ticket},
+		Repos:             []string{"metawsm"},
+		DocRepo:           "metawsm",
+		DocHomeRepo:       "metawsm",
+		DocAuthorityMode:  model.DocAuthorityModeWorkspaceActive,
+		DocSeedMode:       model.DocSeedModeCopyFromRepoOnStart,
+		WorkspaceStrategy: model.WorkspaceStrategyCreate,
+		Agents:            []model.AgentSpec{{Name: "agent", Command: "bash"}},
+		PolicyPath:        ".metawsm/policy.json",
+		CreatedAt:         time.Now(),
+	}
+	if err := svc.store.CreateRun(spec, `{"git_pr":{"mode":"off"}}`); err != nil {
+		t.Fatalf("create run fixture: %v", err)
+	}
+	if err := svc.store.UpdateRunStatus(runID, model.RunStatusComplete, ""); err != nil {
+		t.Fatalf("set run status complete: %v", err)
+	}
+
+	_, err := svc.Commit(t.Context(), CommitOptions{RunID: runID})
+	if err == nil {
+		t.Fatalf("expected commit mode-off preflight error")
+	}
+	if !strings.Contains(err.Error(), "git_pr.mode is off") {
+		t.Fatalf("unexpected commit mode-off error: %v", err)
+	}
+}
+
+func TestOpenPullRequestsRejectsWithoutPreparedCommitMetadata(t *testing.T) {
+	svc := newTestService(t)
+	runID := "run-pr-reject-empty"
+	ticket := "METAWSM-009"
+	createRunWithTicketFixture(t, svc, runID, ticket, "ws-pr-reject-empty", model.RunStatusComplete, false)
+
+	_, err := svc.OpenPullRequests(t.Context(), PullRequestOptions{RunID: runID})
+	if err == nil {
+		t.Fatalf("expected missing prepared-commit metadata error")
+	}
+	if !strings.Contains(err.Error(), "no prepared commit metadata found") {
+		t.Fatalf("unexpected PR preflight error: %v", err)
+	}
+}
+
+func TestOpenPullRequestsRejectsWhenGitPRModeOff(t *testing.T) {
+	svc := newTestService(t)
+	runID := "run-pr-reject-mode"
+	ticket := "METAWSM-009"
+	spec := model.RunSpec{
+		RunID:             runID,
+		Mode:              model.RunModeBootstrap,
+		Tickets:           []string{ticket},
+		Repos:             []string{"metawsm"},
+		DocRepo:           "metawsm",
+		DocHomeRepo:       "metawsm",
+		DocAuthorityMode:  model.DocAuthorityModeWorkspaceActive,
+		DocSeedMode:       model.DocSeedModeCopyFromRepoOnStart,
+		WorkspaceStrategy: model.WorkspaceStrategyCreate,
+		Agents:            []model.AgentSpec{{Name: "agent", Command: "bash"}},
+		PolicyPath:        ".metawsm/policy.json",
+		CreatedAt:         time.Now(),
+	}
+	if err := svc.store.CreateRun(spec, `{"git_pr":{"mode":"off"}}`); err != nil {
+		t.Fatalf("create run fixture: %v", err)
+	}
+	if err := svc.store.UpdateRunStatus(runID, model.RunStatusComplete, ""); err != nil {
+		t.Fatalf("set run status complete: %v", err)
+	}
+
+	_, err := svc.OpenPullRequests(t.Context(), PullRequestOptions{RunID: runID})
+	if err == nil {
+		t.Fatalf("expected PR mode-off preflight error")
+	}
+	if !strings.Contains(err.Error(), "git_pr.mode is off") {
+		t.Fatalf("unexpected PR mode-off error: %v", err)
+	}
+}
+
 func TestOpenPullRequestsDryRunPreviewsCreateCommand(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")
