@@ -550,6 +550,30 @@ func RenderSessionName(pattern string, agentName string, workspaceName string) s
 	return s
 }
 
+func RenderGitBranch(template string, ticket string, repo string, runID string) string {
+	template = strings.TrimSpace(template)
+	if template == "" {
+		template = "{ticket}/{repo}/{run}"
+	}
+	template = strings.ReplaceAll(template, "{ticket}", sanitizeToken(ticket))
+	template = strings.ReplaceAll(template, "{repo}", sanitizeToken(repo))
+	template = strings.ReplaceAll(template, "{run}", sanitizeToken(runID))
+
+	segments := strings.Split(template, "/")
+	out := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		segment = strings.TrimSpace(segment)
+		if segment == "" {
+			continue
+		}
+		out = append(out, sanitizeToken(segment))
+	}
+	if len(out) == 0 {
+		return fmt.Sprintf("%s/%s/%s", sanitizeToken(ticket), sanitizeToken(repo), sanitizeToken(runID))
+	}
+	return strings.Join(out, "/")
+}
+
 func sanitizeToken(token string) string {
 	token = strings.TrimSpace(strings.ToLower(token))
 	token = strings.ReplaceAll(token, " ", "-")

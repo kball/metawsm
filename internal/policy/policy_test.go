@@ -295,3 +295,24 @@ func TestValidateRejectsEmptyGitPRBranchTemplate(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestRenderGitBranchUsesDefaultTemplate(t *testing.T) {
+	branch := RenderGitBranch("", "METAWSM-009", "metawsm/api", "run-20260208-120000")
+	if branch != "metawsm-009/metawsm-api/run-20260208-120000" {
+		t.Fatalf("unexpected default rendered branch: %q", branch)
+	}
+}
+
+func TestRenderGitBranchHonorsCustomTemplate(t *testing.T) {
+	branch := RenderGitBranch("{repo}/changes/{ticket}", "METAWSM-009", "metawsm", "run-20260208-120000")
+	if branch != "metawsm/changes/metawsm-009" {
+		t.Fatalf("unexpected custom rendered branch: %q", branch)
+	}
+}
+
+func TestRenderGitBranchFallsBackWhenTemplateHasNoSegments(t *testing.T) {
+	branch := RenderGitBranch("///", "METAWSM-009", "metawsm", "run-20260208-120000")
+	if branch != "metawsm-009/metawsm/run-20260208-120000" {
+		t.Fatalf("unexpected fallback rendered branch: %q", branch)
+	}
+}

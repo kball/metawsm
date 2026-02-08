@@ -83,6 +83,34 @@ type IterateOptions struct {
 	DryRun   bool
 }
 
+type CommitOptions struct {
+	Ticket  string
+	RunID   string
+	Message string
+	Actor   string
+	DryRun  bool
+}
+
+type CommitResult struct {
+	RunID string
+	Repos []CommitRepoResult
+}
+
+type CommitRepoResult struct {
+	Ticket        string
+	WorkspaceName string
+	Repo          string
+	RepoPath      string
+	BaseBranch    string
+	BaseRef       string
+	Branch        string
+	CommitMessage string
+	CommitSHA     string
+	Dirty         bool
+	SkippedReason string
+	Actions       []string
+}
+
 type RunResult struct {
 	RunID string
 	Steps []model.PlanStep
@@ -578,6 +606,196 @@ func (s *Service) Merge(ctx context.Context, options MergeOptions) (MergeResult,
 	}
 	_ = s.store.AddEvent(runID, "run", runID, "merge", "", "", fmt.Sprintf("merged %d workspace(s)", len(actions)))
 	return MergeResult{RunID: runID, Actions: actions}, nil
+}
+
+func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResult, error) {
+	runID, err := s.resolveRunID(options.RunID, options.Ticket)
+	if err != nil {
+		return CommitResult{}, err
+	}
+
+	record, specJSON, policyJSON, err := s.store.GetRun(runID)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	if record.Status != model.RunStatusComplete {
+		return CommitResult{}, fmt.Errorf("run %s must be completed before commit (current: %s)", runID, record.Status)
+	}
+
+	var spec model.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return CommitResult{}, fmt.Errorf("unmarshal run spec: %w", err)
+	}
+	cfg := policy.Default()
+	if strings.TrimSpace(policyJSON) != "" {
+		if err := json.Unmarshal([]byte(policyJSON), &cfg); err != nil {
+			return CommitResult{}, fmt.Errorf("unmarshal run policy: %w", err)
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.GitPR.Mode), "off") {
+		return CommitResult{}, fmt.Errorf("git_pr.mode is off; commit workflow disabled")
+	}
+
+	tickets := normalizeTokens(spec.Tickets)
+	commitTicket := strings.TrimSpace(options.Ticket)
+	if commitTicket == "" {
+		if len(tickets) == 1 {
+			commitTicket = tickets[0]
+		} else {
+			return CommitResult{}, fmt.Errorf("run %s has multiple tickets; --ticket is required for commit", runID)
+		}
+	}
+	if !containsToken(tickets, commitTicket) {
+		return CommitResult{}, fmt.Errorf("ticket %q is not part of run %s", commitTicket, runID)
+	}
+
+	repos := normalizeTokens(spec.Repos)
+	if len(repos) == 0 && strings.TrimSpace(effectiveDocHomeRepo(spec)) != "" {
+		repos = []string{strings.TrimSpace(effectiveDocHomeRepo(spec))}
+	}
+	repos = filterReposByAllowedList(repos, cfg.GitPR.AllowedRepos)
+	if len(repos) == 0 {
+		return CommitResult{}, fmt.Errorf("no repositories are eligible for commit under current policy")
+	}
+
+	baseBranch := normalizeBaseBranch(spec.BaseBranch)
+	if baseBranch == "" {
+		baseBranch = normalizeBaseBranch(cfg.Workspace.BaseBranch)
+	}
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
+	workspaces, err := s.store.GetAgents(runID)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	workspaceNames := workspaceNamesFromAgents(workspaces)
+	if len(workspaceNames) == 0 {
+		return CommitResult{}, fmt.Errorf("run %s has no workspaces to commit", runID)
+	}
+
+	credentialMode := strings.TrimSpace(cfg.GitPR.CredentialMode)
+	if credentialMode == "" {
+		credentialMode = "local_user_auth"
+	}
+	actor := strings.TrimSpace(options.Actor)
+	if actor == "" {
+		actor = "unknown"
+	}
+	commitMessage := strings.TrimSpace(options.Message)
+	if commitMessage == "" {
+		commitMessage = s.defaultCommitMessage(runID, commitTicket)
+	}
+
+	existingPRs, err := s.store.ListRunPullRequests(runID)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	existingByKey := map[string]model.RunPullRequest{}
+	for _, item := range existingPRs {
+		key := strings.TrimSpace(item.Ticket) + "|" + strings.TrimSpace(item.Repo)
+		existingByKey[key] = item
+	}
+
+	results := make([]CommitRepoResult, 0, len(workspaceNames)*len(repos))
+	now := time.Now()
+	for _, workspaceName := range workspaceNames {
+		workspacePath, err := resolveWorkspacePath(workspaceName)
+		if err != nil {
+			return CommitResult{}, err
+		}
+		targets, err := resolveWorkspaceCommitRepoTargets(workspacePath, repos)
+		if err != nil {
+			return CommitResult{}, err
+		}
+		for _, target := range targets {
+			result := CommitRepoResult{
+				Ticket:        commitTicket,
+				WorkspaceName: workspaceName,
+				Repo:          target.Repo,
+				RepoPath:      target.RepoPath,
+				BaseBranch:    baseBranch,
+				CommitMessage: commitMessage,
+			}
+			dirty, err := hasDirtyGitState(ctx, target.RepoPath)
+			if err != nil {
+				return CommitResult{}, err
+			}
+			result.Dirty = dirty
+			if !dirty {
+				result.SkippedReason = "clean working tree"
+				results = append(results, result)
+				continue
+			}
+
+			baseRef, err := resolveCommitBaseRef(ctx, target.RepoPath, baseBranch)
+			if err != nil {
+				return CommitResult{}, err
+			}
+			branchName := policy.RenderGitBranch(cfg.GitPR.BranchTemplate, commitTicket, target.Repo, runID)
+			result.BaseRef = baseRef
+			result.Branch = branchName
+			result.Actions = []string{
+				fmt.Sprintf("git -C %s checkout -B %s %s", shellQuote(target.RepoPath), shellQuote(branchName), shellQuote(baseRef)),
+				fmt.Sprintf("git -C %s add -A", shellQuote(target.RepoPath)),
+				fmt.Sprintf("git -C %s commit -m %s", shellQuote(target.RepoPath), shellQuote(commitMessage)),
+			}
+			if options.DryRun {
+				results = append(results, result)
+				continue
+			}
+
+			if _, err := runGitCommand(ctx, target.RepoPath, "checkout", "-B", branchName, baseRef); err != nil {
+				return CommitResult{}, err
+			}
+			if _, err := runGitCommand(ctx, target.RepoPath, "add", "-A"); err != nil {
+				return CommitResult{}, err
+			}
+			if _, err := runGitCommand(ctx, target.RepoPath, "commit", "-m", commitMessage); err != nil {
+				return CommitResult{}, err
+			}
+			sha, err := runGitCommand(ctx, target.RepoPath, "rev-parse", "HEAD")
+			if err != nil {
+				return CommitResult{}, err
+			}
+			result.CommitSHA = sha
+			results = append(results, result)
+
+			key := commitTicket + "|" + target.Repo
+			row := existingByKey[key]
+			if row.CreatedAt.IsZero() {
+				row.CreatedAt = now
+			}
+			row.RunID = runID
+			row.Ticket = commitTicket
+			row.Repo = target.Repo
+			row.WorkspaceName = workspaceName
+			row.HeadBranch = branchName
+			row.BaseBranch = baseBranch
+			row.CommitSHA = sha
+			row.CredentialMode = credentialMode
+			row.Actor = actor
+			if row.PRState == "" {
+				row.PRState = model.PullRequestStateDraft
+			}
+			row.ErrorText = ""
+			row.UpdatedAt = now
+			if err := s.store.UpsertRunPullRequest(row); err != nil {
+				return CommitResult{}, err
+			}
+			existingByKey[key] = row
+
+			message := fmt.Sprintf("ticket=%s workspace=%s repo=%s branch=%s commit=%s credential_mode=%s actor=%s",
+				commitTicket, workspaceName, target.Repo, branchName, sha, credentialMode, actor)
+			_ = s.store.AddEvent(runID, "repo", target.Repo, "commit_created", "", sha, message)
+		}
+	}
+
+	return CommitResult{
+		RunID: runID,
+		Repos: results,
+	}, nil
 }
 
 func (s *Service) Iterate(ctx context.Context, options IterateOptions) (IterateResult, error) {
@@ -1746,6 +1964,130 @@ func workspaceRepoPaths(workspacePath string, repos []string) ([]string, error) 
 		return nil, fmt.Errorf("no git repositories found in workspace %s", workspacePath)
 	}
 	return paths, nil
+}
+
+type workspaceCommitRepoTarget struct {
+	Repo     string
+	RepoPath string
+}
+
+func resolveWorkspaceCommitRepoTargets(workspacePath string, repos []string) ([]workspaceCommitRepoTarget, error) {
+	repos = normalizeTokens(repos)
+	if len(repos) == 0 {
+		if isGitRepo(workspacePath) {
+			return []workspaceCommitRepoTarget{{
+				Repo:     filepath.Base(workspacePath),
+				RepoPath: workspacePath,
+			}}, nil
+		}
+		return nil, fmt.Errorf("workspace %s has no repository definitions", workspacePath)
+	}
+
+	targets := make([]workspaceCommitRepoTarget, 0, len(repos))
+	for _, repo := range repos {
+		repo = strings.TrimSpace(repo)
+		if repo == "" {
+			continue
+		}
+		candidate := filepath.Join(workspacePath, repo)
+		if isGitRepo(candidate) {
+			targets = append(targets, workspaceCommitRepoTarget{
+				Repo:     repo,
+				RepoPath: candidate,
+			})
+			continue
+		}
+		if len(repos) == 1 && isGitRepo(workspacePath) {
+			targets = append(targets, workspaceCommitRepoTarget{
+				Repo:     repo,
+				RepoPath: workspacePath,
+			})
+			continue
+		}
+		return nil, fmt.Errorf("workspace repo path not found: %s", candidate)
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("no git repositories found in workspace %s", workspacePath)
+	}
+	return targets, nil
+}
+
+func filterReposByAllowedList(repos []string, allowed []string) []string {
+	repos = normalizeTokens(repos)
+	allowed = normalizeTokens(allowed)
+	if len(allowed) == 0 {
+		return repos
+	}
+	filtered := []string{}
+	for _, repo := range repos {
+		if containsToken(allowed, repo) {
+			filtered = append(filtered, repo)
+		}
+	}
+	return filtered
+}
+
+func resolveCommitBaseRef(ctx context.Context, repoPath string, baseBranch string) (string, error) {
+	baseBranch = normalizeBaseBranch(baseBranch)
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	_, _ = runGitCommand(ctx, repoPath, "fetch", "origin", baseBranch)
+
+	remoteRef := "refs/remotes/origin/" + baseBranch
+	localRef := "refs/heads/" + baseBranch
+	switch {
+	case gitRefExists(ctx, repoPath, remoteRef):
+		return "origin/" + baseBranch, nil
+	case gitRefExists(ctx, repoPath, localRef):
+		return baseBranch, nil
+	default:
+		return "", fmt.Errorf("base branch %q not found for repo %s", baseBranch, repoPath)
+	}
+}
+
+func runGitCommand(ctx context.Context, repoPath string, args ...string) (string, error) {
+	cmdArgs := append([]string{"-C", repoPath}, args...)
+	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		if text == "" {
+			text = err.Error()
+		}
+		return "", fmt.Errorf("git %s failed in %s: %s", strings.Join(args, " "), repoPath, text)
+	}
+	return text, nil
+}
+
+func (s *Service) defaultCommitMessage(runID string, ticket string) string {
+	summary := fmt.Sprintf("apply run %s updates", runID)
+	brief, err := s.store.GetRunBrief(runID)
+	if err == nil && brief != nil {
+		goal := firstNonEmptyLine(brief.Goal)
+		if goal != "" {
+			summary = goal
+		}
+	}
+	summary = strings.TrimSpace(summary)
+	if len(summary) > 72 {
+		summary = strings.TrimSpace(summary[:72])
+	}
+	ticket = strings.TrimSpace(ticket)
+	if ticket == "" {
+		return summary
+	}
+	return fmt.Sprintf("%s: %s", ticket, summary)
+}
+
+func firstNonEmptyLine(value string) string {
+	for _, line := range strings.Split(value, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func resolveDocRepoPath(workspacePath string, docRepo string, repos []string) (string, error) {

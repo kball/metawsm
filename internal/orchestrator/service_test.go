@@ -1314,6 +1314,192 @@ func TestStatusShowsPersistedRunPullRequests(t *testing.T) {
 	}
 }
 
+func TestCommitDryRunPreviewsActionsForDirtyRepo(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-commit-dry"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-commit-dry"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("draft change\n"), 0o644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+
+	before := strings.TrimSpace(runGit(t, repoPath, "rev-parse", "HEAD"))
+	result, err := svc.Commit(t.Context(), CommitOptions{
+		RunID:   runID,
+		DryRun:  true,
+		Message: "METAWSM-009: preview commit",
+	})
+	if err != nil {
+		t.Fatalf("commit dry-run: %v", err)
+	}
+	if result.RunID != runID {
+		t.Fatalf("expected run id %q, got %q", runID, result.RunID)
+	}
+	if len(result.Repos) != 1 {
+		t.Fatalf("expected one repo result, got %d", len(result.Repos))
+	}
+	repoResult := result.Repos[0]
+	if !repoResult.Dirty {
+		t.Fatalf("expected dirty repo result")
+	}
+	if len(repoResult.Actions) != 3 {
+		t.Fatalf("expected 3 dry-run actions, got %d", len(repoResult.Actions))
+	}
+	expectedBranch := policy.RenderGitBranch(policy.Default().GitPR.BranchTemplate, ticket, "metawsm", runID)
+	if repoResult.Branch != expectedBranch {
+		t.Fatalf("expected branch %q, got %q", expectedBranch, repoResult.Branch)
+	}
+	after := strings.TrimSpace(runGit(t, repoPath, "rev-parse", "HEAD"))
+	if before != after {
+		t.Fatalf("expected dry-run to keep head unchanged, before=%s after=%s", before, after)
+	}
+}
+
+func TestCommitCreatesBranchCommitAndPersistsPullRequestRow(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-commit-real"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-commit-real"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("real change\n"), 0o644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+
+	commitMessage := "METAWSM-009: persist commit primitive result"
+	result, err := svc.Commit(t.Context(), CommitOptions{
+		RunID:   runID,
+		Message: commitMessage,
+		Actor:   "kball",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if len(result.Repos) != 1 {
+		t.Fatalf("expected one repo result, got %d", len(result.Repos))
+	}
+	repoResult := result.Repos[0]
+	if strings.TrimSpace(repoResult.CommitSHA) == "" {
+		t.Fatalf("expected commit sha to be recorded")
+	}
+	expectedBranch := policy.RenderGitBranch(policy.Default().GitPR.BranchTemplate, ticket, "metawsm", runID)
+	currentBranch := strings.TrimSpace(runGit(t, repoPath, "rev-parse", "--abbrev-ref", "HEAD"))
+	if currentBranch != expectedBranch {
+		t.Fatalf("expected branch %q, got %q", expectedBranch, currentBranch)
+	}
+	subject := strings.TrimSpace(runGit(t, repoPath, "log", "-1", "--pretty=%s"))
+	if subject != commitMessage {
+		t.Fatalf("expected commit message %q, got %q", commitMessage, subject)
+	}
+
+	rows, err := svc.ListRunPullRequests(runID)
+	if err != nil {
+		t.Fatalf("list run pull requests: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one run pull request row, got %d", len(rows))
+	}
+	row := rows[0]
+	if row.CommitSHA != repoResult.CommitSHA {
+		t.Fatalf("expected stored commit sha %q, got %q", repoResult.CommitSHA, row.CommitSHA)
+	}
+	if row.HeadBranch != expectedBranch {
+		t.Fatalf("expected stored head branch %q, got %q", expectedBranch, row.HeadBranch)
+	}
+	if row.BaseBranch != "main" {
+		t.Fatalf("expected stored base branch main, got %q", row.BaseBranch)
+	}
+	if row.CredentialMode != "local_user_auth" {
+		t.Fatalf("expected credential mode local_user_auth, got %q", row.CredentialMode)
+	}
+	if row.Actor != "kball" {
+		t.Fatalf("expected actor kball, got %q", row.Actor)
+	}
+	if row.PRState != model.PullRequestStateDraft {
+		t.Fatalf("expected draft PR state, got %q", row.PRState)
+	}
+}
+
+func TestCommitSkipsCleanRepoWithoutPersistingRow(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-commit-clean"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-commit-clean"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+
+	result, err := svc.Commit(t.Context(), CommitOptions{
+		RunID: runID,
+	})
+	if err != nil {
+		t.Fatalf("commit clean repo: %v", err)
+	}
+	if len(result.Repos) != 1 {
+		t.Fatalf("expected one repo result, got %d", len(result.Repos))
+	}
+	repoResult := result.Repos[0]
+	if repoResult.Dirty {
+		t.Fatalf("expected clean repo result")
+	}
+	if !strings.Contains(repoResult.SkippedReason, "clean") {
+		t.Fatalf("expected clean skip reason, got %q", repoResult.SkippedReason)
+	}
+	rows, err := svc.ListRunPullRequests(runID)
+	if err != nil {
+		t.Fatalf("list run pull requests: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected no persisted pull request rows for clean repo, got %d", len(rows))
+	}
+}
+
 func TestIterateDryRunIncludesFeedbackAndRestartActions(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")
