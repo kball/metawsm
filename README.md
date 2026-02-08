@@ -11,6 +11,8 @@ Implemented command surface:
 - `metawsm run`
 - `metawsm bootstrap`
 - `metawsm status`
+- `metawsm watch`
+- `metawsm operator`
 - `metawsm guide`
 - `metawsm resume`
 - `metawsm stop`
@@ -91,6 +93,22 @@ Restart the latest run for a ticket:
 go run ./cmd/metawsm restart --ticket METAWSM-003
 ```
 
+Run the operator supervision loop:
+
+```bash
+# supervise all active runs
+go run ./cmd/metawsm operator --all --interval 15
+
+# run in assist mode (default from policy)
+go run ./cmd/metawsm operator --all --llm-mode assist
+
+# run in auto mode
+go run ./cmd/metawsm operator --all --llm-mode auto
+
+# observe only (no actions)
+go run ./cmd/metawsm operator --all --dry-run
+```
+
 Clean up the latest run for a ticket (kills agent tmux sessions and deletes workspaces):
 
 ```bash
@@ -132,6 +150,14 @@ Important fields:
 - `health.idle_seconds`
 - `health.activity_stalled_seconds`
 - `health.progress_stalled_seconds`
+- `operator.unhealthy_confirmations`
+- `operator.restart_budget`
+- `operator.restart_cooldown_seconds`
+- `operator.stale_run_age_seconds`
+- `operator.llm.mode` (`off|assist|auto`)
+- `operator.llm.command` (V1 default: `codex`)
+- `operator.llm.timeout_seconds`
+- `operator.llm.max_tokens`
 - `close.require_clean_git`
 - `docs.authority_mode` (`workspace_active`)
 - `docs.seed_mode` (`none|copy_from_repo_on_start`)
@@ -156,6 +182,14 @@ For bootstrap runs, agents communicate through workspace files:
 - Completion marker: `<workspace>/.metawsm/implementation-complete.json`
 - Validation gate (required before close for bootstrap runs):
   `<workspace>/.metawsm/validation-result.json` with `status="passed"` and `done_criteria` matching the run brief.
+
+## Operator Escalation Summaries
+
+When `metawsm operator` escalates in environments using `docs.authority_mode=workspace_active`, it appends escalation summaries to workspace ticket docs:
+
+- `<workspace>/<doc_home_repo>/ttmp/.../<ticket>/changelog.md`
+
+Entries include run id, escalation intent, summary/evidence, and requested operator decision.
 
 ## Build & Test
 

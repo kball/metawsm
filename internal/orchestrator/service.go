@@ -122,6 +122,14 @@ type ActiveDocContext struct {
 	DocHomeRepo string
 }
 
+type OperatorRunContext struct {
+	RunID       string
+	Tickets     []string
+	DocHomeRepo string
+	Repos       []string
+	Agents      []model.AgentRecord
+}
+
 func (s *Service) Run(ctx context.Context, options RunOptions) (RunResult, error) {
 	cfg, policyPath, err := policy.Load(options.PolicyPath)
 	if err != nil {
@@ -636,6 +644,40 @@ func (s *Service) Iterate(ctx context.Context, options IterateOptions) (IterateR
 
 func (s *Service) ResolveRunID(explicitRunID string, ticket string) (string, error) {
 	return s.resolveRunID(explicitRunID, ticket)
+}
+
+func (s *Service) GetOperatorRunState(runID string) (*model.OperatorRunState, error) {
+	return s.store.GetOperatorRunState(runID)
+}
+
+func (s *Service) UpsertOperatorRunState(state model.OperatorRunState) error {
+	return s.store.UpsertOperatorRunState(state)
+}
+
+func (s *Service) OperatorRunContext(runID string) (OperatorRunContext, error) {
+	_, specJSON, _, err := s.store.GetRun(runID)
+	if err != nil {
+		return OperatorRunContext{}, err
+	}
+	var spec model.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return OperatorRunContext{}, fmt.Errorf("unmarshal run spec: %w", err)
+	}
+	tickets, err := s.store.GetTickets(runID)
+	if err != nil {
+		return OperatorRunContext{}, err
+	}
+	agents, err := s.store.GetAgents(runID)
+	if err != nil {
+		return OperatorRunContext{}, err
+	}
+	return OperatorRunContext{
+		RunID:       runID,
+		Tickets:     tickets,
+		DocHomeRepo: effectiveDocHomeRepo(spec),
+		Repos:       append([]string(nil), spec.Repos...),
+		Agents:      agents,
+	}, nil
 }
 
 func (s *Service) resolveRunID(explicitRunID string, ticket string) (string, error) {

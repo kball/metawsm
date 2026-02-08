@@ -371,6 +371,8 @@ type operatorSessionEvidence struct {
 type operatorSessionProbe func(ctx context.Context, session string) (operatorSessionEvidence, error)
 
 var operatorAgentExitRegex = regexp.MustCompile(`\[metawsm\] agent command exited with status ([0-9]+)`)
+var operatorDocmgrDocsRootRegex = regexp.MustCompile("Docs root:\\s+`([^`]+)`")
+var operatorDocmgrTicketPathRegex = regexp.MustCompile("Path:\\s+`([^`]+)`")
 
 type watchMode int
 
@@ -563,10 +565,21 @@ func operatorCommand(args []string) error {
 	}
 	staleAge := time.Duration(cfg.Operator.StaleRunAgeSeconds) * time.Second
 	runtimeRecentWindow := time.Duration(cfg.Health.ActivityStalledSeconds) * time.Second
+	restartCooldown := time.Duration(cfg.Operator.RestartCooldownSeconds) * time.Second
 
 	service, err := orchestrator.NewService(dbPath)
 	if err != nil {
 		return err
+	}
+	var llmAdapter operatorLLMAdapter
+	if effectiveLLMMode != "off" {
+		llmAdapter = newCodexCLIAdapter(
+			cfg.Operator.LLM.Command,
+			cfg.Operator.LLM.Model,
+			cfg.Operator.LLM.MaxTokens,
+			time.Duration(cfg.Operator.LLM.TimeoutSeconds)*time.Second,
+			nil,
+		)
 	}
 
 	selectedRunID := ""
@@ -598,6 +611,7 @@ func operatorCommand(args []string) error {
 
 	lastAlertByRun := map[string]string{}
 	trackedRuns := map[string]struct{}{}
+	consecutiveUnhealthyByRun := map[string]int{}
 	if mode == watchModeSingleRun {
 		trackedRuns[selectedRunID] = struct{}{}
 	}
@@ -649,54 +663,104 @@ func operatorCommand(args []string) error {
 				snapshot.HasUnhealthyAgents,
 			)
 
-			if snapshot.HasGuidance {
-				event := "guidance_needed"
-				message := "operator input is required"
-				if lastAlertByRun[snapshot.RunID] != event {
-					lastAlertByRun[snapshot.RunID] = event
-					fmt.Printf("[%s] ALERT %s: %s\n", now.Format(time.RFC3339), event, message)
-					for _, line := range buildWatchDirectionHints(snapshot, event) {
-						fmt.Printf("  %s\n", line)
-					}
-					if bell {
-						fmt.Print("\a")
-					}
-					if err := runWatchNotifyCommand(ctx, notifyCmd, event, message, snapshot); err != nil {
-						fmt.Fprintf(os.Stderr, "warning: notify command failed: %v\n", err)
-					}
-				}
-				continue
-			}
-
 			runRecord, ok := activeByRunID[snapshot.RunID]
 			if !ok {
 				delete(lastAlertByRun, snapshot.RunID)
+				delete(consecutiveUnhealthyByRun, snapshot.RunID)
 				continue
 			}
-			isStale, staleReason := classifyStaleRunCandidate(snapshot, runRecord, now, staleAge)
-			if !isStale {
+
+			if snapshot.HasUnhealthyAgents && strings.EqualFold(snapshot.RunStatus, string(model.RunStatusRunning)) {
+				consecutiveUnhealthyByRun[snapshot.RunID]++
+			} else {
+				consecutiveUnhealthyByRun[snapshot.RunID] = 0
+			}
+
+			ruleDecision, err := buildOperatorRuleDecision(
+				ctx,
+				service,
+				snapshot,
+				runRecord,
+				now,
+				staleAge,
+				runtimeRecentWindow,
+				cfg.Operator.UnhealthyConfirmations,
+				cfg.Operator.RestartBudget,
+				consecutiveUnhealthyByRun[snapshot.RunID],
+				probeOperatorSessionEvidence,
+			)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: operator rule evaluation failed for run %s: %v\n", snapshot.RunID, err)
+				continue
+			}
+
+			var llmReply *operatorLLMResponse
+			if llmAdapter != nil {
+				reply, err := llmAdapter.Propose(ctx, operatorLLMRequest{
+					RunID:           snapshot.RunID,
+					RunStatus:       snapshot.RunStatus,
+					Tickets:         snapshot.Tickets,
+					HasGuidance:     snapshot.HasGuidance,
+					HasUnhealthy:    snapshot.HasUnhealthyAgents,
+					RuleIntent:      ruleDecision.Intent,
+					RuleReason:      ruleDecision.Reason,
+					UnhealthyAgents: snapshot.UnhealthyAgents,
+				})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warning: llm proposal failed for run %s: %v\n", snapshot.RunID, err)
+				} else {
+					llmReply = &reply
+				}
+			}
+
+			merged := mergeOperatorDecisions(effectiveLLMMode, ruleDecision, llmReply)
+			if merged.Intent == operatorIntentNoop {
 				delete(lastAlertByRun, snapshot.RunID)
 				continue
 			}
-
-			verified, verifyReason, err := verifyStaleRuntimeEvidence(ctx, snapshot, now, runtimeRecentWindow, probeOperatorSessionEvidence)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: stale runtime evidence check failed for run %s: %v\n", snapshot.RunID, err)
-				continue
-			}
-
-			event := "stale_candidate_rejected"
-			message := fmt.Sprintf("%s; %s", staleReason, verifyReason)
-			if verified {
-				event = "stale_candidate_verified"
-			}
+			event, message := operatorEventMessage(snapshot, merged)
 			if lastAlertByRun[snapshot.RunID] == event {
 				continue
 			}
 			lastAlertByRun[snapshot.RunID] = event
 			fmt.Printf("[%s] ALERT %s: %s\n", now.Format(time.RFC3339), event, message)
-			if verified && dryRun {
-				fmt.Printf("  Dry-run: would stop stale run with metawsm stop --run-id %s\n", snapshot.RunID)
+			fmt.Printf("  decision_source=%s llm_mode=%s intent=%s\n", merged.Source, effectiveLLMMode, merged.Intent)
+			if llmReply != nil {
+				fmt.Printf("  llm intent=%s confidence=%.2f reason=%s\n", llmReply.Intent, llmReply.Confidence, llmReply.Reason)
+			}
+
+			shouldExecute := merged.Execute && !dryRun
+			if shouldExecute {
+				if err := executeOperatorAction(ctx, service, snapshot.RunID, merged.Intent); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: operator action failed for run %s intent=%s: %v\n", snapshot.RunID, merged.Intent, err)
+				} else if merged.Intent == operatorIntentAutoRestart {
+					current, err := service.GetOperatorRunState(snapshot.RunID)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "warning: read operator restart state for run %s failed: %v\n", snapshot.RunID, err)
+					} else {
+						state := model.OperatorRunState{RunID: snapshot.RunID}
+						if current != nil {
+							state = *current
+						}
+						nowCopy := now
+						cooldownUntil := nowCopy.Add(restartCooldown)
+						state.RestartAttempts++
+						state.LastRestartAt = &nowCopy
+						state.CooldownUntil = &cooldownUntil
+						state.UpdatedAt = nowCopy
+						if err := service.UpsertOperatorRunState(state); err != nil {
+							fmt.Fprintf(os.Stderr, "warning: persist operator restart state for run %s failed: %v\n", snapshot.RunID, err)
+						}
+					}
+				}
+			} else if merged.Intent == operatorIntentAutoStopStale || merged.Intent == operatorIntentAutoRestart {
+				fmt.Printf("  action not executed (dry_run=%t llm_mode=%s)\n", dryRun, effectiveLLMMode)
+			}
+
+			if merged.Intent == operatorIntentEscalateGuidance || merged.Intent == operatorIntentEscalateBlocked {
+				if err := appendOperatorEscalationSummary(ctx, service, snapshot.RunID, merged.Intent, message); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: escalation summary write failed for run %s: %v\n", snapshot.RunID, err)
+				}
 			}
 			if bell {
 				fmt.Print("\a")
@@ -713,6 +777,240 @@ func operatorCommand(args []string) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func buildOperatorRuleDecision(
+	ctx context.Context,
+	service *orchestrator.Service,
+	snapshot watchSnapshot,
+	runRecord model.RunRecord,
+	now time.Time,
+	staleAge time.Duration,
+	runtimeRecentWindow time.Duration,
+	unhealthyConfirmations int,
+	restartBudget int,
+	consecutiveUnhealthy int,
+	probe operatorSessionProbe,
+) (operatorRuleDecision, error) {
+	if snapshot.HasGuidance {
+		return operatorRuleDecision{
+			Intent: operatorIntentEscalateGuidance,
+			Reason: "operator input is required",
+		}, nil
+	}
+
+	isStale, staleReason := classifyStaleRunCandidate(snapshot, runRecord, now, staleAge)
+	if isStale {
+		verified, verifyReason, err := verifyStaleRuntimeEvidence(ctx, snapshot, now, runtimeRecentWindow, probe)
+		if err != nil {
+			return operatorRuleDecision{}, err
+		}
+		if verified {
+			return operatorRuleDecision{
+				Intent: operatorIntentAutoStopStale,
+				Reason: staleReason + "; " + verifyReason,
+			}, nil
+		}
+		return operatorRuleDecision{
+			Intent: operatorIntentNoop,
+			Reason: staleReason + "; " + verifyReason,
+		}, nil
+	}
+
+	if snapshot.HasUnhealthyAgents && strings.EqualFold(snapshot.RunStatus, string(model.RunStatusRunning)) {
+		if consecutiveUnhealthy < unhealthyConfirmations {
+			return operatorRuleDecision{
+				Intent: operatorIntentNoop,
+				Reason: fmt.Sprintf("awaiting corroboration (%d/%d unhealthy intervals)", consecutiveUnhealthy, unhealthyConfirmations),
+			}, nil
+		}
+		state, err := service.GetOperatorRunState(snapshot.RunID)
+		if err != nil {
+			return operatorRuleDecision{}, err
+		}
+		if state != nil && state.RestartAttempts >= restartBudget {
+			return operatorRuleDecision{
+				Intent: operatorIntentEscalateBlocked,
+				Reason: fmt.Sprintf("restart budget exhausted (%d/%d)", state.RestartAttempts, restartBudget),
+			}, nil
+		}
+		if state != nil && state.CooldownUntil != nil && now.Before(*state.CooldownUntil) {
+			return operatorRuleDecision{
+				Intent: operatorIntentNoop,
+				Reason: fmt.Sprintf("restart cooldown active until %s", state.CooldownUntil.Format(time.RFC3339)),
+			}, nil
+		}
+		return operatorRuleDecision{
+			Intent: operatorIntentAutoRestart,
+			Reason: "unhealthy state corroborated and restart budget available",
+		}, nil
+	}
+
+	return operatorRuleDecision{
+		Intent: operatorIntentNoop,
+		Reason: "no deterministic action required",
+	}, nil
+}
+
+func operatorEventMessage(snapshot watchSnapshot, decision operatorMergedDecision) (string, string) {
+	switch decision.Intent {
+	case operatorIntentEscalateGuidance:
+		return "guidance_needed", decision.Reason
+	case operatorIntentAutoStopStale:
+		return "stale_candidate_verified", decision.Reason
+	case operatorIntentAutoRestart:
+		return "auto_restart_candidate", decision.Reason
+	case operatorIntentEscalateBlocked:
+		return "escalation_blocked", decision.Reason
+	default:
+		return "operator_noop", decision.Reason
+	}
+}
+
+func executeOperatorAction(ctx context.Context, service *orchestrator.Service, runID string, intent operatorIntent) error {
+	switch intent {
+	case operatorIntentAutoRestart:
+		_, err := service.Restart(ctx, orchestrator.RestartOptions{RunID: runID, DryRun: false})
+		return err
+	case operatorIntentAutoStopStale:
+		return service.Stop(ctx, runID)
+	default:
+		return nil
+	}
+}
+
+func appendOperatorEscalationSummary(ctx context.Context, service *orchestrator.Service, runID string, intent operatorIntent, summary string) error {
+	runCtx, err := service.OperatorRunContext(runID)
+	if err != nil {
+		return err
+	}
+	if len(runCtx.Tickets) == 0 {
+		return nil
+	}
+	workspaceSet := map[string]struct{}{}
+	for _, agent := range runCtx.Agents {
+		workspaceName := strings.TrimSpace(agent.WorkspaceName)
+		if workspaceName == "" {
+			continue
+		}
+		workspaceSet[workspaceName] = struct{}{}
+	}
+	if len(workspaceSet) == 0 {
+		return nil
+	}
+
+	for workspaceName := range workspaceSet {
+		workspacePath, err := operatorResolveWorkspacePath(workspaceName)
+		if err != nil {
+			return err
+		}
+		docRepoPath, err := operatorResolveDocRepoPath(workspacePath, runCtx.DocHomeRepo, runCtx.Repos)
+		if err != nil {
+			return err
+		}
+		for _, ticket := range runCtx.Tickets {
+			relativePath, err := operatorResolveTicketRelativePath(ctx, ticket)
+			if err != nil {
+				return err
+			}
+			changelogPath := filepath.Join(docRepoPath, "ttmp", relativePath, "changelog.md")
+			entry := "\n\n## " + time.Now().Format(time.RFC3339) + "\n\n" +
+				"- Operator escalation for run `" + runID + "`\n" +
+				"- Intent: `" + string(intent) + "`\n" +
+				"- Summary: " + summary + "\n" +
+				"- Requested decision: review `metawsm status --run-id " + runID + "` and provide guidance.\n"
+			if err := appendTextFile(changelogPath, entry); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func operatorResolveWorkspacePath(workspaceName string) (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(configDir, "workspace-manager", "workspaces", workspaceName+".json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read workspace config %s: %w", path, err)
+	}
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(b, &payload); err != nil {
+		return "", fmt.Errorf("parse workspace config %s: %w", path, err)
+	}
+	if strings.TrimSpace(payload.Path) == "" {
+		return "", fmt.Errorf("workspace config %s missing path", path)
+	}
+	return payload.Path, nil
+}
+
+func operatorResolveDocRepoPath(workspacePath string, docHomeRepo string, repos []string) (string, error) {
+	docHomeRepo = strings.TrimSpace(docHomeRepo)
+	if docHomeRepo == "" {
+		if len(repos) > 0 {
+			docHomeRepo = strings.TrimSpace(repos[0])
+		}
+	}
+	if docHomeRepo == "" {
+		return workspacePath, nil
+	}
+	candidate := filepath.Join(workspacePath, docHomeRepo)
+	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+		return candidate, nil
+	}
+	if len(repos) == 1 && operatorIsGitRepo(workspacePath) {
+		return workspacePath, nil
+	}
+	return "", fmt.Errorf("doc repo path not found in workspace: %s", candidate)
+}
+
+func operatorIsGitRepo(path string) bool {
+	info, err := os.Stat(filepath.Join(path, ".git"))
+	if err != nil {
+		return false
+	}
+	return info.IsDir() || info.Mode().IsRegular()
+}
+
+func operatorResolveTicketRelativePath(ctx context.Context, ticket string) (string, error) {
+	cmd := exec.CommandContext(ctx, "docmgr", "ticket", "list", "--ticket", ticket)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("docmgr ticket list --ticket %s failed: %w: %s", ticket, err, strings.TrimSpace(string(out)))
+	}
+	text := string(out)
+	docsRootMatch := operatorDocmgrDocsRootRegex.FindStringSubmatch(text)
+	ticketPathMatch := operatorDocmgrTicketPathRegex.FindStringSubmatch(text)
+	if len(docsRootMatch) < 2 || len(ticketPathMatch) < 2 {
+		return "", fmt.Errorf("unable to parse ticket path from docmgr output")
+	}
+	docsRoot := filepath.Clean(strings.TrimSpace(docsRootMatch[1]))
+	relativePath := filepath.Clean(filepath.FromSlash(strings.TrimSpace(ticketPathMatch[1])))
+	if relativePath == "." || relativePath == "" || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("unsafe ticket relative path parsed from docmgr output: %s", relativePath)
+	}
+	if _, err := os.Stat(filepath.Join(docsRoot, relativePath)); err != nil {
+		return "", fmt.Errorf("ticket path %s: %w", filepath.Join(docsRoot, relativePath), err)
+	}
+	return relativePath, nil
+}
+
+func appendTextFile(path string, content string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(content)
+	return err
 }
 
 func resolveOperatorLLMMode(flagValue string, policyValue string) (string, error) {
