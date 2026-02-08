@@ -854,8 +854,8 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 
 	now := time.Now()
 	for _, agent := range agents {
-		health, status, lastActivity := evaluateHealth(ctx, cfg, agent, now)
-		_ = s.store.UpdateAgentStatus(runID, agent.Name, agent.WorkspaceName, status, health, lastActivity, agent.LastProgressAt)
+		health, status, lastActivity, lastProgress := evaluateHealth(ctx, cfg, agent, now)
+		_ = s.store.UpdateAgentStatus(runID, agent.Name, agent.WorkspaceName, status, health, lastActivity, lastProgress)
 	}
 	agents, _ = s.store.GetAgents(runID)
 	if spec.Mode == model.RunModeBootstrap {
@@ -940,6 +940,27 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 	}
 
 	workspaceDiffs := collectWorkspaceDiffs(ctx, workspaceNamesFromAgents(agents), spec.Repos)
+	progressByWorkspace := latestProgressFromWorkspaceDiffs(workspaceDiffs)
+	for i := range agents {
+		progressAt, ok := progressByWorkspace[agents[i].WorkspaceName]
+		if !ok {
+			continue
+		}
+		if agents[i].LastProgressAt != nil && !progressAt.After(*agents[i].LastProgressAt) {
+			continue
+		}
+		progressCopy := progressAt
+		agents[i].LastProgressAt = &progressCopy
+		_ = s.store.UpdateAgentStatus(
+			runID,
+			agents[i].Name,
+			agents[i].WorkspaceName,
+			agents[i].Status,
+			agents[i].HealthState,
+			agents[i].LastActivityAt,
+			agents[i].LastProgressAt,
+		)
+	}
 	if len(workspaceDiffs) > 0 {
 		b.WriteString("Diffs:\n")
 		for _, diff := range workspaceDiffs {
@@ -994,8 +1015,17 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 		b.WriteString("  - none\n")
 	} else {
 		for _, agent := range agents {
-			b.WriteString(fmt.Sprintf("  - %s@%s session=%s status=%s health=%s\n",
-				agent.Name, agent.WorkspaceName, agent.SessionName, agent.Status, agent.HealthState))
+			b.WriteString(fmt.Sprintf("  - %s@%s session=%s status=%s health=%s last_activity=%s activity_age=%s last_progress=%s progress_age=%s\n",
+				agent.Name,
+				agent.WorkspaceName,
+				agent.SessionName,
+				agent.Status,
+				agent.HealthState,
+				formatTimeOrDash(agent.LastActivityAt),
+				formatAgeOrDash(now, agent.LastActivityAt),
+				formatTimeOrDash(agent.LastProgressAt),
+				formatAgeOrDash(now, agent.LastProgressAt),
+			))
 		}
 	}
 	return b.String(), nil
@@ -1939,6 +1969,67 @@ func collectWorkspaceDiffs(ctx context.Context, workspaceNames []string, repos [
 	return out
 }
 
+func latestProgressFromWorkspaceDiffs(diffs []workspaceDiff) map[string]time.Time {
+	out := map[string]time.Time{}
+	for _, diff := range diffs {
+		if diff.Error != nil {
+			continue
+		}
+		latest, ok := latestProgressFromRepoDiffs(diff.Repos)
+		if !ok {
+			continue
+		}
+		existing, exists := out[diff.WorkspaceName]
+		if !exists || latest.After(existing) {
+			out[diff.WorkspaceName] = latest
+		}
+	}
+	return out
+}
+
+func latestProgressFromRepoDiffs(repos []repoDiff) (time.Time, bool) {
+	latest := time.Time{}
+	found := false
+	for _, repo := range repos {
+		if repo.Error != nil {
+			continue
+		}
+		for _, line := range repo.StatusLines {
+			relPath := parseGitStatusPath(line)
+			if relPath == "" {
+				continue
+			}
+			path := filepath.Join(repo.RepoPath, relPath)
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			modifiedAt := info.ModTime()
+			if !found || modifiedAt.After(latest) {
+				latest = modifiedAt
+				found = true
+			}
+		}
+	}
+	return latest, found
+}
+
+func parseGitStatusPath(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+	if strings.Contains(line, " -> ") {
+		parts := strings.Split(line, " -> ")
+		return strings.TrimSpace(parts[len(parts)-1])
+	}
+	parts := strings.Fields(line)
+	if len(parts) < 2 {
+		return ""
+	}
+	return strings.Join(parts[1:], " ")
+}
+
 func gitStatusShortLines(ctx context.Context, repoPath string) ([]string, error) {
 	cmd := exec.CommandContext(ctx, "zsh", "-lc", fmt.Sprintf("git -C %s status --short", shellQuote(repoPath)))
 	out, err := cmd.Output()
@@ -2109,16 +2200,16 @@ func locateTicketDocDirsInWorkspace(docRootPath string, ticket string) ([]string
 	return paths, nil
 }
 
-func evaluateHealth(ctx context.Context, cfg policy.Config, agent model.AgentRecord, now time.Time) (model.HealthState, model.AgentStatus, *time.Time) {
+func evaluateHealth(ctx context.Context, cfg policy.Config, agent model.AgentRecord, now time.Time) (model.HealthState, model.AgentStatus, *time.Time, *time.Time) {
 	hasSession := tmuxHasSession(ctx, agent.SessionName)
 	if !hasSession {
-		return model.HealthStateDead, model.AgentStatusDead, agent.LastActivityAt
+		return model.HealthStateDead, model.AgentStatusDead, agent.LastActivityAt, agent.LastProgressAt
 	}
 	if exitCode, found := readAgentExitCode(ctx, agent.SessionName); found {
 		if exitCode != 0 {
-			return model.HealthStateDead, model.AgentStatusFailed, agent.LastActivityAt
+			return model.HealthStateDead, model.AgentStatusFailed, agent.LastActivityAt, agent.LastProgressAt
 		}
-		return model.HealthStateIdle, model.AgentStatusIdle, agent.LastActivityAt
+		return model.HealthStateIdle, model.AgentStatusIdle, agent.LastActivityAt, agent.LastProgressAt
 	}
 
 	activityEpoch := fetchSessionActivity(ctx, agent.SessionName)
@@ -2127,6 +2218,13 @@ func evaluateHealth(ctx context.Context, cfg policy.Config, agent model.AgentRec
 		t := time.Unix(activityEpoch, 0)
 		lastActivity = &t
 	}
+	lastProgress := agent.LastProgressAt
+	if lastActivity != nil {
+		if lastProgress == nil || lastActivity.After(*lastProgress) {
+			t := *lastActivity
+			lastProgress = &t
+		}
+	}
 
 	activityAge := time.Duration(0)
 	if lastActivity != nil {
@@ -2134,8 +2232,8 @@ func evaluateHealth(ctx context.Context, cfg policy.Config, agent model.AgentRec
 	}
 
 	progressAge := time.Duration(0)
-	if agent.LastProgressAt != nil {
-		progressAge = now.Sub(*agent.LastProgressAt)
+	if lastProgress != nil {
+		progressAge = now.Sub(*lastProgress)
 	}
 
 	idleThreshold := time.Duration(cfg.Health.IdleSeconds) * time.Second
@@ -2143,12 +2241,12 @@ func evaluateHealth(ctx context.Context, cfg policy.Config, agent model.AgentRec
 	progressStalledThreshold := time.Duration(cfg.Health.ProgressStalledSeconds) * time.Second
 
 	if activityAge >= activityStalledThreshold || (progressAge >= progressStalledThreshold && progressAge > 0) {
-		return model.HealthStateStalled, model.AgentStatusStalled, lastActivity
+		return model.HealthStateStalled, model.AgentStatusStalled, lastActivity, lastProgress
 	}
 	if activityAge >= idleThreshold {
-		return model.HealthStateIdle, model.AgentStatusIdle, lastActivity
+		return model.HealthStateIdle, model.AgentStatusIdle, lastActivity, lastProgress
 	}
-	return model.HealthStateHealthy, model.AgentStatusRunning, lastActivity
+	return model.HealthStateHealthy, model.AgentStatusRunning, lastActivity, lastProgress
 }
 
 func fetchSessionActivity(ctx context.Context, sessionName string) int64 {
@@ -2423,6 +2521,24 @@ func emptyAsUnknown(value string) string {
 		return "unknown"
 	}
 	return value
+}
+
+func formatTimeOrDash(value *time.Time) string {
+	if value == nil || value.IsZero() {
+		return "-"
+	}
+	return value.Format(time.RFC3339)
+}
+
+func formatAgeOrDash(now time.Time, value *time.Time) string {
+	if value == nil || value.IsZero() {
+		return "-"
+	}
+	age := now.Sub(*value)
+	if age < 0 {
+		age = 0
+	}
+	return age.Truncate(time.Second).String()
 }
 
 func containsToken(values []string, target string) bool {
