@@ -6,7 +6,7 @@
 - [x] Design and add run pull request persistence schema
 - [x] Implement service primitives for branch prep and commit creation
 - [ ] Implement service primitive for GitHub PR creation via gh CLI
-- [ ] Add metawsm commit command with dry-run previews
+- [x] Add metawsm commit command with dry-run previews
 - [ ] Add metawsm pr command with dry-run previews
 - [ ] Integrate commit/pr readiness signals into operator loop
 - [ ] Add tests for commit/preflight rejection paths

@@ -78,3 +78,13 @@ Step 4: Implemented branch-prep and commit creation service primitives with dry-
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy.go — Added RenderGitBranch helper for policy-driven branch naming
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy_test.go — Added branch template renderer unit tests
 
+
+## 2026-02-08
+
+Step 5: Added metawsm commit command wired to service commit primitives with dry-run previews (commit 9de30b7)
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Added commit command routing
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go — Added commit command selector validation test
+

@@ -10,9 +10,13 @@ Intent: long-term
 Owners: []
 RelatedFiles:
     - Path: cmd/metawsm/main.go
-      Note: Added Proposal A auth check command and readiness helpers (commit 6148470)
+      Note: |-
+        Added Proposal A auth check command and readiness helpers (commit 6148470)
+        Added metawsm commit command and dry-run previews (commit 9de30b7)
     - Path: cmd/metawsm/main_test.go
-      Note: Added auth check command and repo path resolution tests (commit 6148470)
+      Note: |-
+        Added auth check command and repo path resolution tests (commit 6148470)
+        Added commit command selector validation test (commit 9de30b7)
     - Path: examples/policy.example.json
       Note: |-
         Added git_pr policy block defaults for Proposal A rollout (commit d3f13f6)
@@ -53,6 +57,7 @@ LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -403,3 +408,80 @@ I added a `Service.Commit` primitive with dry-run previews, branch creation from
 - Branch rendering defaults to `{ticket}/{repo}/{run}` and sanitizes each segment using the same token normalization rules as session-name rendering.
 - Commit persistence behavior updates `run_pull_requests` keyed by `(run_id, ticket, repo)` and sets `pr_state` to `draft` when no prior PR state exists.
 - Dry-run behavior returns concrete git actions (`checkout -B`, `add -A`, `commit -m`) without mutating repository state.
+
+## Step 5: Add `metawsm commit` CLI Command with Dry-Run Previews
+
+This step exposed the new service primitive through the CLI so operators can invoke commit preparation and execution using a first-class command. The goal was to complete the command-surface task immediately after the service-layer foundation landed.
+
+I added `metawsm commit` with run/ticket selection, optional commit message and actor flags, and dry-run output that prints the exact git actions for each repo target.
+
+### Prompt Context
+
+**User prompt (verbatim):** "use docmgr to pick up ticket METAWSM-009 --- look at the plan, diary, and tasks, and then continue implementing. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue shipping the next planned task after service primitives, while preserving incremental commits and diary updates.
+
+**Inferred user intent:** Move toward usable end-to-end commit/PR automation by turning backend primitives into operator-facing CLI workflows.
+
+**Commit (code):** 9de30b7 — "Add metawsm commit command with dry-run previews"
+
+### What I did
+- Added `commit` routing in `cmd/metawsm/main.go` command switch.
+- Implemented `commitCommand` in `cmd/metawsm/main.go` with flags:
+  - `--run-id`, `--ticket`, `--db`, `--message`, `--actor`, `--dry-run`
+- Wired CLI execution to `service.Commit(...)` using the new orchestrator primitive.
+- Added command output formatting for:
+  - dry-run mode (per-repo git command previews),
+  - real mode (commit SHA output),
+  - clean-repo skip reporting.
+- Updated `printUsage()` to include `metawsm commit ...`.
+- Added test `TestCommitCommandRequiresRunSelector` in `cmd/metawsm/main_test.go`.
+- Ran focused tests:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+
+### Why
+- Task 5 required CLI exposure of commit primitives with dry-run previews.
+- The operator workflow needs a command-level entry point before PR creation can be layered on top.
+
+### What worked
+- Command parsing and output behavior integrated cleanly with existing CLI patterns.
+- `cmd/metawsm` and `internal/orchestrator` tests passed after final fix.
+
+### What didn't work
+- First `cmd/metawsm` test run failed due exact error-string mismatch in the new test assertion.
+- Command:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+- Error:
+  - `--- FAIL: TestCommitCommandRequiresRunSelector (0.00s)`
+  - `main_test.go:379: unexpected error: one of --run-id or --ticket is required`
+- Fix:
+  - updated assertion text in `TestCommitCommandRequiresRunSelector` to match the existing `requireRunSelector` error string.
+
+### What I learned
+- Existing selector and command patterns in `main.go` made adding new subcommands low-risk when reusing `requireRunSelector` and per-command flagsets.
+
+### What was tricky to build
+- Keeping output concise while still surfacing enough per-repo detail for dry-run trust (branch/base/message/actions) and non-dry-run confirmation (commit SHA).
+
+### What warrants a second pair of eyes
+- Whether the current `metawsm commit` output should include credential mode/actor explicitly in CLI output (currently persisted in store/events but not shown on command output).
+
+### What should be done in the future
+- Add `metawsm pr` command that consumes persisted commit metadata and creates PRs via `gh pr create`.
+- Consider adding a `--json` output mode for commit/pr commands for automation workflows.
+
+### Code review instructions
+- Start in `cmd/metawsm/main.go`:
+  - `case "commit"`
+  - `commitCommand`
+  - usage line in `printUsage`
+- Review `cmd/metawsm/main_test.go`:
+  - `TestCommitCommandRequiresRunSelector`
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+
+### Technical details
+- `metawsm commit` delegates to `orchestrator.CommitOptions` and prints per-repo results from `CommitResult.Repos`.
+- Dry-run output includes each queued git action (`checkout -B`, `add -A`, `commit -m`) so operators can verify intent before mutation.
