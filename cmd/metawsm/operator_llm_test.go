@@ -23,7 +23,7 @@ func TestParseOperatorLLMResponse(t *testing.T) {
 }
 
 func TestMergeOperatorDecisionsAssistNeverExecutes(t *testing.T) {
-	rule := operatorRuleDecision{Intent: operatorIntentAutoRestart, Reason: "rule restart"}
+	rule := operatorRuleDecision{Intent: operatorIntentAutoRestart, Reason: "rule restart", Execute: true}
 	llm := &operatorLLMResponse{Intent: operatorIntentEscalateBlocked, Reason: "needs human"}
 	merged := mergeOperatorDecisions("assist", rule, llm)
 	if merged.Execute {
@@ -34,6 +34,17 @@ func TestMergeOperatorDecisionsAssistNeverExecutes(t *testing.T) {
 	}
 	if !strings.Contains(merged.Reason, "llm_suggested") {
 		t.Fatalf("expected llm suggestion annotation, got %q", merged.Reason)
+	}
+}
+
+func TestMergeOperatorDecisionsAutoPreservesRuleExecution(t *testing.T) {
+	rule := operatorRuleDecision{Intent: operatorIntentCommitReady, Reason: "ready to commit", Execute: true}
+	merged := mergeOperatorDecisions("auto", rule, nil)
+	if merged.Intent != operatorIntentCommitReady {
+		t.Fatalf("expected commit_ready intent, got %q", merged.Intent)
+	}
+	if !merged.Execute {
+		t.Fatalf("expected auto mode to preserve rule execute flag")
 	}
 }
 

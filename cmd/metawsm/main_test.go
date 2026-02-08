@@ -173,6 +173,12 @@ Mode: bootstrap
 Tickets: METAWSM-006
 Guidance:
   - id=7 agent@ws question=Need operator decision
+Diffs:
+  - ws-a path=/tmp/ws-a
+    * metawsm dirty files=2
+Pull Requests:
+  - METAWSM-006/metawsm state=draft head=feature base=main number=0 url=- actor=agent
+  - METAWSM-006/metawsm-docs state=open head=feature base=main number=12 url=https://github.com/example/repo/pull/12 actor=agent
 Agents:
   - agent@ws session=s1 status=stalled health=stalled last_activity=2026-02-08T00:00:00Z activity_age=1h last_progress=2026-02-08T00:00:00Z progress_age=1h
 `
@@ -203,6 +209,15 @@ Agents:
 	}
 	if snapshot.UnhealthyAgents[0].Session != "s1" {
 		t.Fatalf("expected unhealthy session s1, got %q", snapshot.UnhealthyAgents[0].Session)
+	}
+	if !snapshot.HasDirtyDiffs {
+		t.Fatalf("expected dirty diff detection")
+	}
+	if snapshot.DraftPullRequests != 1 {
+		t.Fatalf("expected one draft pull request, got %d", snapshot.DraftPullRequests)
+	}
+	if snapshot.OpenPullRequests != 1 {
+		t.Fatalf("expected one open pull request, got %d", snapshot.OpenPullRequests)
 	}
 }
 
@@ -278,6 +293,88 @@ func TestBuildWatchDirectionHintsIncludesLikelyCause(t *testing.T) {
 	}
 	if !strings.Contains(joined, "metawsm restart --run-id run-123") {
 		t.Fatalf("expected restart direction hint, got:\n%s", joined)
+	}
+}
+
+func TestBuildWatchDirectionHintsCommitReady(t *testing.T) {
+	snapshot := watchSnapshot{RunID: "run-commit-1"}
+	hints := buildWatchDirectionHints(snapshot, "commit_ready")
+	joined := strings.Join(hints, "\n")
+	if !strings.Contains(joined, "metawsm commit --run-id run-commit-1 --dry-run") {
+		t.Fatalf("expected commit preview hint, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "metawsm commit --run-id run-commit-1") {
+		t.Fatalf("expected commit execution hint, got:\n%s", joined)
+	}
+}
+
+func TestBuildOperatorRuleDecisionCommitReadyAssist(t *testing.T) {
+	now := time.Now()
+	decision, err := buildOperatorRuleDecision(
+		context.Background(),
+		nil,
+		watchSnapshot{
+			RunID:         "run-commit-ready",
+			RunStatus:     string(model.RunStatusComplete),
+			HasDirtyDiffs: true,
+		},
+		model.RunRecord{
+			RunID:     "run-commit-ready",
+			Status:    model.RunStatusComplete,
+			UpdatedAt: now,
+		},
+		now,
+		time.Hour,
+		time.Minute,
+		2,
+		3,
+		0,
+		nil,
+		"assist",
+	)
+	if err != nil {
+		t.Fatalf("build operator rule decision: %v", err)
+	}
+	if decision.Intent != operatorIntentCommitReady {
+		t.Fatalf("expected commit_ready intent, got %q", decision.Intent)
+	}
+	if decision.Execute {
+		t.Fatalf("expected assist mode commit readiness to not auto-execute")
+	}
+}
+
+func TestBuildOperatorRuleDecisionPRReadyAuto(t *testing.T) {
+	now := time.Now()
+	decision, err := buildOperatorRuleDecision(
+		context.Background(),
+		nil,
+		watchSnapshot{
+			RunID:             "run-pr-ready",
+			RunStatus:         string(model.RunStatusComplete),
+			DraftPullRequests: 2,
+		},
+		model.RunRecord{
+			RunID:     "run-pr-ready",
+			Status:    model.RunStatusComplete,
+			UpdatedAt: now,
+		},
+		now,
+		time.Hour,
+		time.Minute,
+		2,
+		3,
+		0,
+		nil,
+		"auto",
+	)
+	if err != nil {
+		t.Fatalf("build operator rule decision: %v", err)
+	}
+	if decision.Intent != operatorIntentPRReady {
+		t.Fatalf("expected pr_ready intent, got %q", decision.Intent)
+	}
+	if !decision.Execute {
+		t.Fatalf("expected auto mode PR readiness to auto-execute")
 	}
 }
 

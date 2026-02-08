@@ -18,11 +18,14 @@ const (
 	operatorIntentEscalateBlocked  operatorIntent = "escalate_blocked"
 	operatorIntentAutoRestart      operatorIntent = "auto_restart"
 	operatorIntentAutoStopStale    operatorIntent = "auto_stop_stale"
+	operatorIntentCommitReady      operatorIntent = "commit_ready"
+	operatorIntentPRReady          operatorIntent = "pr_ready"
 )
 
 type operatorRuleDecision struct {
-	Intent operatorIntent
-	Reason string
+	Intent  operatorIntent
+	Reason  string
+	Execute bool
 }
 
 type operatorMergedDecision struct {
@@ -94,7 +97,7 @@ func (c *codexCLIAdapter) Propose(ctx context.Context, req operatorLLMRequest) (
 	prompt := strings.Join([]string{
 		"You are an operator assistant for metawsm.",
 		"Return a single JSON object with keys: intent, target_run, reason, confidence, needs_human.",
-		"Allowed intents: noop, escalate_guidance, escalate_blocked, auto_restart, auto_stop_stale.",
+		"Allowed intents: noop, escalate_guidance, escalate_blocked, auto_restart, auto_stop_stale, commit_ready, pr_ready.",
 		"Do not include markdown.",
 		"Context JSON:",
 		string(payload),
@@ -156,7 +159,7 @@ func parseOperatorLLMResponse(output string) (operatorLLMResponse, error) {
 
 func isOperatorIntentAllowlisted(intent operatorIntent) bool {
 	switch intent {
-	case operatorIntentNoop, operatorIntentEscalateGuidance, operatorIntentEscalateBlocked, operatorIntentAutoRestart, operatorIntentAutoStopStale:
+	case operatorIntentNoop, operatorIntentEscalateGuidance, operatorIntentEscalateBlocked, operatorIntentAutoRestart, operatorIntentAutoStopStale, operatorIntentCommitReady, operatorIntentPRReady:
 		return true
 	default:
 		return false
@@ -168,7 +171,7 @@ func mergeOperatorDecisions(mode string, rule operatorRuleDecision, llm *operato
 		Intent:  rule.Intent,
 		Reason:  rule.Reason,
 		Source:  "rule",
-		Execute: rule.Intent == operatorIntentAutoRestart || rule.Intent == operatorIntentAutoStopStale,
+		Execute: rule.Execute,
 	}
 
 	if strings.EqualFold(mode, "assist") {
@@ -181,9 +184,6 @@ func mergeOperatorDecisions(mode string, rule operatorRuleDecision, llm *operato
 	}
 
 	if strings.EqualFold(mode, "off") || llm == nil || llm.Intent == "" {
-		if strings.EqualFold(mode, "off") {
-			decision.Execute = decision.Execute
-		}
 		return decision
 	}
 

@@ -598,6 +598,9 @@ type watchSnapshot struct {
 	Tickets            string
 	HasGuidance        bool
 	HasUnhealthyAgents bool
+	HasDirtyDiffs      bool
+	DraftPullRequests  int
+	OpenPullRequests   int
 	GuidanceItems      []string
 	UnhealthyAgents    []watchAgentIssue
 }
@@ -857,7 +860,7 @@ func operatorCommand(args []string) error {
 	} else {
 		fmt.Printf("Operator supervising run %s (interval=%ds llm_mode=%s dry_run=%t).\n", selectedRunID, intervalSeconds, effectiveLLMMode, dryRun)
 	}
-	fmt.Println("Operator signals: guidance-needed, stale-candidate-verified, stale-candidate-rejected.")
+	fmt.Println("Operator signals: guidance-needed, stale-candidate-verified, stale-candidate-rejected, commit-ready, pr-ready.")
 
 	ticker := time.NewTicker(time.Duration(intervalSeconds) * time.Second)
 	defer ticker.Stop()
@@ -941,6 +944,7 @@ func operatorCommand(args []string) error {
 				cfg.Operator.RestartBudget,
 				consecutiveUnhealthyByRun[snapshot.RunID],
 				probeOperatorSessionEvidence,
+				cfg.GitPR.Mode,
 			)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: operator rule evaluation failed for run %s: %v\n", snapshot.RunID, err)
@@ -1006,7 +1010,7 @@ func operatorCommand(args []string) error {
 						}
 					}
 				}
-			} else if merged.Intent == operatorIntentAutoStopStale || merged.Intent == operatorIntentAutoRestart {
+			} else if merged.Intent == operatorIntentAutoStopStale || merged.Intent == operatorIntentAutoRestart || merged.Intent == operatorIntentCommitReady || merged.Intent == operatorIntentPRReady {
 				fmt.Printf("  action not executed (dry_run=%t llm_mode=%s)\n", dryRun, effectiveLLMMode)
 			}
 
@@ -1044,11 +1048,13 @@ func buildOperatorRuleDecision(
 	restartBudget int,
 	consecutiveUnhealthy int,
 	probe operatorSessionProbe,
+	gitPRMode string,
 ) (operatorRuleDecision, error) {
 	if snapshot.HasGuidance {
 		return operatorRuleDecision{
-			Intent: operatorIntentEscalateGuidance,
-			Reason: "operator input is required",
+			Intent:  operatorIntentEscalateGuidance,
+			Reason:  "operator input is required",
+			Execute: false,
 		}, nil
 	}
 
@@ -1060,21 +1066,24 @@ func buildOperatorRuleDecision(
 		}
 		if verified {
 			return operatorRuleDecision{
-				Intent: operatorIntentAutoStopStale,
-				Reason: staleReason + "; " + verifyReason,
+				Intent:  operatorIntentAutoStopStale,
+				Reason:  staleReason + "; " + verifyReason,
+				Execute: true,
 			}, nil
 		}
 		return operatorRuleDecision{
-			Intent: operatorIntentNoop,
-			Reason: staleReason + "; " + verifyReason,
+			Intent:  operatorIntentNoop,
+			Reason:  staleReason + "; " + verifyReason,
+			Execute: false,
 		}, nil
 	}
 
 	if snapshot.HasUnhealthyAgents && strings.EqualFold(snapshot.RunStatus, string(model.RunStatusRunning)) {
 		if consecutiveUnhealthy < unhealthyConfirmations {
 			return operatorRuleDecision{
-				Intent: operatorIntentNoop,
-				Reason: fmt.Sprintf("awaiting corroboration (%d/%d unhealthy intervals)", consecutiveUnhealthy, unhealthyConfirmations),
+				Intent:  operatorIntentNoop,
+				Reason:  fmt.Sprintf("awaiting corroboration (%d/%d unhealthy intervals)", consecutiveUnhealthy, unhealthyConfirmations),
+				Execute: false,
 			}, nil
 		}
 		state, err := service.GetOperatorRunState(snapshot.RunID)
@@ -1083,25 +1092,50 @@ func buildOperatorRuleDecision(
 		}
 		if state != nil && state.RestartAttempts >= restartBudget {
 			return operatorRuleDecision{
-				Intent: operatorIntentEscalateBlocked,
-				Reason: fmt.Sprintf("restart budget exhausted (%d/%d)", state.RestartAttempts, restartBudget),
+				Intent:  operatorIntentEscalateBlocked,
+				Reason:  fmt.Sprintf("restart budget exhausted (%d/%d)", state.RestartAttempts, restartBudget),
+				Execute: false,
 			}, nil
 		}
 		if state != nil && state.CooldownUntil != nil && now.Before(*state.CooldownUntil) {
 			return operatorRuleDecision{
-				Intent: operatorIntentNoop,
-				Reason: fmt.Sprintf("restart cooldown active until %s", state.CooldownUntil.Format(time.RFC3339)),
+				Intent:  operatorIntentNoop,
+				Reason:  fmt.Sprintf("restart cooldown active until %s", state.CooldownUntil.Format(time.RFC3339)),
+				Execute: false,
 			}, nil
 		}
 		return operatorRuleDecision{
-			Intent: operatorIntentAutoRestart,
-			Reason: "unhealthy state corroborated and restart budget available",
+			Intent:  operatorIntentAutoRestart,
+			Reason:  "unhealthy state corroborated and restart budget available",
+			Execute: true,
 		}, nil
 	}
 
+	mode := strings.TrimSpace(strings.ToLower(gitPRMode))
+	if mode == "" {
+		mode = "assist"
+	}
+	if strings.EqualFold(snapshot.RunStatus, string(model.RunStatusComplete)) && mode != "off" {
+		if snapshot.HasDirtyDiffs {
+			return operatorRuleDecision{
+				Intent:  operatorIntentCommitReady,
+				Reason:  "run completed with dirty repository diffs; commit workflow is ready",
+				Execute: mode == "auto",
+			}, nil
+		}
+		if snapshot.DraftPullRequests > 0 {
+			return operatorRuleDecision{
+				Intent:  operatorIntentPRReady,
+				Reason:  fmt.Sprintf("run has %d draft pull request record(s); PR creation is ready", snapshot.DraftPullRequests),
+				Execute: mode == "auto",
+			}, nil
+		}
+	}
+
 	return operatorRuleDecision{
-		Intent: operatorIntentNoop,
-		Reason: "no deterministic action required",
+		Intent:  operatorIntentNoop,
+		Reason:  "no deterministic action required",
+		Execute: false,
 	}, nil
 }
 
@@ -1115,6 +1149,10 @@ func operatorEventMessage(snapshot watchSnapshot, decision operatorMergedDecisio
 		return "auto_restart_candidate", decision.Reason
 	case operatorIntentEscalateBlocked:
 		return "escalation_blocked", decision.Reason
+	case operatorIntentCommitReady:
+		return "commit_ready", decision.Reason
+	case operatorIntentPRReady:
+		return "pr_ready", decision.Reason
 	default:
 		return "operator_noop", decision.Reason
 	}
@@ -1127,6 +1165,12 @@ func executeOperatorAction(ctx context.Context, service *orchestrator.Service, r
 		return err
 	case operatorIntentAutoStopStale:
 		return service.Stop(ctx, runID)
+	case operatorIntentCommitReady:
+		_, err := service.Commit(ctx, orchestrator.CommitOptions{RunID: runID, Actor: "operator"})
+		return err
+	case operatorIntentPRReady:
+		_, err := service.OpenPullRequests(ctx, orchestrator.PullRequestOptions{RunID: runID, Actor: "operator"})
+		return err
 	default:
 		return nil
 	}
@@ -1484,6 +1528,8 @@ func parseWatchSnapshot(statusText string) watchSnapshot {
 	snapshot := watchSnapshot{}
 	inAgents := false
 	inGuidance := false
+	inDiffs := false
+	inPullRequests := false
 	scanner := bufio.NewScanner(strings.NewReader(statusText))
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -1492,21 +1538,41 @@ func parseWatchSnapshot(statusText string) watchSnapshot {
 			snapshot.RunID = strings.TrimSpace(strings.TrimPrefix(line, "Run:"))
 			inAgents = false
 			inGuidance = false
+			inDiffs = false
+			inPullRequests = false
 		case strings.HasPrefix(line, "Status:"):
 			snapshot.RunStatus = strings.TrimSpace(strings.TrimPrefix(line, "Status:"))
 			inAgents = false
 			inGuidance = false
+			inDiffs = false
+			inPullRequests = false
 		case strings.HasPrefix(line, "Tickets:"):
 			snapshot.Tickets = strings.TrimSpace(strings.TrimPrefix(line, "Tickets:"))
 			inAgents = false
 			inGuidance = false
+			inDiffs = false
+			inPullRequests = false
 		case strings.HasPrefix(line, "Guidance:"):
 			snapshot.HasGuidance = true
 			inAgents = false
 			inGuidance = true
+			inDiffs = false
+			inPullRequests = false
+		case strings.HasPrefix(line, "Diffs:"):
+			inAgents = false
+			inGuidance = false
+			inDiffs = true
+			inPullRequests = false
+		case strings.HasPrefix(line, "Pull Requests:"):
+			inAgents = false
+			inGuidance = false
+			inDiffs = false
+			inPullRequests = true
 		case strings.HasPrefix(line, "Agents:"):
 			inAgents = true
 			inGuidance = false
+			inDiffs = false
+			inPullRequests = false
 		default:
 			if inGuidance {
 				if !strings.HasPrefix(line, "  ") {
@@ -1515,6 +1581,30 @@ func parseWatchSnapshot(statusText string) watchSnapshot {
 					item := strings.TrimSpace(strings.TrimPrefix(line, "- "))
 					if item != "" {
 						snapshot.GuidanceItems = append(snapshot.GuidanceItems, item)
+					}
+					continue
+				}
+			}
+			if inDiffs {
+				if !strings.HasPrefix(line, "  ") {
+					inDiffs = false
+				} else {
+					if strings.Contains(strings.TrimSpace(line), " dirty files=") {
+						snapshot.HasDirtyDiffs = true
+					}
+					continue
+				}
+			}
+			if inPullRequests {
+				if !strings.HasPrefix(line, "  ") {
+					inPullRequests = false
+				} else {
+					state := strings.TrimSpace(strings.ToLower(parseWatchField(line, "state")))
+					switch state {
+					case "draft":
+						snapshot.DraftPullRequests++
+					case "open":
+						snapshot.OpenPullRequests++
 					}
 					continue
 				}
@@ -1537,6 +1627,17 @@ func parseWatchSnapshot(statusText string) watchSnapshot {
 		snapshot.HasGuidance = true
 	}
 	return snapshot
+}
+
+func parseWatchField(line string, key string) string {
+	fields := strings.Fields(strings.TrimSpace(line))
+	prefix := strings.TrimSpace(key) + "="
+	for _, field := range fields {
+		if strings.HasPrefix(field, prefix) {
+			return strings.TrimPrefix(field, prefix)
+		}
+	}
+	return ""
 }
 
 func classifyWatchEvent(snapshot watchSnapshot) (event string, message string, terminal bool) {
@@ -1679,6 +1780,12 @@ func buildWatchDirectionHints(snapshot watchSnapshot, event string) []string {
 	case "run_done":
 		hints = append(hints, fmt.Sprintf("Review and merge: metawsm merge --run-id %s --dry-run", snapshot.RunID))
 		hints = append(hints, fmt.Sprintf("Close when ready: metawsm close --run-id %s", snapshot.RunID))
+	case "commit_ready":
+		hints = append(hints, fmt.Sprintf("Preview commit actions: metawsm commit --run-id %s --dry-run", snapshot.RunID))
+		hints = append(hints, fmt.Sprintf("Create commits: metawsm commit --run-id %s", snapshot.RunID))
+	case "pr_ready":
+		hints = append(hints, fmt.Sprintf("Preview PR actions: metawsm pr --run-id %s --dry-run", snapshot.RunID))
+		hints = append(hints, fmt.Sprintf("Create pull requests: metawsm pr --run-id %s", snapshot.RunID))
 	}
 	return hints
 }
