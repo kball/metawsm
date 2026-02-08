@@ -144,3 +144,13 @@ Step 10: implemented git_pr validation framework and enforced required checks fo
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Regression tests for check failures and require_all behavior
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy.go — git_pr schema and validation updates for test commands and forbidden patterns
 
+
+## 2026-02-08
+
+Step 11: enforced human-only merge execution by requiring --human for non-dry-run merge command paths (task 18, commit 4dca4ec).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Added merge acknowledgement gate and updated operator hints
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go — Added merge acknowledgement and hint behavior tests
+

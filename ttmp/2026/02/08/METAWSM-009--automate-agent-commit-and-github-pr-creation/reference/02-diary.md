@@ -17,12 +17,14 @@ RelatedFiles:
         Added metawsm commit command and dry-run previews (commit 9de30b7)
         Added metawsm pr command with dry-run previews (commit 180a976)
         Integrated operator commit/pr readiness parsing
+        Enforced --human acknowledgement for merge and updated run_done hints/usage (commit 4dca4ec)
     - Path: cmd/metawsm/main_test.go
       Note: |-
         Added auth check command and repo path resolution tests (commit 6148470)
         Added commit command selector validation test (commit 9de30b7)
         Added metawsm pr selector validation test (commit 180a976)
         Added readiness parsing/rule/hint tests for operator loop integration (commit b3587e3)
+        Added merge human-ack and run_done hint coverage (commit 4dca4ec)
     - Path: cmd/metawsm/operator_llm.go
       Note: Added commit_ready/pr_ready intents and per-rule execute behavior (commit b3587e3)
     - Path: cmd/metawsm/operator_llm_test.go
@@ -79,6 +81,7 @@ LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -933,3 +936,74 @@ I added a dedicated validation module with named checks (`tests`, `forbidden_fil
 - Gate semantics:
   - `require_all=true`: all applicable required checks must pass,
   - `require_all=false`: at least one applicable required check must pass.
+
+## Step 11: Enforce Human-Only Merge Execution in CLI Surfaces
+
+This step tightened merge behavior to require explicit human acknowledgement when executing `metawsm merge` outside dry-run mode. The objective was to enforce the no-auto-merge policy at the command surface, not only through operator intent rules.
+
+I added a required `--human` acknowledgement for non-dry-run merge execution, updated direction hints and usage output, and added CLI tests that lock this behavior in place.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Ignore them for now, continue with METAWSM-009"
+
+**Assistant interpretation:** Continue implementing remaining METAWSM-009 tasks after finishing validation work.
+
+**Inferred user intent:** Keep advancing ticket completion with incremental, reviewable changes and strict safety constraints.
+
+**Commit (code):** 4dca4ec — "Require human acknowledgement for merge execution"
+
+### What I did
+- Updated `cmd/metawsm/main.go` `mergeCommand` to require `--human` when not using `--dry-run`:
+  - returns `merge requires --human acknowledgement; automated merge is disabled` otherwise.
+- Updated operator direction hints (`run_done`) to include explicit human merge command:
+  - `metawsm merge --run-id <id> --human`.
+- Updated CLI usage text for merge:
+  - `metawsm merge [--run-id RUN_ID | --ticket T1] [--dry-run] [--human]`.
+- Added tests in `cmd/metawsm/main_test.go`:
+  - `TestMergeCommandRequiresHumanAcknowledgement`
+  - `TestBuildWatchDirectionHintsRunDoneIncludesHumanMerge`
+- Ran focused validation:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/policy -count=1`
+- Checked task 18 complete:
+  - `docmgr task check --ticket METAWSM-009 --id 18`
+
+### Why
+- Task 18 required explicit human-only merge policy enforcement in operator/CLI surfaces.
+- The operator loop already avoids merge execution; this CLI acknowledgement closes the remaining accidental automation path.
+
+### What worked
+- Command-level guard works and is covered by tests.
+- Existing package tests remained green.
+- Merge hints now clearly direct users to human-acknowledged execution.
+
+### What didn't work
+- N/A in this step; implementation and tests passed on first pass.
+
+### What I learned
+- A small acknowledgement flag is an effective safety rail when a command should remain human-operated but still script-friendly for explicit usage.
+
+### What was tricky to build
+- Ensuring UX remains straightforward while making the policy constraint explicit in command output and hinting.
+
+### What warrants a second pair of eyes
+- Whether `--human` should also be required in additional surfaces (for example future TUI merge actions) if those paths are added.
+
+### What should be done in the future
+- Implement task 17 (per repo/ticket branch+PR fanout orchestration for multi-repo runs).
+- Implement task 20 (end-to-end successful local-auth commit push + PR creation test).
+
+### Code review instructions
+- Review merge guard and user-facing text updates in:
+  - `cmd/metawsm/main.go`
+- Review test coverage in:
+  - `cmd/metawsm/main_test.go`
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+
+### Technical details
+- Non-dry-run merge now requires explicit CLI acknowledgement:
+  - `metawsm merge --run-id <id> --human`
+- Dry-run remains available without acknowledgement for planning/review.

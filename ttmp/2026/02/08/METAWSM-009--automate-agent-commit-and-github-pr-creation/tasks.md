@@ -19,6 +19,6 @@
 - [x] Validation V1: enforce all configured test commands must pass before commit/pr
 - [x] Validation V1: add forbidden-file and clean-tree checks as required gates
 - [ ] Implement per repo/ticket branch+PR fanout orchestration for multi-repo runs
-- [ ] Enforce human-only merge policy in operator and CLI surfaces (no auto-merge path)
+- [x] Enforce human-only merge policy in operator and CLI surfaces (no auto-merge path)
 - [x] Add playbook section for Proposal A setup (gh login, git identity, troubleshooting)
 - [ ] Add end-to-end test for successful local-auth commit push and PR creation
