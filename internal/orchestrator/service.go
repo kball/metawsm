@@ -38,6 +38,7 @@ type RunOptions struct {
 	RunID             string
 	Tickets           []string
 	Repos             []string
+	DocRepo           string
 	BaseBranch        string
 	AgentNames        []string
 	WorkspaceStrategy model.WorkspaceStrategy
@@ -126,6 +127,10 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunResult, error
 	if len(repos) == 0 && options.WorkspaceStrategy != model.WorkspaceStrategyReuse {
 		return RunResult{}, fmt.Errorf("at least one --repos entry is required for create/fork")
 	}
+	docRepo := normalizeDocRepo(options.DocRepo, repos)
+	if len(repos) > 0 && strings.TrimSpace(docRepo) != "" && !containsToken(repos, docRepo) {
+		return RunResult{}, fmt.Errorf("doc repo %q must be one of --repos (%s)", docRepo, strings.Join(repos, ","))
+	}
 
 	strategy := options.WorkspaceStrategy
 	if strategy == "" {
@@ -139,7 +144,7 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunResult, error
 		baseBranch = "main"
 	}
 
-	agents, err := policy.ResolveAgents(cfg, normalizeTokens(options.AgentNames))
+	agents, err := policy.ResolveAgents(cfg, normalizeTokens(options.AgentNames), policyPath)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -158,6 +163,7 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunResult, error
 		Mode:              mode,
 		Tickets:           tickets,
 		Repos:             repos,
+		DocRepo:           docRepo,
 		BaseBranch:        baseBranch,
 		WorkspaceStrategy: strategy,
 		Agents:            agents,
@@ -347,6 +353,10 @@ func (s *Service) Restart(ctx context.Context, options RestartOptions) (RestartR
 		if err != nil {
 			return RestartResult{}, err
 		}
+		agentWorkdir, err := resolveDocRepoPath(workspacePath, spec.DocRepo, spec.Repos)
+		if err != nil {
+			return RestartResult{}, err
+		}
 		command := strings.TrimSpace(agentCommand[agent.Name])
 		if command == "" {
 			command = "bash"
@@ -359,7 +369,7 @@ func (s *Service) Restart(ctx context.Context, options RestartOptions) (RestartR
 		}
 
 		killCmd := fmt.Sprintf("tmux kill-session -t %s", shellQuote(sessionName))
-		startCmd := fmt.Sprintf("tmux new-session -d -s %s -c %s %s", shellQuote(sessionName), shellQuote(workspacePath), shellQuote(command))
+		startCmd := fmt.Sprintf("tmux new-session -d -s %s -c %s %s", shellQuote(sessionName), shellQuote(agentWorkdir), shellQuote(command))
 		actions = append(actions, killCmd, startCmd)
 
 		if options.DryRun {
@@ -565,7 +575,7 @@ func (s *Service) Iterate(ctx context.Context, options IterateOptions) (IterateR
 		if err != nil {
 			return IterateResult{}, err
 		}
-		workspaceActions, err := recordIterationFeedback(workspacePath, spec.Tickets, feedback, now, options.DryRun)
+		workspaceActions, err := recordIterationFeedback(workspacePath, spec.DocRepo, spec.Repos, spec.Tickets, feedback, now, options.DryRun)
 		if err != nil {
 			return IterateResult{}, err
 		}
@@ -1130,6 +1140,10 @@ func (s *Service) executeSingleStep(ctx context.Context, spec model.RunSpec, cfg
 		if err != nil {
 			return err
 		}
+		agentWorkdir, err := resolveDocRepoPath(workspacePath, spec.DocRepo, spec.Repos)
+		if err != nil {
+			return err
+		}
 		command := agentCommands[step.Agent]
 		if strings.TrimSpace(command) == "" {
 			command = "bash"
@@ -1139,7 +1153,7 @@ func (s *Service) executeSingleStep(ctx context.Context, spec model.RunSpec, cfg
 		sessionName := policy.RenderSessionName(cfg.Tmux.SessionPattern, step.Agent, step.WorkspaceName)
 
 		_ = tmuxKillSession(ctx, sessionName)
-		tmuxCmd := fmt.Sprintf("tmux new-session -d -s %s -c %s %s", shellQuote(sessionName), shellQuote(workspacePath), shellQuote(command))
+		tmuxCmd := fmt.Sprintf("tmux new-session -d -s %s -c %s %s", shellQuote(sessionName), shellQuote(agentWorkdir), shellQuote(command))
 		if err := runShell(ctx, tmuxCmd); err != nil {
 			return err
 		}
@@ -1157,7 +1171,7 @@ func (s *Service) executeSingleStep(ctx context.Context, spec model.RunSpec, cfg
 		if err != nil {
 			return err
 		}
-		return syncTicketDocsToWorkspace(ctx, step.Ticket, workspacePath)
+		return syncTicketDocsToWorkspace(ctx, step.Ticket, workspacePath, spec.DocRepo, spec.Repos)
 	default:
 		return fmt.Errorf("unknown step kind: %s", step.Kind)
 	}
@@ -1401,6 +1415,26 @@ func workspaceRepoPaths(workspacePath string, repos []string) ([]string, error) 
 	return paths, nil
 }
 
+func resolveDocRepoPath(workspacePath string, docRepo string, repos []string) (string, error) {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return "", fmt.Errorf("workspace path is required")
+	}
+	docRepo = normalizeDocRepo(docRepo, repos)
+	if docRepo == "" {
+		return workspacePath, nil
+	}
+
+	candidate := filepath.Join(workspacePath, docRepo)
+	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+		return candidate, nil
+	}
+	if len(repos) == 1 && isGitRepo(workspacePath) {
+		return workspacePath, nil
+	}
+	return "", fmt.Errorf("doc repo path not found in workspace: %s", candidate)
+}
+
 func isGitRepo(path string) bool {
 	info, err := os.Stat(filepath.Join(path, ".git"))
 	if err != nil {
@@ -1409,12 +1443,16 @@ func isGitRepo(path string) bool {
 	return info.IsDir() || info.Mode().IsRegular()
 }
 
-func syncTicketDocsToWorkspace(ctx context.Context, ticket string, workspacePath string) error {
+func syncTicketDocsToWorkspace(ctx context.Context, ticket string, workspacePath string, docRepo string, repos []string) error {
 	sourcePath, relativePath, err := resolveTicketDocPath(ctx, ticket)
 	if err != nil {
 		return err
 	}
-	return syncTicketDocsDirectory(sourcePath, relativePath, workspacePath)
+	docRootPath, err := resolveDocRepoPath(workspacePath, docRepo, repos)
+	if err != nil {
+		return err
+	}
+	return syncTicketDocsDirectory(sourcePath, relativePath, docRootPath)
 }
 
 func resolveTicketDocPath(ctx context.Context, ticket string) (string, string, error) {
@@ -1464,17 +1502,17 @@ func parseDocmgrTicketListPaths(output []byte) (string, string, error) {
 	return docsRoot, relativePath, nil
 }
 
-func syncTicketDocsDirectory(sourcePath string, ticketRelativePath string, workspacePath string) error {
+func syncTicketDocsDirectory(sourcePath string, ticketRelativePath string, docRootPath string) error {
 	if strings.TrimSpace(sourcePath) == "" {
 		return fmt.Errorf("source ticket path is required")
 	}
 	if strings.TrimSpace(ticketRelativePath) == "" {
 		return fmt.Errorf("ticket relative path is required")
 	}
-	if strings.TrimSpace(workspacePath) == "" {
-		return fmt.Errorf("workspace path is required")
+	if strings.TrimSpace(docRootPath) == "" {
+		return fmt.Errorf("doc root path is required")
 	}
-	destinationPath := filepath.Join(workspacePath, "ttmp", ticketRelativePath)
+	destinationPath := filepath.Join(docRootPath, "ttmp", ticketRelativePath)
 	if err := os.RemoveAll(destinationPath); err != nil {
 		return fmt.Errorf("remove destination ticket path %s: %w", destinationPath, err)
 	}
@@ -1740,7 +1778,7 @@ func workspaceNamesFromAgents(agents []model.AgentRecord) []string {
 	return workspaces
 }
 
-func recordIterationFeedback(workspacePath string, tickets []string, feedback string, at time.Time, dryRun bool) ([]string, error) {
+func recordIterationFeedback(workspacePath string, docRepo string, repos []string, tickets []string, feedback string, at time.Time, dryRun bool) ([]string, error) {
 	actions := []string{}
 	signalFiles := []string{
 		filepath.Join(workspacePath, ".metawsm", "implementation-complete.json"),
@@ -1766,8 +1804,12 @@ func recordIterationFeedback(workspacePath string, tickets []string, feedback st
 		}
 	}
 
+	docRootPath, err := resolveDocRepoPath(workspacePath, docRepo, repos)
+	if err != nil {
+		return nil, err
+	}
 	for _, ticket := range tickets {
-		ticketPaths, err := locateTicketDocDirsInWorkspace(workspacePath, ticket)
+		ticketPaths, err := locateTicketDocDirsInWorkspace(docRootPath, ticket)
 		if err != nil {
 			return nil, err
 		}
@@ -1819,8 +1861,8 @@ func appendIterationFeedback(path string, feedback string, at time.Time) error {
 	return f.Close()
 }
 
-func locateTicketDocDirsInWorkspace(workspacePath string, ticket string) ([]string, error) {
-	root := filepath.Join(workspacePath, "ttmp")
+func locateTicketDocDirsInWorkspace(docRootPath string, ticket string) ([]string, error) {
+	root := filepath.Join(docRootPath, "ttmp")
 	info, err := os.Stat(root)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -2055,6 +2097,27 @@ func shellQuote(value string) string {
 
 func generateRunID() string {
 	return "run-" + time.Now().Format("20060102-150405")
+}
+
+func normalizeDocRepo(docRepo string, repos []string) string {
+	docRepo = strings.TrimSpace(docRepo)
+	if docRepo != "" {
+		return docRepo
+	}
+	if len(repos) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(repos[0])
+}
+
+func containsToken(values []string, target string) bool {
+	target = strings.TrimSpace(target)
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), target) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeTokens(values []string) []string {

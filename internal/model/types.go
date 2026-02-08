@@ -66,8 +66,11 @@ const (
 )
 
 type AgentSpec struct {
-	Name    string `json:"name"`
-	Command string `json:"command"`
+	Name    string   `json:"name"`
+	Profile string   `json:"profile,omitempty"`
+	Runner  string   `json:"runner,omitempty"`
+	Skills  []string `json:"skills,omitempty"`
+	Command string   `json:"command"`
 }
 
 type RunSpec struct {
@@ -75,6 +78,7 @@ type RunSpec struct {
 	Mode              RunMode           `json:"mode"`
 	Tickets           []string          `json:"tickets"`
 	Repos             []string          `json:"repos"`
+	DocRepo           string            `json:"doc_repo,omitempty"`
 	BaseBranch        string            `json:"base_branch"`
 	WorkspaceStrategy WorkspaceStrategy `json:"workspace_strategy"`
 	Agents            []AgentSpec       `json:"agents"`

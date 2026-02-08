@@ -43,6 +43,7 @@ Plan a run (no side effects):
 go run ./cmd/metawsm run \
   --ticket METAWSM-001 \
   --repos metawsm \
+  --doc-repo metawsm \
   --agent agent \
   --dry-run
 ```
@@ -53,6 +54,7 @@ Start a bootstrap run with interactive intake:
 go run ./cmd/metawsm bootstrap \
   --ticket METAWSM-002 \
   --repos metawsm \
+  --doc-repo metawsm \
   --base-branch main
 ```
 
@@ -122,6 +124,14 @@ Important fields:
 - `health.activity_stalled_seconds`
 - `health.progress_stalled_seconds`
 - `close.require_clean_git`
+- `agent_profiles[].runner` (currently `codex` or `shell`)
+- `agent_profiles[].base_prompt`
+- `agent_profiles[].skills`
+- `agents[].profile` (maps each agent to an `agent_profiles` entry)
+
+Kickoff doc-repo selection:
+- `--doc-repo` selects which workspace repo hosts `ttmp/` for docmgr operations.
+- Default behavior picks the first `--repos` entry.
 
 ## Bootstrap Signals
 

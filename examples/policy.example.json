@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "workspace": {
     "default_strategy": "create",
     "branch_prefix": "task",
@@ -19,10 +19,24 @@
   "close": {
     "require_clean_git": true
   },
+  "agent_profiles": [
+    {
+      "name": "codex-default",
+      "runner": "codex",
+      "base_prompt": "You are the implementation agent for this ticket run. You start in the kickoff-selected documentation repository, and that repository contains the docmgr ttmp root. Use docmgr there to manage tasks/docs/changelog and keep a diary while you work. If blocked, write .metawsm/guidance-request.json. When done, write .metawsm/implementation-complete.json and .metawsm/validation-result.json with status=passed and done_criteria matching the run brief.",
+      "skills": [
+        "docmgr",
+        "diary"
+      ],
+      "runner_options": {
+        "full_auto": true
+      }
+    }
+  ],
   "agents": [
     {
       "name": "agent",
-      "command": "bash"
+      "profile": "codex-default"
     }
   ]
 }

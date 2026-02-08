@@ -33,17 +33,31 @@ type Config struct {
 	Close struct {
 		RequireCleanGit bool `json:"require_clean_git"`
 	} `json:"close"`
-	Agents []Agent `json:"agents"`
+	AgentProfiles []AgentProfile `json:"agent_profiles"`
+	Agents        []Agent        `json:"agents"`
+}
+
+type AgentProfile struct {
+	Name          string        `json:"name"`
+	Runner        string        `json:"runner"`
+	BasePrompt    string        `json:"base_prompt"`
+	Skills        []string      `json:"skills"`
+	RunnerOptions RunnerOptions `json:"runner_options"`
+}
+
+type RunnerOptions struct {
+	FullAuto bool   `json:"full_auto"`
+	Command  string `json:"command"`
 }
 
 type Agent struct {
 	Name    string `json:"name"`
-	Command string `json:"command"`
+	Profile string `json:"profile"`
 }
 
 func Default() Config {
 	cfg := Config{
-		Version: 1,
+		Version: 2,
 	}
 	cfg.Workspace.DefaultStrategy = string(model.WorkspaceStrategyCreate)
 	cfg.Workspace.BranchPrefix = "task"
@@ -54,10 +68,21 @@ func Default() Config {
 	cfg.Health.ActivityStalledSeconds = 900
 	cfg.Health.ProgressStalledSeconds = 1200
 	cfg.Close.RequireCleanGit = true
+	cfg.AgentProfiles = []AgentProfile{
+		{
+			Name:       "default-shell",
+			Runner:     "shell",
+			BasePrompt: "",
+			Skills:     nil,
+			RunnerOptions: RunnerOptions{
+				Command: "bash",
+			},
+		},
+	}
 	cfg.Agents = []Agent{
 		{
 			Name:    "agent",
-			Command: "bash",
+			Profile: "default-shell",
 		},
 	}
 	return cfg
@@ -68,6 +93,10 @@ func Load(path string) (Config, string, error) {
 	finalPath := path
 	if strings.TrimSpace(finalPath) == "" {
 		finalPath = DefaultPolicyPath
+	}
+	absPath, err := filepath.Abs(finalPath)
+	if err == nil {
+		finalPath = absPath
 	}
 	if _, err := os.Stat(finalPath); os.IsNotExist(err) {
 		return cfg, finalPath, nil
@@ -123,30 +152,103 @@ func Validate(cfg Config) error {
 	if cfg.Execution.StepRetries < 0 {
 		return fmt.Errorf("execution.step_retries must be >= 0")
 	}
+	if len(cfg.AgentProfiles) == 0 {
+		return fmt.Errorf("agent_profiles must contain at least one entry")
+	}
+
+	profileByName := map[string]AgentProfile{}
+	for _, profile := range cfg.AgentProfiles {
+		name := strings.TrimSpace(profile.Name)
+		if name == "" {
+			return fmt.Errorf("agent_profiles.name cannot be empty")
+		}
+		if _, exists := profileByName[name]; exists {
+			return fmt.Errorf("duplicate agent profile %q", name)
+		}
+		runner := strings.TrimSpace(strings.ToLower(profile.Runner))
+		switch runner {
+		case "codex":
+			if strings.TrimSpace(profile.BasePrompt) == "" {
+				return fmt.Errorf("agent profile %q requires non-empty base_prompt for codex runner", name)
+			}
+		case "shell":
+			if strings.TrimSpace(profile.RunnerOptions.Command) == "" {
+				return fmt.Errorf("agent profile %q requires runner_options.command for shell runner", name)
+			}
+		default:
+			return fmt.Errorf("agent profile %q has unsupported runner %q", name, profile.Runner)
+		}
+		for _, skill := range profile.Skills {
+			if strings.TrimSpace(skill) == "" {
+				return fmt.Errorf("agent profile %q has empty skill name", name)
+			}
+		}
+		profileByName[name] = profile
+	}
+
 	if len(cfg.Agents) == 0 {
 		return fmt.Errorf("agents must contain at least one entry")
 	}
 	for _, agent := range cfg.Agents {
-		if strings.TrimSpace(agent.Name) == "" {
+		name := strings.TrimSpace(agent.Name)
+		if name == "" {
 			return fmt.Errorf("agent.name cannot be empty")
 		}
-		if strings.TrimSpace(agent.Command) == "" {
-			return fmt.Errorf("agent.command cannot be empty")
+		profile := strings.TrimSpace(agent.Profile)
+		if profile == "" {
+			return fmt.Errorf("agent.profile cannot be empty")
+		}
+		if _, ok := profileByName[profile]; !ok {
+			return fmt.Errorf("agent %q references unknown profile %q", name, profile)
 		}
 	}
 	return nil
 }
 
-func ResolveAgents(cfg Config, requested []string) ([]model.AgentSpec, error) {
-	agentMap := map[string]string{}
+func ResolveAgents(cfg Config, requested []string, policyPath string) ([]model.AgentSpec, error) {
+	agentByName := map[string]Agent{}
 	for _, agent := range cfg.Agents {
-		agentMap[agent.Name] = agent.Command
+		agentByName[agent.Name] = agent
+	}
+
+	profileByName := map[string]AgentProfile{}
+	for _, profile := range cfg.AgentProfiles {
+		profileByName[profile.Name] = profile
+	}
+
+	resolver := newSkillResolver(policyPath)
+	commandByProfile := map[string]string{}
+	specForAgent := func(agent Agent) (model.AgentSpec, error) {
+		profile, ok := profileByName[agent.Profile]
+		if !ok {
+			return model.AgentSpec{}, fmt.Errorf("agent %q references unknown profile %q", agent.Name, agent.Profile)
+		}
+		command, ok := commandByProfile[profile.Name]
+		if !ok {
+			var err error
+			command, err = compileProfileCommand(profile, resolver)
+			if err != nil {
+				return model.AgentSpec{}, err
+			}
+			commandByProfile[profile.Name] = command
+		}
+		return model.AgentSpec{
+			Name:    agent.Name,
+			Profile: profile.Name,
+			Runner:  profile.Runner,
+			Skills:  append([]string(nil), profile.Skills...),
+			Command: command,
+		}, nil
 	}
 
 	if len(requested) == 0 {
 		out := make([]model.AgentSpec, 0, len(cfg.Agents))
 		for _, agent := range cfg.Agents {
-			out = append(out, model.AgentSpec{Name: agent.Name, Command: agent.Command})
+			spec, err := specForAgent(agent)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, spec)
 		}
 		return out, nil
 	}
@@ -154,13 +256,105 @@ func ResolveAgents(cfg Config, requested []string) ([]model.AgentSpec, error) {
 	out := make([]model.AgentSpec, 0, len(requested))
 	for _, name := range requested {
 		name = strings.TrimSpace(name)
-		command, ok := agentMap[name]
+		agent, ok := agentByName[name]
 		if !ok {
 			return nil, fmt.Errorf("requested agent %q not found in policy", name)
 		}
-		out = append(out, model.AgentSpec{Name: name, Command: command})
+		spec, err := specForAgent(agent)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, spec)
 	}
 	return out, nil
+}
+
+func compileProfileCommand(profile AgentProfile, resolver skillResolver) (string, error) {
+	runner := strings.TrimSpace(strings.ToLower(profile.Runner))
+	switch runner {
+	case "shell":
+		return strings.TrimSpace(profile.RunnerOptions.Command), nil
+	case "codex":
+		prompt, err := buildCodexPrompt(profile, resolver)
+		if err != nil {
+			return "", err
+		}
+		command := "codex exec"
+		if profile.RunnerOptions.FullAuto {
+			command += " --full-auto"
+		}
+		return command + " " + quoteShell(prompt), nil
+	default:
+		return "", fmt.Errorf("unsupported runner %q", profile.Runner)
+	}
+}
+
+func buildCodexPrompt(profile AgentProfile, resolver skillResolver) (string, error) {
+	basePrompt := strings.TrimSpace(profile.BasePrompt)
+	if len(profile.Skills) == 0 {
+		return basePrompt, nil
+	}
+
+	skillLines := make([]string, 0, len(profile.Skills))
+	for _, skill := range profile.Skills {
+		skill = strings.TrimSpace(skill)
+		path, err := resolver.resolve(skill)
+		if err != nil {
+			return "", err
+		}
+		skillLines = append(skillLines, fmt.Sprintf("- %s: %s", skill, path))
+	}
+
+	var b strings.Builder
+	b.WriteString(basePrompt)
+	b.WriteString("\n\nRequired skills (read and apply these before implementation):\n")
+	b.WriteString(strings.Join(skillLines, "\n"))
+	return b.String(), nil
+}
+
+type skillResolver struct {
+	roots []string
+}
+
+func newSkillResolver(policyPath string) skillResolver {
+	roots := []string{}
+	seen := map[string]struct{}{}
+	addRoot := func(path string) {
+		path = filepath.Clean(path)
+		if strings.TrimSpace(path) == "" {
+			return
+		}
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		roots = append(roots, path)
+	}
+
+	if strings.TrimSpace(policyPath) != "" {
+		absPath, err := filepath.Abs(policyPath)
+		if err == nil {
+			repoRoot := filepath.Dir(filepath.Dir(absPath))
+			addRoot(filepath.Join(repoRoot, ".metawsm", "skills"))
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		addRoot(filepath.Join(home, ".codex", "skills"))
+	}
+	return skillResolver{roots: roots}
+}
+
+func (r skillResolver) resolve(skill string) (string, error) {
+	candidates := make([]string, 0, len(r.roots))
+	for _, root := range r.roots {
+		path := filepath.Join(root, skill, "SKILL.md")
+		candidates = append(candidates, path)
+		info, err := os.Stat(path)
+		if err == nil && !info.IsDir() {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("skill %q not found; checked: %s", skill, strings.Join(candidates, ", "))
 }
 
 func RenderSessionName(pattern string, agentName string, workspaceName string) string {
@@ -185,4 +379,8 @@ func sanitizeToken(token string) string {
 		token = "x"
 	}
 	return token
+}
+
+func quoteShell(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }

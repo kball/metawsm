@@ -53,12 +53,19 @@ func TestRunDryRunPersistsPlan(t *testing.T) {
 		t.Fatalf("expected non-empty plan")
 	}
 
-	record, _, _, err := svc.store.GetRun(result.RunID)
+	record, specJSON, _, err := svc.store.GetRun(result.RunID)
 	if err != nil {
 		t.Fatalf("get run: %v", err)
 	}
 	if record.Status != model.RunStatusPaused {
 		t.Fatalf("expected paused run status after dry-run, got %s", record.Status)
+	}
+	var storedSpec model.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &storedSpec); err != nil {
+		t.Fatalf("unmarshal stored spec: %v", err)
+	}
+	if storedSpec.DocRepo != "metawsm" {
+		t.Fatalf("expected default doc repo metawsm, got %q", storedSpec.DocRepo)
 	}
 
 	steps, err := svc.store.GetSteps(result.RunID)
@@ -89,6 +96,66 @@ func TestRunDryRunPersistsPlan(t *testing.T) {
 	}
 	if activeRuns[0].RunID != result.RunID {
 		t.Fatalf("expected active run id %s, got %s", result.RunID, activeRuns[0].RunID)
+	}
+}
+
+func TestRunDryRunUsesExplicitDocRepoOverride(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	svc, err := NewService(dbPath)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	result, err := svc.Run(t.Context(), RunOptions{
+		Tickets:           []string{"METAWSM-001"},
+		Repos:             []string{"metawsm", "workspace-manager"},
+		DocRepo:           "workspace-manager",
+		WorkspaceStrategy: model.WorkspaceStrategyCreate,
+		DryRun:            true,
+	})
+	if err != nil {
+		t.Fatalf("run dry-run: %v", err)
+	}
+	_, specJSON, _, err := svc.store.GetRun(result.RunID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	var storedSpec model.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &storedSpec); err != nil {
+		t.Fatalf("unmarshal stored spec: %v", err)
+	}
+	if storedSpec.DocRepo != "workspace-manager" {
+		t.Fatalf("expected doc repo workspace-manager, got %q", storedSpec.DocRepo)
+	}
+}
+
+func TestRunRejectsDocRepoOutsideRepos(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	svc, err := NewService(dbPath)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	_, err = svc.Run(t.Context(), RunOptions{
+		Tickets:           []string{"METAWSM-001"},
+		Repos:             []string{"metawsm"},
+		DocRepo:           "workspace-manager",
+		WorkspaceStrategy: model.WorkspaceStrategyCreate,
+		DryRun:            true,
+	})
+	if err == nil {
+		t.Fatalf("expected doc repo validation error")
+	}
+	if !strings.Contains(err.Error(), "must be one of --repos") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -344,6 +411,40 @@ func TestSyncTicketDocsDirectoryCopiesTreeAndRemovesStaleFiles(t *testing.T) {
 	}
 }
 
+func TestSyncTicketDocsDirectoryTargetsDocRepoRoot(t *testing.T) {
+	root := t.TempDir()
+	relativePath := filepath.Join("2026", "02", "07", "METAWSM-004--context-sync")
+	sourcePath := filepath.Join(root, relativePath)
+	if err := os.MkdirAll(filepath.Join(sourcePath, "reference"), 0o755); err != nil {
+		t.Fatalf("mkdir source path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourcePath, "README.md"), []byte("ticket docs\n"), 0o644); err != nil {
+		t.Fatalf("write source README: %v", err)
+	}
+
+	workspacePath := filepath.Join(root, "workspace")
+	docRootPath := filepath.Join(workspacePath, "metawsm")
+	staleFile := filepath.Join(docRootPath, "ttmp", relativePath, "stale.md")
+	if err := os.MkdirAll(filepath.Dir(staleFile), 0o755); err != nil {
+		t.Fatalf("mkdir stale file dir: %v", err)
+	}
+	if err := os.WriteFile(staleFile, []byte("stale\n"), 0o644); err != nil {
+		t.Fatalf("write stale file: %v", err)
+	}
+
+	if err := syncTicketDocsDirectory(sourcePath, relativePath, docRootPath); err != nil {
+		t.Fatalf("sync ticket docs directory: %v", err)
+	}
+
+	readmePath := filepath.Join(docRootPath, "ttmp", relativePath, "README.md")
+	if _, err := os.Stat(readmePath); err != nil {
+		t.Fatalf("expected copied README in doc repo root: %v", err)
+	}
+	if _, err := os.Stat(staleFile); !os.IsNotExist(err) {
+		t.Fatalf("expected stale file removal in doc repo root, stat err=%v", err)
+	}
+}
+
 func TestRestartDryRunResolvesLatestRunByTicket(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")
@@ -362,6 +463,12 @@ func TestRestartDryRunResolvesLatestRunByTicket(t *testing.T) {
 	}
 	if err := os.MkdirAll(newPath, 0o755); err != nil {
 		t.Fatalf("mkdir new workspace: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(oldPath, "metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir old doc repo path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(newPath, "metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir new doc repo path: %v", err)
 	}
 	writeWorkspaceConfig(t, oldWorkspace, oldPath)
 	writeWorkspaceConfig(t, newWorkspace, newPath)
@@ -388,8 +495,9 @@ func TestRestartDryRunResolvesLatestRunByTicket(t *testing.T) {
 	if !strings.Contains(result.Actions[1], "tmux new-session -d -s") {
 		t.Fatalf("expected new-session action, got %q", result.Actions[1])
 	}
-	if !strings.Contains(result.Actions[1], shellQuote(newPath)) {
-		t.Fatalf("expected workspace path %q in action %q", newPath, result.Actions[1])
+	expectedWorkdir := filepath.Join(newPath, "metawsm")
+	if !strings.Contains(result.Actions[1], shellQuote(expectedWorkdir)) {
+		t.Fatalf("expected workdir path %q in action %q", expectedWorkdir, result.Actions[1])
 	}
 }
 
@@ -837,9 +945,12 @@ func TestIterateDryRunIncludesFeedbackAndRestartActions(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspacePath, ".metawsm", "implementation-complete.json"), []byte(`{"status":"done"}`), 0o644); err != nil {
 		t.Fatalf("write completion marker: %v", err)
 	}
-	ticketDir := filepath.Join(workspacePath, "ttmp", "2026", "02", "07", strings.ToLower(ticket)+"--feedback-test", "reference")
+	ticketDir := filepath.Join(workspacePath, "metawsm", "ttmp", "2026", "02", "07", strings.ToLower(ticket)+"--feedback-test", "reference")
 	if err := os.MkdirAll(ticketDir, 0o755); err != nil {
 		t.Fatalf("mkdir ticket reference dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspacePath, "metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir doc repo dir: %v", err)
 	}
 	writeWorkspaceConfig(t, workspaceName, workspacePath)
 	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
@@ -888,13 +999,13 @@ func TestRecordIterationFeedbackWritesAndClearsSignals(t *testing.T) {
 	}
 
 	ticket := "METAWSM-011"
-	referenceDir := filepath.Join(workspacePath, "ttmp", "2026", "02", "07", strings.ToLower(ticket)+"--iteration-feedback", "reference")
+	referenceDir := filepath.Join(workspacePath, "metawsm", "ttmp", "2026", "02", "07", strings.ToLower(ticket)+"--iteration-feedback", "reference")
 	if err := os.MkdirAll(referenceDir, 0o755); err != nil {
 		t.Fatalf("mkdir reference dir: %v", err)
 	}
 	now := time.Date(2026, 2, 7, 10, 15, 0, 0, time.UTC)
 	feedback := "Address the button spacing regression and add a request spec."
-	if _, err := recordIterationFeedback(workspacePath, []string{ticket}, feedback, now, false); err != nil {
+	if _, err := recordIterationFeedback(workspacePath, "metawsm", []string{"metawsm"}, []string{ticket}, feedback, now, false); err != nil {
 		t.Fatalf("record iteration feedback: %v", err)
 	}
 
@@ -968,11 +1079,16 @@ func createBootstrapRunFixture(t *testing.T, svc *Service, runID string, workspa
 
 func createBootstrapRunFixtureWithRepos(t *testing.T, svc *Service, runID string, workspaceName string, repos []string) {
 	t.Helper()
+	docRepo := ""
+	if len(repos) > 0 {
+		docRepo = repos[0]
+	}
 	spec := model.RunSpec{
 		RunID:             runID,
 		Mode:              model.RunModeBootstrap,
 		Tickets:           []string{"METAWSM-002"},
 		Repos:             repos,
+		DocRepo:           docRepo,
 		WorkspaceStrategy: model.WorkspaceStrategyCreate,
 		Agents:            []model.AgentSpec{{Name: "agent", Command: "bash"}},
 		PolicyPath:        ".metawsm/policy.json",
@@ -1022,11 +1138,16 @@ func createRunWithTicketFixture(t *testing.T, svc *Service, runID string, ticket
 
 func createRunWithTicketFixtureWithRepos(t *testing.T, svc *Service, runID string, ticket string, workspaceName string, status model.RunStatus, dryRun bool, repos []string) {
 	t.Helper()
+	docRepo := ""
+	if len(repos) > 0 {
+		docRepo = repos[0]
+	}
 	spec := model.RunSpec{
 		RunID:             runID,
 		Mode:              model.RunModeBootstrap,
 		Tickets:           []string{ticket},
 		Repos:             repos,
+		DocRepo:           docRepo,
 		WorkspaceStrategy: model.WorkspaceStrategyCreate,
 		Agents:            []model.AgentSpec{{Name: "agent", Command: "bash"}},
 		PolicyPath:        ".metawsm/policy.json",
