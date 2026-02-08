@@ -179,6 +179,11 @@ Diffs:
 Pull Requests:
   - METAWSM-006/metawsm state=draft head=feature base=main number=0 url=- actor=agent
   - METAWSM-006/metawsm-docs state=open head=feature base=main number=12 url=https://github.com/example/repo/pull/12 actor=agent
+Review Feedback:
+  - status=queued count=3
+  - status=new count=1
+  - status=addressed count=5
+  - status=ignored count=0
 Agents:
   - agent@ws session=s1 status=stalled health=stalled last_activity=2026-02-08T00:00:00Z activity_age=1h last_progress=2026-02-08T00:00:00Z progress_age=1h
 `
@@ -218,6 +223,12 @@ Agents:
 	}
 	if snapshot.OpenPullRequests != 1 {
 		t.Fatalf("expected one open pull request, got %d", snapshot.OpenPullRequests)
+	}
+	if snapshot.QueuedReviewFeedback != 3 {
+		t.Fatalf("expected queued review feedback=3, got %d", snapshot.QueuedReviewFeedback)
+	}
+	if snapshot.NewReviewFeedback != 1 {
+		t.Fatalf("expected new review feedback=1, got %d", snapshot.NewReviewFeedback)
 	}
 }
 
@@ -340,6 +351,8 @@ func TestBuildOperatorRuleDecisionCommitReadyAssist(t *testing.T) {
 		0,
 		nil,
 		"assist",
+		false,
+		"assist",
 	)
 	if err != nil {
 		t.Fatalf("build operator rule decision: %v", err)
@@ -375,6 +388,8 @@ func TestBuildOperatorRuleDecisionPRReadyAuto(t *testing.T) {
 		0,
 		nil,
 		"auto",
+		false,
+		"assist",
 	)
 	if err != nil {
 		t.Fatalf("build operator rule decision: %v", err)
@@ -384,6 +399,43 @@ func TestBuildOperatorRuleDecisionPRReadyAuto(t *testing.T) {
 	}
 	if !decision.Execute {
 		t.Fatalf("expected auto mode PR readiness to auto-execute")
+	}
+}
+
+func TestBuildOperatorRuleDecisionReviewFeedbackReadyAuto(t *testing.T) {
+	now := time.Now()
+	decision, err := buildOperatorRuleDecision(
+		context.Background(),
+		nil,
+		watchSnapshot{
+			RunID:                "run-review-ready",
+			RunStatus:            string(model.RunStatusComplete),
+			QueuedReviewFeedback: 2,
+		},
+		model.RunRecord{
+			RunID:     "run-review-ready",
+			Status:    model.RunStatusComplete,
+			UpdatedAt: now,
+		},
+		now,
+		time.Hour,
+		time.Minute,
+		2,
+		3,
+		0,
+		nil,
+		"assist",
+		true,
+		"auto",
+	)
+	if err != nil {
+		t.Fatalf("build operator rule decision: %v", err)
+	}
+	if decision.Intent != operatorIntentReviewFeedbackReady {
+		t.Fatalf("expected review_feedback_ready intent, got %q", decision.Intent)
+	}
+	if !decision.Execute {
+		t.Fatalf("expected auto review feedback mode to auto-execute")
 	}
 }
 
@@ -472,6 +524,26 @@ func TestAuthCommandRequiresCheckSubcommand(t *testing.T) {
 		t.Fatalf("expected auth usage error")
 	}
 	if !strings.Contains(err.Error(), "usage: metawsm auth check") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestReviewCommandRequiresSyncSubcommand(t *testing.T) {
+	err := reviewCommand([]string{})
+	if err == nil {
+		t.Fatalf("expected review usage error")
+	}
+	if !strings.Contains(err.Error(), "usage: metawsm review sync") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestReviewCommandRequiresRunSelector(t *testing.T) {
+	err := reviewCommand([]string{"sync"})
+	if err == nil {
+		t.Fatalf("expected review selector error")
+	}
+	if !strings.Contains(err.Error(), "one of --run-id or --ticket is required") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

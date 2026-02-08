@@ -1826,6 +1826,7 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 	brief, _ := s.store.GetRunBrief(runID)
 	docSyncStates, _ := s.store.ListDocSyncStates(runID)
 	runPullRequests, _ := s.store.ListRunPullRequests(runID)
+	runReviewFeedback, _ := s.store.ListRunReviewFeedback(runID)
 
 	var doneCount, failedCount, runningCount, pendingCount int
 	for _, step := range steps {
@@ -1974,6 +1975,29 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 				valueOrDefault(item.Actor, "-"),
 			))
 		}
+	}
+	if len(runReviewFeedback) > 0 {
+		queued := 0
+		newCount := 0
+		addressed := 0
+		ignored := 0
+		for _, item := range runReviewFeedback {
+			switch item.Status {
+			case model.ReviewFeedbackStatusQueued:
+				queued++
+			case model.ReviewFeedbackStatusNew:
+				newCount++
+			case model.ReviewFeedbackStatusAddressed:
+				addressed++
+			case model.ReviewFeedbackStatusIgnored:
+				ignored++
+			}
+		}
+		b.WriteString("Review Feedback:\n")
+		b.WriteString(fmt.Sprintf("  - status=queued count=%d\n", queued))
+		b.WriteString(fmt.Sprintf("  - status=new count=%d\n", newCount))
+		b.WriteString(fmt.Sprintf("  - status=addressed count=%d\n", addressed))
+		b.WriteString(fmt.Sprintf("  - status=ignored count=%d\n", ignored))
 	}
 
 	if record.Status == model.RunStatusComplete {

@@ -13,13 +13,14 @@ import (
 type operatorIntent string
 
 const (
-	operatorIntentNoop             operatorIntent = "noop"
-	operatorIntentEscalateGuidance operatorIntent = "escalate_guidance"
-	operatorIntentEscalateBlocked  operatorIntent = "escalate_blocked"
-	operatorIntentAutoRestart      operatorIntent = "auto_restart"
-	operatorIntentAutoStopStale    operatorIntent = "auto_stop_stale"
-	operatorIntentCommitReady      operatorIntent = "commit_ready"
-	operatorIntentPRReady          operatorIntent = "pr_ready"
+	operatorIntentNoop                operatorIntent = "noop"
+	operatorIntentEscalateGuidance    operatorIntent = "escalate_guidance"
+	operatorIntentEscalateBlocked     operatorIntent = "escalate_blocked"
+	operatorIntentAutoRestart         operatorIntent = "auto_restart"
+	operatorIntentAutoStopStale       operatorIntent = "auto_stop_stale"
+	operatorIntentCommitReady         operatorIntent = "commit_ready"
+	operatorIntentPRReady             operatorIntent = "pr_ready"
+	operatorIntentReviewFeedbackReady operatorIntent = "review_feedback_ready"
 )
 
 type operatorRuleDecision struct {
@@ -97,7 +98,7 @@ func (c *codexCLIAdapter) Propose(ctx context.Context, req operatorLLMRequest) (
 	prompt := strings.Join([]string{
 		"You are an operator assistant for metawsm.",
 		"Return a single JSON object with keys: intent, target_run, reason, confidence, needs_human.",
-		"Allowed intents: noop, escalate_guidance, escalate_blocked, auto_restart, auto_stop_stale, commit_ready, pr_ready.",
+		"Allowed intents: noop, escalate_guidance, escalate_blocked, auto_restart, auto_stop_stale, commit_ready, pr_ready, review_feedback_ready.",
 		"Do not include markdown.",
 		"Context JSON:",
 		string(payload),
@@ -159,7 +160,7 @@ func parseOperatorLLMResponse(output string) (operatorLLMResponse, error) {
 
 func isOperatorIntentAllowlisted(intent operatorIntent) bool {
 	switch intent {
-	case operatorIntentNoop, operatorIntentEscalateGuidance, operatorIntentEscalateBlocked, operatorIntentAutoRestart, operatorIntentAutoStopStale, operatorIntentCommitReady, operatorIntentPRReady:
+	case operatorIntentNoop, operatorIntentEscalateGuidance, operatorIntentEscalateBlocked, operatorIntentAutoRestart, operatorIntentAutoStopStale, operatorIntentCommitReady, operatorIntentPRReady, operatorIntentReviewFeedbackReady:
 		return true
 	default:
 		return false

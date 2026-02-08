@@ -55,6 +55,8 @@ func main() {
 		err = statusCommand(args)
 	case "auth":
 		err = authCommand(args)
+	case "review":
+		err = reviewCommand(args)
 	case "watch":
 		err = watchCommand(args)
 	case "operator":
@@ -456,6 +458,88 @@ func authCommand(args []string) error {
 	return nil
 }
 
+func reviewCommand(args []string) error {
+	fs := flag.NewFlagSet("review", flag.ContinueOnError)
+	var runID string
+	var ticket string
+	var dbPath string
+	var maxItems int
+	var dispatch bool
+	var dryRun bool
+	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (review latest run for this ticket)")
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.IntVar(&maxItems, "max-items", 0, "Optional cap for number of review comments to sync/dispatch")
+	fs.BoolVar(&dispatch, "dispatch", false, "Dispatch queued feedback via iterate flow after sync")
+	fs.BoolVar(&dryRun, "dry-run", false, "Preview review sync/dispatch actions without persisting changes")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	rest := fs.Args()
+	if len(rest) == 0 || !strings.EqualFold(strings.TrimSpace(rest[0]), "sync") {
+		return fmt.Errorf("usage: metawsm review sync [--run-id RUN_ID | --ticket TICKET] [--max-items N] [--dispatch] [--dry-run]")
+	}
+	runID, ticket, err := requireRunSelector(runID, ticket)
+	if err != nil {
+		return err
+	}
+
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	result, err := service.SyncReviewFeedback(context.Background(), orchestrator.ReviewFeedbackSyncOptions{
+		RunID:    runID,
+		Ticket:   ticket,
+		MaxItems: maxItems,
+		DryRun:   dryRun,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Review sync for run %s:\n", result.RunID)
+	for _, repo := range result.Repos {
+		fmt.Printf("  - %s/%s pr=%d fetched=%d added=%d updated=%d\n",
+			repo.Ticket, repo.Repo, repo.PRNumber, repo.Fetched, repo.Added, repo.Updated)
+		if strings.TrimSpace(repo.SkippedReason) != "" {
+			fmt.Printf("    skipped=%s\n", repo.SkippedReason)
+		}
+		for _, action := range repo.Actions {
+			if dryRun {
+				fmt.Printf("    dry-run: %s\n", action)
+			} else {
+				fmt.Printf("    action: %s\n", action)
+			}
+		}
+	}
+	fmt.Printf("Totals: added=%d updated=%d\n", result.Added, result.Updated)
+
+	if !dispatch {
+		return nil
+	}
+
+	dispatchResult, err := service.DispatchQueuedReviewFeedback(context.Background(), orchestrator.ReviewFeedbackDispatchOptions{
+		RunID:    runID,
+		Ticket:   ticket,
+		MaxItems: maxItems,
+		DryRun:   dryRun,
+	})
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		fmt.Printf("Review dispatch dry-run for run %s queued=%d:\n", dispatchResult.RunID, dispatchResult.QueuedCount)
+	} else {
+		fmt.Printf("Review dispatch started for run %s queued=%d:\n", dispatchResult.RunID, dispatchResult.QueuedCount)
+	}
+	for _, action := range dispatchResult.Actions {
+		fmt.Printf("  - %s\n", action)
+	}
+	return nil
+}
+
 func checkGitHubLocalAuth(ctx context.Context) (installed bool, authed bool, actor string, detail string) {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return false, false, "", "gh CLI not found on PATH"
@@ -594,16 +678,18 @@ func gitRemoteOrigin(ctx context.Context, repoPath string) (string, error) {
 }
 
 type watchSnapshot struct {
-	RunID              string
-	RunStatus          string
-	Tickets            string
-	HasGuidance        bool
-	HasUnhealthyAgents bool
-	HasDirtyDiffs      bool
-	DraftPullRequests  int
-	OpenPullRequests   int
-	GuidanceItems      []string
-	UnhealthyAgents    []watchAgentIssue
+	RunID                string
+	RunStatus            string
+	Tickets              string
+	HasGuidance          bool
+	HasUnhealthyAgents   bool
+	HasDirtyDiffs        bool
+	DraftPullRequests    int
+	OpenPullRequests     int
+	QueuedReviewFeedback int
+	NewReviewFeedback    int
+	GuidanceItems        []string
+	UnhealthyAgents      []watchAgentIssue
 }
 
 type watchAgentIssue struct {
@@ -861,7 +947,7 @@ func operatorCommand(args []string) error {
 	} else {
 		fmt.Printf("Operator supervising run %s (interval=%ds llm_mode=%s dry_run=%t).\n", selectedRunID, intervalSeconds, effectiveLLMMode, dryRun)
 	}
-	fmt.Println("Operator signals: guidance-needed, stale-candidate-verified, stale-candidate-rejected, commit-ready, pr-ready.")
+	fmt.Println("Operator signals: guidance-needed, stale-candidate-verified, stale-candidate-rejected, commit-ready, pr-ready, review-feedback-ready.")
 
 	ticker := time.NewTicker(time.Duration(intervalSeconds) * time.Second)
 	defer ticker.Stop()
@@ -946,6 +1032,8 @@ func operatorCommand(args []string) error {
 				consecutiveUnhealthyByRun[snapshot.RunID],
 				probeOperatorSessionEvidence,
 				cfg.GitPR.Mode,
+				cfg.GitPR.ReviewFeedback.Enabled,
+				cfg.GitPR.ReviewFeedback.Mode,
 			)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: operator rule evaluation failed for run %s: %v\n", snapshot.RunID, err)
@@ -989,7 +1077,7 @@ func operatorCommand(args []string) error {
 
 			shouldExecute := merged.Execute && !dryRun
 			if shouldExecute {
-				if err := executeOperatorAction(ctx, service, snapshot.RunID, merged.Intent); err != nil {
+				if err := executeOperatorAction(ctx, service, snapshot.RunID, merged.Intent, cfg.GitPR.ReviewFeedback.AutoDispatchCapPerInterval); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: operator action failed for run %s intent=%s: %v\n", snapshot.RunID, merged.Intent, err)
 				} else if merged.Intent == operatorIntentAutoRestart {
 					current, err := service.GetOperatorRunState(snapshot.RunID)
@@ -1011,7 +1099,7 @@ func operatorCommand(args []string) error {
 						}
 					}
 				}
-			} else if merged.Intent == operatorIntentAutoStopStale || merged.Intent == operatorIntentAutoRestart || merged.Intent == operatorIntentCommitReady || merged.Intent == operatorIntentPRReady {
+			} else if merged.Intent == operatorIntentAutoStopStale || merged.Intent == operatorIntentAutoRestart || merged.Intent == operatorIntentCommitReady || merged.Intent == operatorIntentPRReady || merged.Intent == operatorIntentReviewFeedbackReady {
 				fmt.Printf("  action not executed (dry_run=%t llm_mode=%s)\n", dryRun, effectiveLLMMode)
 			}
 
@@ -1050,6 +1138,8 @@ func buildOperatorRuleDecision(
 	consecutiveUnhealthy int,
 	probe operatorSessionProbe,
 	gitPRMode string,
+	reviewFeedbackEnabled bool,
+	reviewFeedbackMode string,
 ) (operatorRuleDecision, error) {
 	if snapshot.HasGuidance {
 		return operatorRuleDecision{
@@ -1132,6 +1222,17 @@ func buildOperatorRuleDecision(
 			}, nil
 		}
 	}
+	if strings.EqualFold(snapshot.RunStatus, string(model.RunStatusComplete)) && reviewFeedbackEnabled && snapshot.QueuedReviewFeedback > 0 {
+		reviewMode := strings.TrimSpace(strings.ToLower(reviewFeedbackMode))
+		if reviewMode == "" {
+			reviewMode = "assist"
+		}
+		return operatorRuleDecision{
+			Intent:  operatorIntentReviewFeedbackReady,
+			Reason:  fmt.Sprintf("run has %d queued review feedback item(s); review dispatch is ready", snapshot.QueuedReviewFeedback),
+			Execute: reviewMode == "auto",
+		}, nil
+	}
 
 	return operatorRuleDecision{
 		Intent:  operatorIntentNoop,
@@ -1154,12 +1255,14 @@ func operatorEventMessage(snapshot watchSnapshot, decision operatorMergedDecisio
 		return "commit_ready", decision.Reason
 	case operatorIntentPRReady:
 		return "pr_ready", decision.Reason
+	case operatorIntentReviewFeedbackReady:
+		return "review_feedback_ready", decision.Reason
 	default:
 		return "operator_noop", decision.Reason
 	}
 }
 
-func executeOperatorAction(ctx context.Context, service *orchestrator.Service, runID string, intent operatorIntent) error {
+func executeOperatorAction(ctx context.Context, service *orchestrator.Service, runID string, intent operatorIntent, reviewDispatchCap int) error {
 	switch intent {
 	case operatorIntentAutoRestart:
 		_, err := service.Restart(ctx, orchestrator.RestartOptions{RunID: runID, DryRun: false})
@@ -1171,6 +1274,21 @@ func executeOperatorAction(ctx context.Context, service *orchestrator.Service, r
 		return err
 	case operatorIntentPRReady:
 		_, err := service.OpenPullRequests(ctx, orchestrator.PullRequestOptions{RunID: runID, Actor: "operator"})
+		return err
+	case operatorIntentReviewFeedbackReady:
+		_, err := service.SyncReviewFeedback(ctx, orchestrator.ReviewFeedbackSyncOptions{
+			RunID:    runID,
+			MaxItems: reviewDispatchCap,
+			DryRun:   false,
+		})
+		if err != nil {
+			return err
+		}
+		_, err = service.DispatchQueuedReviewFeedback(ctx, orchestrator.ReviewFeedbackDispatchOptions{
+			RunID:    runID,
+			MaxItems: reviewDispatchCap,
+			DryRun:   false,
+		})
 		return err
 	default:
 		return nil
@@ -1531,6 +1649,7 @@ func parseWatchSnapshot(statusText string) watchSnapshot {
 	inGuidance := false
 	inDiffs := false
 	inPullRequests := false
+	inReviewFeedback := false
 	scanner := bufio.NewScanner(strings.NewReader(statusText))
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -1541,39 +1660,52 @@ func parseWatchSnapshot(statusText string) watchSnapshot {
 			inGuidance = false
 			inDiffs = false
 			inPullRequests = false
+			inReviewFeedback = false
 		case strings.HasPrefix(line, "Status:"):
 			snapshot.RunStatus = strings.TrimSpace(strings.TrimPrefix(line, "Status:"))
 			inAgents = false
 			inGuidance = false
 			inDiffs = false
 			inPullRequests = false
+			inReviewFeedback = false
 		case strings.HasPrefix(line, "Tickets:"):
 			snapshot.Tickets = strings.TrimSpace(strings.TrimPrefix(line, "Tickets:"))
 			inAgents = false
 			inGuidance = false
 			inDiffs = false
 			inPullRequests = false
+			inReviewFeedback = false
 		case strings.HasPrefix(line, "Guidance:"):
 			snapshot.HasGuidance = true
 			inAgents = false
 			inGuidance = true
 			inDiffs = false
 			inPullRequests = false
+			inReviewFeedback = false
 		case strings.HasPrefix(line, "Diffs:"):
 			inAgents = false
 			inGuidance = false
 			inDiffs = true
 			inPullRequests = false
+			inReviewFeedback = false
 		case strings.HasPrefix(line, "Pull Requests:"):
 			inAgents = false
 			inGuidance = false
 			inDiffs = false
 			inPullRequests = true
+			inReviewFeedback = false
+		case strings.HasPrefix(line, "Review Feedback:"):
+			inAgents = false
+			inGuidance = false
+			inDiffs = false
+			inPullRequests = false
+			inReviewFeedback = true
 		case strings.HasPrefix(line, "Agents:"):
 			inAgents = true
 			inGuidance = false
 			inDiffs = false
 			inPullRequests = false
+			inReviewFeedback = false
 		default:
 			if inGuidance {
 				if !strings.HasPrefix(line, "  ") {
@@ -1606,6 +1738,22 @@ func parseWatchSnapshot(statusText string) watchSnapshot {
 						snapshot.DraftPullRequests++
 					case "open":
 						snapshot.OpenPullRequests++
+					}
+					continue
+				}
+			}
+			if inReviewFeedback {
+				if !strings.HasPrefix(line, "  ") {
+					inReviewFeedback = false
+				} else {
+					status := strings.TrimSpace(strings.ToLower(parseWatchField(line, "status")))
+					countText := strings.TrimSpace(parseWatchField(line, "count"))
+					count, _ := strconv.Atoi(countText)
+					switch status {
+					case "queued":
+						snapshot.QueuedReviewFeedback += count
+					case "new":
+						snapshot.NewReviewFeedback += count
 					}
 					continue
 				}
@@ -1788,6 +1936,9 @@ func buildWatchDirectionHints(snapshot watchSnapshot, event string) []string {
 	case "pr_ready":
 		hints = append(hints, fmt.Sprintf("Preview PR actions: metawsm pr --run-id %s --dry-run", snapshot.RunID))
 		hints = append(hints, fmt.Sprintf("Create pull requests: metawsm pr --run-id %s", snapshot.RunID))
+	case "review_feedback_ready":
+		hints = append(hints, fmt.Sprintf("Preview review sync: metawsm review sync --run-id %s --dry-run", snapshot.RunID))
+		hints = append(hints, fmt.Sprintf("Sync and dispatch review feedback: metawsm review sync --run-id %s --dispatch", snapshot.RunID))
 	}
 	return hints
 }
@@ -2683,6 +2834,7 @@ func printUsage() {
 	fmt.Println("  metawsm bootstrap --ticket T1 --repos repo1,repo2 [--doc-home-repo repo1] [--doc-authority-mode workspace_active] [--doc-seed-mode copy_from_repo_on_start] [--agent planner] [--base-branch main]")
 	fmt.Println("  metawsm status [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm auth check [--run-id RUN_ID | --ticket T1] [--policy PATH]")
+	fmt.Println("  metawsm review sync [--run-id RUN_ID | --ticket T1] [--max-items N] [--dispatch] [--dry-run]")
 	fmt.Println("  metawsm watch [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--notify-cmd \"...\"] [--bell=true]")
 	fmt.Println("  metawsm operator [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--llm-mode off|assist|auto] [--dry-run]")
 	fmt.Println("  metawsm guide [--run-id RUN_ID | --ticket T1] --answer \"...\"")
