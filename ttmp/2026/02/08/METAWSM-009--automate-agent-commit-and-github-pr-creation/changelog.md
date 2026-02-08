@@ -270,3 +270,13 @@ Step 21: added orchestrator SyncReviewFeedback primitive for PR review comments 
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Review-comment sync orchestration and persistence integration
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Sync primitive behavior coverage
 
+
+## 2026-02-08
+
+Step 22: dispatched queued review feedback through iterate flow and added queued->new->addressed lifecycle transitions; completed task 42 (commit 82dc694).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Dispatch helper and feedback status transition hooks
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Dispatch and lifecycle transition coverage
+

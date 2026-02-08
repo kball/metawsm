@@ -51,6 +51,7 @@ RelatedFiles:
         Implemented multi-ticket workspace fanout for commit/pr flows (commit 6ec9185)
         Added push-before-PR execution and dry-run push previews (commit 627e397)
         Added SyncReviewFeedback primitive with GH comment ingestion and normalization (commit 5178ee6)
+        Added queued-feedback dispatch and commit/pr lifecycle transitions (commit 82dc694)
     - Path: internal/orchestrator/service_test.go
       Note: |-
         Added status test for pull request section (commit 283a68b)
@@ -61,6 +62,7 @@ RelatedFiles:
         Added multi-ticket fanout commit/pr coverage and fixture support (commit 6ec9185)
         Added end-to-end commit/push/PR test and updated PR dry-run/real tests (commit 627e397)
         Added fake-gh coverage for sync persistence
+        Added dispatch-flow and queued->addressed lifecycle tests (commit 82dc694)
     - Path: internal/policy/policy.go
       Note: |-
         Added git_pr config schema/defaults/validation (commit d3f13f6)
@@ -92,12 +94,14 @@ RelatedFiles:
         Added and checked tasks 37-39 for review feedback model/store slice
         Checked task 40 complete
         Checked task 41 complete
+        Checked task 42 complete
 ExternalSources: []
 Summary: ""
 LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -1666,3 +1670,91 @@ I added `SyncReviewFeedback` with policy gating, open-PR discovery, `gh api` com
   - `pr_review_comment`
 - Eligible PR rows:
   - state `open`, non-empty `pr_url`, positive `pr_number`.
+
+## Step 22: Dispatch Queued Feedback via Iterate and Wire Lifecycle Transitions
+
+This step implements task 42 by connecting queued review feedback records to the existing `Iterate` mechanism and adding lifecycle transitions so feedback is marked addressed after the commit+PR cycle.
+
+I added `DispatchQueuedReviewFeedback`, markdown rendering for queued review comments, and status transition hooks in commit/PR flows (`queued -> new -> addressed`).
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok break into tasks in docmgr, then begin implementation. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue implementing each backlog task in sequence with tests and commits.
+
+**Inferred user intent:** Make review feedback operational by routing it into agent iteration and tracking when feedback has actually been addressed.
+
+**Commit (code):** 82dc694 — "Dispatch queued review feedback via iterate lifecycle"
+
+### What I did
+- Added new orchestrator dispatch types in `internal/orchestrator/service.go`:
+  - `ReviewFeedbackDispatchOptions`
+  - `ReviewFeedbackDispatchResult`
+- Implemented `Service.DispatchQueuedReviewFeedback`:
+  - reads queued review feedback rows,
+  - filters by run/ticket,
+  - renders deterministic feedback markdown,
+  - reuses `Iterate` to append operator feedback docs and restart workspaces.
+- Added helper rendering and transition logic:
+  - `renderQueuedReviewFeedback`
+  - `transitionReviewFeedbackStatus`
+  - status progression used:
+    - `queued -> new` after successful commit,
+    - `new -> addressed` after PR open/update command path.
+- Hooked lifecycle transitions into:
+  - `Service.Commit`
+  - `Service.OpenPullRequests`
+- Added tests in `internal/orchestrator/service_test.go`:
+  - `TestDispatchQueuedReviewFeedbackDryRunUsesIterateFlow`
+  - `TestCommitThenPROpenTransitionsReviewFeedbackToAddressed`
+- Checked task completion:
+  - `docmgr task check --ticket METAWSM-009 --id 42`
+- Ran validation:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -run "SyncReviewFeedback|DispatchQueuedReviewFeedback|CommitThenPROpenTransitionsReviewFeedbackToAddressed" -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+
+### Why
+- Feedback ingestion alone is insufficient; the system needs a deterministic path to feed comments back to agents and to record when feedback has been incorporated.
+
+### What worked
+- Dry-run dispatch now surfaces iterate actions and rendered feedback.
+- Lifecycle status transitions are exercised and validated end-to-end in tests.
+- Full orchestrator suite remained green.
+
+### What didn't work
+- One brittle assertion expected `"restart"` in dry-run actions, but restart actions are emitted as `tmux` commands.
+- Failure:
+  - `TestDispatchQueuedReviewFeedbackDryRunUsesIterateFlow`
+  - output contained `tmux new-session` rather than literal `"restart"`.
+- Fix:
+  - updated assertion to match `tmux new-session`.
+
+### What I learned
+- Reusing `Iterate` keeps feedback routing consistent with existing operator workflows and avoids duplicate write/restart logic.
+- A simple intermediate status (`new`) is sufficient to encode “dispatched and awaiting PR update” without schema expansion.
+
+### What was tricky to build
+- Ensuring lifecycle transitions happen only on successful commit/PR paths without introducing false addressed states.
+
+### What warrants a second pair of eyes
+- Whether PR-update semantics should require a remote push/update confirmation in the “existing PR” path before marking addressed.
+
+### What should be done in the future
+- Implement task 43 next: add `metawsm review sync` CLI command that exposes sync and optional dispatch controls.
+
+### Code review instructions
+- Start in `internal/orchestrator/service.go`:
+  - `DispatchQueuedReviewFeedback`
+  - `renderQueuedReviewFeedback`
+  - `transitionReviewFeedbackStatus`
+  - commit/PR transition hooks.
+- Review tests in `internal/orchestrator/service_test.go` for dispatch and status transitions.
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+
+### Technical details
+- Lifecycle transitions:
+  - `queued` (awaiting work dispatch)
+  - `new` (work dispatched and commit completed)
+  - `addressed` (PR command path completed after commit).
