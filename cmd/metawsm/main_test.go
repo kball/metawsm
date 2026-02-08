@@ -370,6 +370,16 @@ func TestAuthCommandRequiresCheckSubcommand(t *testing.T) {
 	}
 }
 
+func TestCommitCommandRequiresRunSelector(t *testing.T) {
+	err := commitCommand([]string{})
+	if err == nil {
+		t.Fatalf("expected commit selector error")
+	}
+	if !strings.Contains(err.Error(), "one of --run-id or --ticket is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestResolveWorkspaceRepoPathPrefersNestedRepoDir(t *testing.T) {
 	workspacePath := t.TempDir()
 	repoPath := filepath.Join(workspacePath, "metawsm")

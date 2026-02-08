@@ -68,6 +68,8 @@ func main() {
 		err = restartCommand(args)
 	case "cleanup":
 		err = cleanupCommand(args)
+	case "commit":
+		err = commitCommand(args)
 	case "merge":
 		err = mergeCommand(args)
 	case "iterate":
@@ -1877,6 +1879,72 @@ func mergeCommand(args []string) error {
 	return nil
 }
 
+func commitCommand(args []string) error {
+	fs := flag.NewFlagSet("commit", flag.ContinueOnError)
+	var runID string
+	var ticket string
+	var dbPath string
+	var message string
+	var actor string
+	var dryRun bool
+	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (commit latest run for this ticket)")
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&message, "message", "", "Explicit commit message (defaults to ticket + run brief goal)")
+	fs.StringVar(&actor, "actor", "", "Actor identity to persist with commit metadata")
+	fs.BoolVar(&dryRun, "dry-run", false, "Preview commit actions without executing them")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	runID, ticket, err := requireRunSelector(runID, ticket)
+	if err != nil {
+		return err
+	}
+
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	result, err := service.Commit(context.Background(), orchestrator.CommitOptions{
+		RunID:   runID,
+		Ticket:  ticket,
+		Message: message,
+		Actor:   actor,
+		DryRun:  dryRun,
+	})
+	if err != nil {
+		return err
+	}
+
+	if dryRun {
+		fmt.Printf("Commit dry-run for run %s:\n", result.RunID)
+	} else {
+		fmt.Printf("Commit completed for run %s.\n", result.RunID)
+	}
+	if len(result.Repos) == 0 {
+		fmt.Println("  - no repository commit targets found")
+		return nil
+	}
+	for _, repo := range result.Repos {
+		fmt.Printf("  - %s/%s workspace=%s dirty=%t\n", repo.Ticket, repo.Repo, repo.WorkspaceName, repo.Dirty)
+		if strings.TrimSpace(repo.SkippedReason) != "" {
+			fmt.Printf("    skipped=%s\n", repo.SkippedReason)
+			continue
+		}
+		fmt.Printf("    branch=%s base=%s (%s)\n", repo.Branch, repo.BaseBranch, repo.BaseRef)
+		fmt.Printf("    message=%s\n", repo.CommitMessage)
+		if dryRun {
+			for _, action := range repo.Actions {
+				fmt.Printf("    dry-run: %s\n", action)
+			}
+			continue
+		}
+		fmt.Printf("    commit=%s\n", emptyValue(repo.CommitSHA, "-"))
+	}
+	return nil
+}
+
 func iterateCommand(args []string) error {
 	fs := flag.NewFlagSet("iterate", flag.ContinueOnError)
 	var runID string
@@ -2421,6 +2489,7 @@ func printUsage() {
 	fmt.Println("  metawsm stop [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm restart [--run-id RUN_ID | --ticket T1] [--dry-run]")
 	fmt.Println("  metawsm cleanup [--run-id RUN_ID | --ticket T1] [--keep-workspaces] [--dry-run]")
+	fmt.Println("  metawsm commit [--run-id RUN_ID | --ticket T1] [--message \"...\"] [--actor USER] [--dry-run]")
 	fmt.Println("  metawsm merge [--run-id RUN_ID | --ticket T1] [--dry-run]")
 	fmt.Println("  metawsm iterate [--run-id RUN_ID | --ticket T1] --feedback \"...\" [--dry-run]")
 	fmt.Println("  metawsm close [--run-id RUN_ID | --ticket T1] [--dry-run]")
