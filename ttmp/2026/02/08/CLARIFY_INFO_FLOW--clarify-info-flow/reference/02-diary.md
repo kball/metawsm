@@ -9,10 +9,18 @@ DocType: reference
 Intent: long-term
 Owners: []
 RelatedFiles:
+    - Path: README.md
+      Note: Operator workflow docs for topology and federation commands
     - Path: cmd/metawsm/main.go
       Note: Expose topology flags in run/bootstrap CLI
+    - Path: cmd/metawsm/main_test.go
+      Note: Federation endpoint ordering and selection coverage
+    - Path: examples/policy.example.json
+      Note: Policy example with docs.api endpoint config
     - Path: internal/docfederation/client.go
       Note: Federation HTTP client for status/tickets/refresh endpoints
+    - Path: internal/docfederation/client_test.go
+      Note: Federation merge and refresh behavior coverage
     - Path: internal/docfederation/merge.go
       Note: Workspace-first dedupe/merge logic keyed by ticket+doc_home_repo+active context
     - Path: internal/model/types.go
@@ -20,7 +28,9 @@ RelatedFiles:
     - Path: internal/orchestrator/service.go
       Note: Run topology validation
     - Path: internal/orchestrator/service_test.go
-      Note: Coverage for seed-mode planning and topology behavior
+      Note: |-
+        Coverage for seed-mode planning and topology behavior
+        Stale warning-only status coverage
     - Path: internal/policy/policy.go
       Note: |-
         Docs topology defaults and validation contract
@@ -35,6 +45,7 @@ LastUpdated: 2026-02-08T06:55:14.73128-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 
 
@@ -286,3 +297,78 @@ The new operator command is `metawsm docs`, which can query configured workspace
 - `upper(ticket) + "|" + lower(doc_home_repo) + "|" + active|inactive`
 - Refresh path:
 - `POST /api/v1/index/refresh` on selected endpoints.
+
+## Step 4: Complete Phase 5 test + operator documentation updates
+
+This step closed out Phase 5 by extending coverage for stale-warning behavior and federation integration paths, then updating operator-facing docs/playbooks to reflect workspace-authoritative docs and federation usage.
+
+I focused on proving the operational contract end-to-end: stale freshness is warning-only in status, workspace/repo federation behavior is deterministic, and operators have copy/paste runbooks.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok continue"
+
+**Assistant interpretation:** Continue through remaining tasks to completion and keep committing progress.
+
+**Inferred user intent:** Finish the ticket backlog, including tests and operator documentation, without pausing.
+
+**Commit (code):** 86c3654c2b6668cf5ed751e3f15f8a6423d5bccf — "Expand docs workflow tests and operator guidance"
+
+### What I did
+- Added stale-warning status coverage in `internal/orchestrator/service_test.go`:
+- `TestStatusShowsWarningOnlyForStaleDocFreshness`
+- Extended federation coverage:
+- `internal/docfederation/client_test.go` adds distinct doc-home repo merge behavior.
+- Added command-level federation helper tests in `cmd/metawsm/main_test.go`:
+- endpoint ordering (workspace first),
+- endpoint selection behavior.
+- Updated operator docs:
+- `README.md` for new topology flags and `metawsm docs` usage.
+- `examples/policy.example.json` with `docs.api` federation endpoint examples.
+- Added ticket playbook:
+- `ttmp/2026/02/08/CLARIFY_INFO_FLOW--clarify-info-flow/playbook/01-operator-playbook-workspace-authoritative-and-federated-docs.md`
+- Ran validation:
+- `go test ./...` (all passing).
+- Checked off remaining tasks:
+- `docmgr task check --ticket CLARIFY_INFO_FLOW --id 13,14,15`
+
+### Why
+- Phase 5 explicitly requires both test hardening and operator guidance updates for the new workflow.
+
+### What worked
+- Stale freshness warning behavior is now explicitly tested.
+- Federation merge/selection behavior has direct automated coverage.
+- README/example policy/playbook now align with implemented topology+federation features.
+
+### What didn't work
+- No major blockers in this step; implementation and tests passed cleanly after edits.
+
+### What I learned
+- Combining integration-style test fixtures with operator docs updates in the same step prevents contract drift between implementation and runbook guidance.
+
+### What was tricky to build
+- Keeping test fixtures deterministic around workspace/repo setup while validating status-level warning semantics.
+
+### What warrants a second pair of eyes
+- `README` and policy example readability for first-time operators setting up multiple endpoints.
+- Whether additional smoke coverage is needed for `metawsm docs --refresh --endpoint ...` command output formatting.
+
+### What should be done in the future
+- Close ticket after final documentation commit.
+
+### Code review instructions
+- Start with tests:
+- `internal/orchestrator/service_test.go`
+- `internal/docfederation/client_test.go`
+- `cmd/metawsm/main_test.go`
+- Then review operator docs:
+- `README.md`
+- `examples/policy.example.json`
+- Validate with:
+- `go test ./...`
+- `go run ./cmd/metawsm docs --policy .metawsm/policy.json`
+
+### Technical details
+- Stale warning assertion checks for both:
+- `warning=docmgr index freshness stale`
+- `(warning-only)`

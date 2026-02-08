@@ -35,3 +35,15 @@ Step 3: Added docmgr API endpoint config, federation client, workspace-first ded
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/docfederation/client.go — Queries workspace/status+tickets and refresh endpoints
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/docfederation/merge.go — Implements workspace-first merge and dedupe key rules
 
+
+## 2026-02-08
+
+Step 4: Added Phase 5 test coverage (stale warning + federation merge/selection), updated operator docs, and added workspace-authoritative federation playbook (commit 86c3654c2b6668cf5ed751e3f15f8a6423d5bccf).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/README.md — Operator command workflow updates
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/examples/policy.example.json — docs.api endpoint examples
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/docfederation/client_test.go — Federation dedupe/refresh coverage
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Stale warning-only coverage
+
