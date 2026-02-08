@@ -1549,6 +1549,130 @@ func TestCommitRejectsWhenGitPRModeOff(t *testing.T) {
 	}
 }
 
+func TestCommitRejectsWhenRequiredTestCommandFails(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-commit-reject-tests"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-commit-reject-tests"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("change\n"), 0o644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithReposAndPolicy(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"}, `{"version":2,"git_pr":{"required_checks":["tests"],"test_commands":["false"]}}`)
+
+	_, err := svc.Commit(t.Context(), CommitOptions{RunID: runID})
+	if err == nil {
+		t.Fatalf("expected commit validation failure")
+	}
+	if !strings.Contains(err.Error(), "commit validation failed") {
+		t.Fatalf("unexpected commit validation error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "tests") {
+		t.Fatalf("expected tests check name in error: %v", err)
+	}
+}
+
+func TestCommitAllowsFailedTestWhenRequireAllDisabled(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-commit-require-any"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-commit-require-any"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("change\n"), 0o644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithReposAndPolicy(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"}, `{"version":2,"git_pr":{"require_all":false,"required_checks":["tests","forbidden_files"],"test_commands":["false"],"forbidden_file_patterns":["*.pem"]}}`)
+
+	result, err := svc.Commit(t.Context(), CommitOptions{RunID: runID})
+	if err != nil {
+		t.Fatalf("commit with require_all=false should pass when one check passes: %v", err)
+	}
+	if len(result.Repos) != 1 {
+		t.Fatalf("expected one repo result, got %d", len(result.Repos))
+	}
+	if strings.TrimSpace(result.Repos[0].CommitSHA) == "" {
+		t.Fatalf("expected commit SHA for successful commit")
+	}
+	rows, err := svc.ListRunPullRequests(runID)
+	if err != nil {
+		t.Fatalf("list run pull requests: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one persisted row, got %d", len(rows))
+	}
+	if !strings.Contains(rows[0].ValidationJSON, "\"tests\"") {
+		t.Fatalf("expected validation report to include tests result, got %q", rows[0].ValidationJSON)
+	}
+}
+
+func TestCommitRejectsForbiddenFiles(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-commit-reject-forbidden"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-commit-reject-forbidden"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	if err := os.WriteFile(filepath.Join(repoPath, "secret.pem"), []byte("private\n"), 0o644); err != nil {
+		t.Fatalf("write forbidden file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithReposAndPolicy(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"}, `{"version":2,"git_pr":{"required_checks":["forbidden_files"],"forbidden_file_patterns":["*.pem"]}}`)
+
+	_, err := svc.Commit(t.Context(), CommitOptions{RunID: runID})
+	if err == nil {
+		t.Fatalf("expected commit forbidden-files validation failure")
+	}
+	if !strings.Contains(err.Error(), "forbidden_files") {
+		t.Fatalf("expected forbidden_files check in error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "secret.pem") {
+		t.Fatalf("expected forbidden file path in error: %v", err)
+	}
+}
+
 func TestOpenPullRequestsRejectsWithoutPreparedCommitMetadata(t *testing.T) {
 	svc := newTestService(t)
 	runID := "run-pr-reject-empty"
@@ -1595,6 +1719,105 @@ func TestOpenPullRequestsRejectsWhenGitPRModeOff(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "git_pr.mode is off") {
 		t.Fatalf("unexpected PR mode-off error: %v", err)
+	}
+}
+
+func TestOpenPullRequestsRejectsWhenRequiredTestCommandFails(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-pr-reject-tests"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-pr-reject-tests"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithReposAndPolicy(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"}, `{"version":2,"git_pr":{"required_checks":["tests"],"test_commands":["false"]}}`)
+	if err := svc.UpsertRunPullRequest(model.RunPullRequest{
+		RunID:         runID,
+		Ticket:        ticket,
+		Repo:          "metawsm",
+		WorkspaceName: workspaceName,
+		HeadBranch:    "metawsm-009/metawsm/run-pr-reject-tests",
+		BaseBranch:    "main",
+		CommitSHA:     "abc123",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert run pull request fixture: %v", err)
+	}
+
+	_, err := svc.OpenPullRequests(t.Context(), PullRequestOptions{RunID: runID, DryRun: true})
+	if err == nil {
+		t.Fatalf("expected pull request validation failure")
+	}
+	if !strings.Contains(err.Error(), "pull request validation failed") {
+		t.Fatalf("unexpected pull request validation error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "tests") {
+		t.Fatalf("expected tests check name in error: %v", err)
+	}
+}
+
+func TestOpenPullRequestsRejectsWhenCleanTreeRequired(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-pr-reject-clean-tree"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-pr-reject-clean-tree"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	if err := os.WriteFile(filepath.Join(repoPath, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithReposAndPolicy(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"}, `{"version":2,"git_pr":{"required_checks":["clean_tree"]}}`)
+	if err := svc.UpsertRunPullRequest(model.RunPullRequest{
+		RunID:         runID,
+		Ticket:        ticket,
+		Repo:          "metawsm",
+		WorkspaceName: workspaceName,
+		HeadBranch:    "metawsm-009/metawsm/run-pr-reject-clean-tree",
+		BaseBranch:    "main",
+		CommitSHA:     "abc123",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert run pull request fixture: %v", err)
+	}
+
+	_, err := svc.OpenPullRequests(t.Context(), PullRequestOptions{RunID: runID, DryRun: true})
+	if err == nil {
+		t.Fatalf("expected clean-tree validation failure")
+	}
+	if !strings.Contains(err.Error(), "clean_tree") {
+		t.Fatalf("expected clean_tree check in error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "dirty") {
+		t.Fatalf("expected dirty-tree detail in error: %v", err)
 	}
 }
 
@@ -1970,6 +2193,11 @@ func createRunWithTicketFixture(t *testing.T, svc *Service, runID string, ticket
 
 func createRunWithTicketFixtureWithRepos(t *testing.T, svc *Service, runID string, ticket string, workspaceName string, status model.RunStatus, dryRun bool, repos []string) {
 	t.Helper()
+	createRunWithTicketFixtureWithReposAndPolicy(t, svc, runID, ticket, workspaceName, status, dryRun, repos, `{"version":1}`)
+}
+
+func createRunWithTicketFixtureWithReposAndPolicy(t *testing.T, svc *Service, runID string, ticket string, workspaceName string, status model.RunStatus, dryRun bool, repos []string, policyJSON string) {
+	t.Helper()
 	docRepo := ""
 	if len(repos) > 0 {
 		docRepo = repos[0]
@@ -1989,7 +2217,10 @@ func createRunWithTicketFixtureWithRepos(t *testing.T, svc *Service, runID strin
 		DryRun:            dryRun,
 		CreatedAt:         time.Now(),
 	}
-	if err := svc.store.CreateRun(spec, `{"version":1}`); err != nil {
+	if strings.TrimSpace(policyJSON) == "" {
+		policyJSON = `{"version":1}`
+	}
+	if err := svc.store.CreateRun(spec, policyJSON); err != nil {
 		t.Fatalf("create run fixture: %v", err)
 	}
 	if status != model.RunStatusCreated {

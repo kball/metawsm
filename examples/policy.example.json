@@ -63,7 +63,22 @@
     "branch_template": "{ticket}/{repo}/{run}",
     "require_all": true,
     "required_checks": [
-      "tests"
+      "tests",
+      "forbidden_files",
+      "clean_tree"
+    ],
+    "test_commands": [
+      "go test ./... -count=1"
+    ],
+    "forbidden_file_patterns": [
+      ".env",
+      ".env.*",
+      "*.pem",
+      "*.key",
+      "*.p12",
+      "*.pfx",
+      "id_rsa",
+      "id_ed25519"
     ],
     "allowed_repos": [],
     "default_labels": [],

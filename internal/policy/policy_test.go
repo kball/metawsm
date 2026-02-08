@@ -30,8 +30,20 @@ func TestDefaultPolicyIsValid(t *testing.T) {
 	if !cfg.GitPR.RequireAll {
 		t.Fatalf("expected default git_pr require_all=true")
 	}
-	if len(cfg.GitPR.RequiredChecks) == 0 {
-		t.Fatalf("expected default git_pr required checks")
+	if len(cfg.GitPR.RequiredChecks) != 3 {
+		t.Fatalf("expected 3 default git_pr required checks, got %d", len(cfg.GitPR.RequiredChecks))
+	}
+	if !containsLowercaseToken(cfg.GitPR.RequiredChecks, "tests") {
+		t.Fatalf("expected default git_pr required checks to include tests")
+	}
+	if !containsLowercaseToken(cfg.GitPR.RequiredChecks, "forbidden_files") {
+		t.Fatalf("expected default git_pr required checks to include forbidden_files")
+	}
+	if !containsLowercaseToken(cfg.GitPR.RequiredChecks, "clean_tree") {
+		t.Fatalf("expected default git_pr required checks to include clean_tree")
+	}
+	if len(cfg.GitPR.ForbiddenPatterns) == 0 {
+		t.Fatalf("expected default git_pr forbidden_file_patterns")
 	}
 }
 
@@ -296,6 +308,45 @@ func TestValidateRejectsEmptyGitPRBranchTemplate(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUnsupportedGitPRRequiredCheck(t *testing.T) {
+	cfg := Default()
+	cfg.GitPR.RequiredChecks = []string{"tests", "bogus"}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected git_pr.required_checks validation error")
+	}
+	if !strings.Contains(err.Error(), "unsupported check") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsEmptyGitPRTestCommand(t *testing.T) {
+	cfg := Default()
+	cfg.GitPR.TestCommands = []string{"go test ./...", " "}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected git_pr.test_commands validation error")
+	}
+	if !strings.Contains(err.Error(), "git_pr.test_commands") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsEmptyGitPRForbiddenPattern(t *testing.T) {
+	cfg := Default()
+	cfg.GitPR.ForbiddenPatterns = []string{"*.pem", ""}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected git_pr.forbidden_file_patterns validation error")
+	}
+	if !strings.Contains(err.Error(), "git_pr.forbidden_file_patterns") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestRenderGitBranchUsesDefaultTemplate(t *testing.T) {
 	branch := RenderGitBranch("", "METAWSM-009", "metawsm/api", "run-20260208-120000")
 	if branch != "metawsm-009/metawsm-api/run-20260208-120000" {
@@ -315,4 +366,14 @@ func TestRenderGitBranchFallsBackWhenTemplateHasNoSegments(t *testing.T) {
 	if branch != "metawsm-009/metawsm/run-20260208-120000" {
 		t.Fatalf("unexpected fallback rendered branch: %q", branch)
 	}
+}
+
+func containsLowercaseToken(values []string, token string) bool {
+	token = strings.TrimSpace(strings.ToLower(token))
+	for _, value := range values {
+		if strings.TrimSpace(strings.ToLower(value)) == token {
+			return true
+		}
+	}
+	return false
 }

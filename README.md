@@ -158,6 +158,13 @@ Important fields:
 - `operator.llm.command` (V1 default: `codex`)
 - `operator.llm.timeout_seconds`
 - `operator.llm.max_tokens`
+- `git_pr.mode` (`off|assist|auto`)
+- `git_pr.require_all` (require all configured checks to pass)
+- `git_pr.required_checks` (`tests|forbidden_files|clean_tree`)
+- `git_pr.test_commands[]` (shell commands run in each target repo)
+- `git_pr.forbidden_file_patterns[]` (glob patterns blocked in changed files)
+- `git_pr.allowed_repos[]` (optional allow-list for commit/PR workflows)
+- `git_pr.default_labels[]` and `git_pr.default_reviewers[]`
 - `close.require_clean_git`
 - `docs.authority_mode` (`workspace_active`)
 - `docs.seed_mode` (`none|copy_from_repo_on_start`)

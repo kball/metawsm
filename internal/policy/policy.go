@@ -58,14 +58,16 @@ type Config struct {
 		} `json:"llm"`
 	} `json:"operator"`
 	GitPR struct {
-		Mode             string   `json:"mode"`
-		CredentialMode   string   `json:"credential_mode"`
-		BranchTemplate   string   `json:"branch_template"`
-		RequireAll       bool     `json:"require_all"`
-		RequiredChecks   []string `json:"required_checks"`
-		AllowedRepos     []string `json:"allowed_repos"`
-		DefaultLabels    []string `json:"default_labels"`
-		DefaultReviewers []string `json:"default_reviewers"`
+		Mode              string   `json:"mode"`
+		CredentialMode    string   `json:"credential_mode"`
+		BranchTemplate    string   `json:"branch_template"`
+		RequireAll        bool     `json:"require_all"`
+		RequiredChecks    []string `json:"required_checks"`
+		TestCommands      []string `json:"test_commands"`
+		ForbiddenPatterns []string `json:"forbidden_file_patterns"`
+		AllowedRepos      []string `json:"allowed_repos"`
+		DefaultLabels     []string `json:"default_labels"`
+		DefaultReviewers  []string `json:"default_reviewers"`
 	} `json:"git_pr"`
 	AgentProfiles []AgentProfile `json:"agent_profiles"`
 	Agents        []Agent        `json:"agents"`
@@ -127,7 +129,18 @@ func Default() Config {
 	cfg.GitPR.CredentialMode = "local_user_auth"
 	cfg.GitPR.BranchTemplate = "{ticket}/{repo}/{run}"
 	cfg.GitPR.RequireAll = true
-	cfg.GitPR.RequiredChecks = []string{"tests"}
+	cfg.GitPR.RequiredChecks = []string{"tests", "forbidden_files", "clean_tree"}
+	cfg.GitPR.TestCommands = []string{}
+	cfg.GitPR.ForbiddenPatterns = []string{
+		".env",
+		".env.*",
+		"*.pem",
+		"*.key",
+		"*.p12",
+		"*.pfx",
+		"id_rsa",
+		"id_ed25519",
+	}
 	cfg.GitPR.AllowedRepos = []string{}
 	cfg.GitPR.DefaultLabels = []string{}
 	cfg.GitPR.DefaultReviewers = []string{}
@@ -281,8 +294,22 @@ func Validate(cfg Config) error {
 		return fmt.Errorf("git_pr.branch_template cannot be empty")
 	}
 	for _, check := range cfg.GitPR.RequiredChecks {
-		if strings.TrimSpace(check) == "" {
+		check = strings.TrimSpace(strings.ToLower(check))
+		if check == "" {
 			return fmt.Errorf("git_pr.required_checks cannot contain empty values")
+		}
+		if !isSupportedGitPRCheck(check) {
+			return fmt.Errorf("git_pr.required_checks contains unsupported check %q", check)
+		}
+	}
+	for _, command := range cfg.GitPR.TestCommands {
+		if strings.TrimSpace(command) == "" {
+			return fmt.Errorf("git_pr.test_commands cannot contain empty values")
+		}
+	}
+	for _, pattern := range cfg.GitPR.ForbiddenPatterns {
+		if strings.TrimSpace(pattern) == "" {
+			return fmt.Errorf("git_pr.forbidden_file_patterns cannot contain empty values")
 		}
 	}
 	for _, repo := range cfg.GitPR.AllowedRepos {
@@ -354,6 +381,15 @@ func Validate(cfg Config) error {
 		}
 	}
 	return nil
+}
+
+func isSupportedGitPRCheck(check string) bool {
+	switch strings.TrimSpace(strings.ToLower(check)) {
+	case "tests", "forbidden_files", "clean_tree":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateDocAPIEndpoints(kind string, endpoints []DocAPIEndpoint, seenNames map[string]struct{}) error {

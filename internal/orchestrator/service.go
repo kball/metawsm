@@ -758,6 +758,19 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 				results = append(results, result)
 				continue
 			}
+			validationReport, err := runGitPRValidations(ctx, cfg, gitPRValidationInput{
+				Operation:     gitPRValidationOperationCommit,
+				RunID:         runID,
+				Ticket:        commitTicket,
+				WorkspaceName: workspaceName,
+				Repo:          target.Repo,
+				RepoPath:      target.RepoPath,
+				BaseBranch:    baseBranch,
+			})
+			if err != nil {
+				return CommitResult{}, fmt.Errorf("commit validation failed for ticket=%s workspace=%s repo=%s: %w", commitTicket, workspaceName, target.Repo, err)
+			}
+			validationJSON := marshalGitPRValidationReport(validationReport)
 
 			baseRef, err := resolveCommitBaseRef(ctx, target.RepoPath, baseBranch)
 			if err != nil {
@@ -806,6 +819,7 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 			row.CommitSHA = sha
 			row.CredentialMode = credentialMode
 			row.Actor = actor
+			row.ValidationJSON = validationJSON
 			if row.PRState == "" {
 				row.PRState = model.PullRequestStateDraft
 			}
@@ -986,6 +1000,20 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 			repoResults = append(repoResults, repoResult)
 			continue
 		}
+		validationReport, err := runGitPRValidations(ctx, cfg, gitPRValidationInput{
+			Operation:     gitPRValidationOperationPR,
+			RunID:         runID,
+			Ticket:        prTicket,
+			WorkspaceName: workspaceName,
+			Repo:          repo,
+			RepoPath:      repoPath,
+			BaseBranch:    baseBranch,
+			HeadBranch:    headBranch,
+		})
+		if err != nil {
+			return PullRequestResult{}, fmt.Errorf("pull request validation failed for ticket=%s workspace=%s repo=%s: %w", prTicket, workspaceName, repo, err)
+		}
+		validationJSON := marshalGitPRValidationReport(validationReport)
 		if options.DryRun {
 			repoResults = append(repoResults, repoResult)
 			continue
@@ -1007,6 +1035,7 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 		row.PRState = model.PullRequestStateOpen
 		row.CredentialMode = credentialMode
 		row.Actor = actor
+		row.ValidationJSON = validationJSON
 		row.ErrorText = ""
 		if row.CreatedAt.IsZero() {
 			row.CreatedAt = now
