@@ -308,6 +308,15 @@ func TestBuildWatchDirectionHintsCommitReady(t *testing.T) {
 	}
 }
 
+func TestBuildWatchDirectionHintsRunDoneIncludesHumanMerge(t *testing.T) {
+	snapshot := watchSnapshot{RunID: "run-done-1"}
+	hints := buildWatchDirectionHints(snapshot, "run_done")
+	joined := strings.Join(hints, "\n")
+	if !strings.Contains(joined, "metawsm merge --run-id run-done-1 --human") {
+		t.Fatalf("expected human merge hint, got:\n%s", joined)
+	}
+}
+
 func TestBuildOperatorRuleDecisionCommitReadyAssist(t *testing.T) {
 	now := time.Now()
 	decision, err := buildOperatorRuleDecision(
@@ -483,6 +492,16 @@ func TestPRCommandRequiresRunSelector(t *testing.T) {
 		t.Fatalf("expected pr selector error")
 	}
 	if !strings.Contains(err.Error(), "one of --run-id or --ticket is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMergeCommandRequiresHumanAcknowledgement(t *testing.T) {
+	err := mergeCommand([]string{"--run-id", "run-1"})
+	if err == nil {
+		t.Fatalf("expected merge human-acknowledgement error")
+	}
+	if !strings.Contains(err.Error(), "requires --human") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -1779,6 +1779,7 @@ func buildWatchDirectionHints(snapshot watchSnapshot, event string) []string {
 		hints = append(hints, fmt.Sprintf("Resume if desired: metawsm resume --run-id %s", snapshot.RunID))
 	case "run_done":
 		hints = append(hints, fmt.Sprintf("Review and merge: metawsm merge --run-id %s --dry-run", snapshot.RunID))
+		hints = append(hints, fmt.Sprintf("Human merge execution: metawsm merge --run-id %s --human", snapshot.RunID))
 		hints = append(hints, fmt.Sprintf("Close when ready: metawsm close --run-id %s", snapshot.RunID))
 	case "commit_ready":
 		hints = append(hints, fmt.Sprintf("Preview commit actions: metawsm commit --run-id %s --dry-run", snapshot.RunID))
@@ -1947,12 +1948,17 @@ func mergeCommand(args []string) error {
 	var ticket string
 	var dbPath string
 	var dryRun bool
+	var human bool
 	fs.StringVar(&runID, "run-id", "", "Run identifier")
 	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (merge latest run for this ticket)")
 	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
 	fs.BoolVar(&dryRun, "dry-run", false, "Preview merge actions without executing them")
+	fs.BoolVar(&human, "human", false, "Required acknowledgement for human-initiated merge execution")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if !dryRun && !human {
+		return fmt.Errorf("merge requires --human acknowledgement; automated merge is disabled")
 	}
 
 	runID, ticket, err := requireRunSelector(runID, ticket)
@@ -2669,7 +2675,7 @@ func printUsage() {
 	fmt.Println("  metawsm cleanup [--run-id RUN_ID | --ticket T1] [--keep-workspaces] [--dry-run]")
 	fmt.Println("  metawsm commit [--run-id RUN_ID | --ticket T1] [--message \"...\"] [--actor USER] [--dry-run]")
 	fmt.Println("  metawsm pr [--run-id RUN_ID | --ticket T1] [--title \"...\"] [--body \"...\"] [--actor USER] [--dry-run]")
-	fmt.Println("  metawsm merge [--run-id RUN_ID | --ticket T1] [--dry-run]")
+	fmt.Println("  metawsm merge [--run-id RUN_ID | --ticket T1] [--dry-run] [--human]")
 	fmt.Println("  metawsm iterate [--run-id RUN_ID | --ticket T1] --feedback \"...\" [--dry-run]")
 	fmt.Println("  metawsm close [--run-id RUN_ID | --ticket T1] [--dry-run]")
 	fmt.Println("  metawsm policy-init")
