@@ -46,3 +46,13 @@ Step 1: Added git_pr policy contract and persisted run PR metadata (commit d3f13
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go — Added run_pull_requests schema and CRUD methods
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded step details and validation outcomes
 
+
+## 2026-02-08
+
+Step 2: Added Proposal A auth preflight command (metawsm auth check) with run-scoped git identity checks (commit 6148470).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — New auth command and helper functions
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go — Auth command and repo-path tests
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 2 implementation and validation

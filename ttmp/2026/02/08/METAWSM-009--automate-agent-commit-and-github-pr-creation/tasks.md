@@ -12,8 +12,8 @@
 - [ ] Add tests for commit/preflight rejection paths
 - [ ] Add tests for PR creation and persisted metadata
 - [ ] Write operator and agent playbook for commit/PR workflow
-- [ ] Proposal A V1: add auth preflight check using gh auth status and git credential availability
-- [ ] Proposal A V1: add metawsm auth check command to report push/PR readiness
+- [x] Proposal A V1: add auth preflight check using gh auth status and git credential availability
+- [x] Proposal A V1: add metawsm auth check command to report push/PR readiness
 - [ ] Proposal A V1: record credential mode and actor identity in run events for commit/pr actions
 - [ ] Validation framework: define extensible check interface and require_all policy semantics
 - [ ] Validation V1: enforce all configured test commands must pass before commit/pr

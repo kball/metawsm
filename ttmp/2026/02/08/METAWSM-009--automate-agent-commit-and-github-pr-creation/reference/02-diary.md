@@ -9,6 +9,10 @@ DocType: reference
 Intent: long-term
 Owners: []
 RelatedFiles:
+    - Path: cmd/metawsm/main.go
+      Note: Added Proposal A auth check command and readiness helpers (commit 6148470)
+    - Path: cmd/metawsm/main_test.go
+      Note: Added auth check command and repo path resolution tests (commit 6148470)
     - Path: examples/policy.example.json
       Note: |-
         Added git_pr policy block defaults for Proposal A rollout (commit d3f13f6)
@@ -39,6 +43,7 @@ LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 # Diary
@@ -142,3 +147,96 @@ I implemented defaults and validation for Proposal A (`local_user_auth`) and add
 }
 ```
 - `run_pull_requests` primary key: `(run_id, ticket, repo)`.
+
+## Step 2: Add Proposal A `metawsm auth check` Command
+
+This step added an explicit auth readiness command for Proposal A so operators can verify push/PR prerequisites before commit/PR automation attempts. It gives deterministic output for GitHub auth and run-scoped git identity checks.
+
+I introduced a new `metawsm auth check` command that validates `gh` auth state, git `user.name`/`user.email`, and `origin` availability across run workspace repos, then reports `Push ready` and `PR ready` flags.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok go ahead and implement. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue implementing METAWSM-009 with incremental commits and keep the implementation diary up to date after each slice.
+
+**Inferred user intent:** Get working Proposal A automation primitives now, with operational visibility and traceable progress.
+
+**Commit (code):** 6148470 — "Add Proposal A auth check command"
+
+### What I did
+- Added `auth` command routing in `cmd/metawsm/main.go`.
+- Implemented `metawsm auth check` with:
+  - policy load + credential mode enforcement (`local_user_auth`),
+  - `gh auth status` verification,
+  - actor discovery via `gh api user --jq .login`,
+  - run-scoped repo checks for git identity (`user.name`, `user.email`) and `origin` remote.
+- Added helper functions:
+  - `checkGitHubLocalAuth`
+  - `checkRunGitCredentials`
+  - `resolveWorkspaceRepoPath`
+  - `gitConfigValue`
+  - `gitRemoteOrigin`
+- Updated CLI usage text to include `metawsm auth check`.
+- Added tests in `cmd/metawsm/main_test.go` for:
+  - required subcommand behavior,
+  - repo path resolution behavior for nested and single-repo layouts.
+- Ran focused package tests and a manual command invocation smoke test.
+
+### Why
+- Proposal A depends on local credentials and local git configuration.
+- Operators need a deterministic preflight command before triggering push/PR behavior.
+
+### What worked
+- `go test ./cmd/metawsm -count=1` passed with cache overrides.
+- `go test ./internal/policy -count=1` and `go test ./internal/store -count=1` stayed green after command integration.
+- `go run ./cmd/metawsm auth check` produced clear readiness output and remediation detail.
+
+### What didn't work
+- Manual smoke check showed local `gh` auth token is invalid in this environment:
+- Command: `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go run ./cmd/metawsm auth check`
+- Output included:
+  - `X github.com: authentication failed`
+  - `The github.com token in oauth_token is no longer valid.`
+- This is expected behavior from the new preflight command, not a command failure.
+- While updating changelog notes via shell, unescaped backticks in a `docmgr changelog update --entry ...` string triggered shell command substitution:
+- Error: `zsh:1: command not found: metawsm`
+- Fix: replaced the malformed changelog text with plain `metawsm auth check` text (no backticks in shell argument).
+
+### What I learned
+- A run-aware auth check needs robust repo path resolution for both nested repo workspaces and single-repo root workspaces.
+- Surfacing remediation details from CLI tools directly helps operators recover faster.
+
+### What was tricky to build
+- Balancing strict failure behavior (non-zero when not ready) with enough diagnostic detail to make fixes obvious.
+
+### What warrants a second pair of eyes
+- Whether `auth check` should fail hard when no run selector is provided and GitHub auth is unavailable, or support a softer informational mode.
+- Output formatting consistency if we later add additional credential modes.
+
+### What should be done in the future
+- Add event recording for credential mode + actor in commit/pr action flows (task 13).
+- Add support for future credential modes without changing current command UX.
+
+### Code review instructions
+- Start in `cmd/metawsm/main.go`:
+  - command switch (`case "auth"`)
+  - `authCommand`
+  - helper functions for auth and repo checks
+- Then review tests in `cmd/metawsm/main_test.go`:
+  - `TestAuthCommandRequiresCheckSubcommand`
+  - `TestResolveWorkspaceRepoPath*`
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+
+### Technical details
+- Command usage:
+```bash
+metawsm auth check [--run-id RUN_ID | --ticket TICKET] [--policy PATH]
+```
+- Readiness summary fields:
+  - `Credential mode`
+  - `GitHub CLI` installed/authed/actor
+  - per-repo readiness lines
+  - `Push ready`
+  - `PR ready`
