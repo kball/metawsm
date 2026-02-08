@@ -11,6 +11,10 @@ Owners: []
 RelatedFiles:
     - Path: cmd/metawsm/main.go
       Note: Expose topology flags in run/bootstrap CLI
+    - Path: internal/docfederation/client.go
+      Note: Federation HTTP client for status/tickets/refresh endpoints
+    - Path: internal/docfederation/merge.go
+      Note: Workspace-first dedupe/merge logic keyed by ticket+doc_home_repo+active context
     - Path: internal/model/types.go
       Note: RunSpec topology fields and sync state model
     - Path: internal/orchestrator/service.go
@@ -18,7 +22,9 @@ RelatedFiles:
     - Path: internal/orchestrator/service_test.go
       Note: Coverage for seed-mode planning and topology behavior
     - Path: internal/policy/policy.go
-      Note: Docs topology defaults and validation contract
+      Note: |-
+        Docs topology defaults and validation contract
+        Docs API endpoint configuration and validation
     - Path: internal/store/sqlite.go
       Note: Persist doc sync state and run freshness revision
     - Path: internal/store/sqlite_test.go
@@ -29,6 +35,7 @@ LastUpdated: 2026-02-08T06:55:14.73128-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 
 # Diary
@@ -199,3 +206,83 @@ I also added explicit checks that ticket docs exist in workspace doc roots and t
 ### Technical details
 - Close gate key is `ticket + workspace_name` against `doc_sync_states`.
 - Required sync status for close: `synced`.
+
+## Step 3: Add docmgr API federation config, client, refresh, and global view
+
+This step implemented Phase 4 tasks by adding policy-level endpoint configuration, a metawsm federation client for `docmgr` APIs, merge/dedupe rules, refresh actions, and a minimum global ticket aggregation view.
+
+The new operator command is `metawsm docs`, which can query configured workspace/repo endpoints, optionally trigger index refresh, and print a workspace-first federated ticket view with links.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok continue"
+
+**Assistant interpretation:** Continue executing the remaining CLARIFY_INFO_FLOW tasks with the same docmgr/diary/commit workflow.
+
+**Inferred user intent:** Keep moving through the ticket backlog without pausing, maintaining incremental commits and documentation.
+
+**Commit (code):** ecd9617eb6e3b995ce206422899c0c0c40bbf6e4 — "Add docmgr API federation and docs overview command"
+
+### What I did
+- Extended policy config in `internal/policy/policy.go`:
+- `docs.api.workspace_endpoints`
+- `docs.api.repo_endpoints`
+- `docs.api.request_timeout_seconds`
+- Added endpoint URL/name/repo/workspace validation and tests in `internal/policy/policy_test.go`.
+- Added federation package `internal/docfederation/`:
+- `client.go` to query `/api/v1/workspace/status`, `/api/v1/workspace/tickets`, and `POST /api/v1/index/refresh`.
+- `merge.go` for workspace-first merge/dedupe keyed by `ticket + doc_home_repo + active context`.
+- `client_test.go` with HTTP server-backed tests for snapshot parsing, merge preference, and refresh.
+- Added `ActiveDocContexts()` in `internal/orchestrator/service.go` to expose active run ticket/doc-home context.
+- Added `metawsm docs` command in `cmd/metawsm/main.go`:
+- global aggregation output (endpoint health + high-level ticket list + links),
+- refresh action (`--refresh`) with optional endpoint selection (`--endpoint`),
+- ticket filter (`--ticket`).
+- Checked off tasks `8,9,10,11,12` via:
+- `docmgr task check --ticket CLARIFY_INFO_FLOW --id 8,9,10,11,12`
+- Ran validation:
+- `go test ./...` (all passing).
+
+### Why
+- Phase 4 requires a metawsm-side read model over multiple docmgr API endpoints with explicit precedence and operator-triggered freshness control.
+
+### What worked
+- Endpoint config validates correctly and supports workspace/repo classification.
+- Federation client successfully normalizes status/ticket responses.
+- Merge logic prefers workspace endpoints over repo fallback while deduping by ticket/doc-home/active-context key.
+- Refresh action is operator-triggerable through `metawsm docs --refresh`.
+
+### What didn't work
+- Initial compile failed due to a `postJSON` call mismatch:
+- `not enough arguments in call to c.postJSON ...`
+- Fixed by passing `nil` request body explicitly for refresh.
+
+### What I learned
+- Keeping federation as a dedicated internal package (`docfederation`) makes merge policy logic testable without entangling orchestration logic.
+
+### What was tricky to build
+- Designing a dedupe key that preserves active/inactive context semantics while still allowing workspace-first source precedence.
+
+### What warrants a second pair of eyes
+- Whether endpoint config should allow richer dynamic discovery (today it is explicit static config).
+- Output ergonomics for `metawsm docs` when endpoint counts and ticket volumes get large.
+
+### What should be done in the future
+- Implement Phase 5 integration coverage and operator playbook/documentation updates.
+
+### Code review instructions
+- Start at `internal/docfederation/client.go` and `internal/docfederation/merge.go`.
+- Review policy contract changes in `internal/policy/policy.go`.
+- Review operator entrypoint in `cmd/metawsm/main.go` (`docsCommand`).
+- Validate with:
+- `go test ./...`
+- `go run ./cmd/metawsm docs --policy .metawsm/policy.json`
+- `go run ./cmd/metawsm docs --policy .metawsm/policy.json --refresh`
+
+### Technical details
+- Workspace-first precedence:
+- workspace endpoint ticket wins over repo endpoint ticket when dedupe keys collide.
+- Dedupe key:
+- `upper(ticket) + "|" + lower(doc_home_repo) + "|" + active|inactive`
+- Refresh path:
+- `POST /api/v1/index/refresh` on selected endpoints.

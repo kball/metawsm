@@ -24,3 +24,14 @@ Step 2: Added close-time hard gates for missing/unsynced workspace doc state and
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Adds ensureWorkspaceDocCloseChecks close gating
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Adds/updates close-gate tests
 
+
+## 2026-02-08
+
+Step 3: Added docmgr API endpoint config, federation client, workspace-first dedupe, refresh action, and global docs view via metawsm docs (commit ecd9617eb6e3b995ce206422899c0c0c40bbf6e4).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Adds metawsm docs command for aggregation and refresh
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/docfederation/client.go — Queries workspace/status+tickets and refresh endpoints
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/docfederation/merge.go — Implements workspace-first merge and dedupe key rules
+

@@ -10,11 +10,11 @@
 - [x] [Phase 2] Update status/TUI output with doc authority + freshness, including warning-only stale index messaging.
 - [x] [Phase 3] Implement close enforcement: hard-fail on missing/unsynced workspace ticket-doc state.
 - [x] [Phase 3] Implement close behavior: ensure agent-authored workspace docs are committed/merged before canonical doc close actions.
-- [ ] [Phase 4] Add docmgr API endpoint configuration for workspace and repo roots (workspace-first, repo fallback).
-- [ ] [Phase 4] Build metawsm federation client to query multiple docmgr /api/v1 endpoints and normalize results.
-- [ ] [Phase 4] Implement ticket merge/dedupe rules keyed by ticket + doc_home_repo + active run context.
-- [ ] [Phase 4] Add metawsm-triggered refresh action calling /api/v1/index/refresh on selected docmgr endpoints.
-- [ ] [Phase 4] Add minimum global aggregation view: high-level ticket list + links to per-workspace/per-repo docmgr web UIs.
+- [x] [Phase 4] Add docmgr API endpoint configuration for workspace and repo roots (workspace-first, repo fallback).
+- [x] [Phase 4] Build metawsm federation client to query multiple docmgr /api/v1 endpoints and normalize results.
+- [x] [Phase 4] Implement ticket merge/dedupe rules keyed by ticket + doc_home_repo + active run context.
+- [x] [Phase 4] Add metawsm-triggered refresh action calling /api/v1/index/refresh on selected docmgr endpoints.
+- [x] [Phase 4] Add minimum global aggregation view: high-level ticket list + links to per-workspace/per-repo docmgr web UIs.
 - [ ] [Phase 5] Add unit/integration tests for topology validation, seeding flow, and close-gate behavior (unsynced hard-fail, stale warning-only).
 - [ ] [Phase 5] Add integration tests for multi-endpoint federation, workspace-first precedence, dedupe, and refresh action behavior.
 - [ ] [Phase 5] Update operator docs/playbooks with workspace-authoritative ticket workflow and federation usage.
