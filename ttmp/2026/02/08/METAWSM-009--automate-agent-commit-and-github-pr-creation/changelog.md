@@ -111,3 +111,13 @@ Step 7: integrated commit/pr readiness signals into operator loop with assist/au
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/operator_llm.go — Added readiness intents and Execute semantics for rule decisions
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 7 implementation details and validation
 
+
+## 2026-02-08
+
+Step 8: added commit/PR preflight rejection tests for invalid run state, git_pr.mode=off, and missing prepared metadata paths (commit 299a096).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Added four rejection-path tests for commit/pr preflight behavior
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 8 implementation details and test validation
+

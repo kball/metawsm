@@ -43,6 +43,7 @@ RelatedFiles:
         Added status test for pull request section (commit 283a68b)
         Commit primitive tests (commit 678b936)
         Added OpenPullRequests dry-run and fake-gh integration tests (commit 180a976)
+        Added commit/pr preflight rejection coverage for mode-off and invalid-state scenarios (commit 299a096)
     - Path: internal/policy/policy.go
       Note: |-
         Added git_pr config schema/defaults/validation (commit d3f13f6)
@@ -67,6 +68,7 @@ LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -684,3 +686,66 @@ I added readiness detection from status output (`Diffs` and `Pull Requests`), in
 - Auto-execution policy:
   - `git_pr.mode=assist` -> readiness alerts only
   - `git_pr.mode=auto` -> readiness alerts + action execution
+
+## Step 8: Add Commit/PR Preflight Rejection Coverage
+
+This step focused on negative-path coverage for commit and PR workflows so policy and state guardrails are explicitly tested. The goal was to close the task for commit/preflight rejection tests and make regression risk lower as validation and operator auto-mode behavior continue to evolve.
+
+I added new orchestrator service tests that assert commit/PR calls fail fast for non-completed runs, `git_pr.mode=off`, and PR creation without prepared commit metadata.
+
+### Prompt Context
+
+**User prompt (verbatim):** "use docmgr to pick up ticket METAWSM-009 --- look at the plan, diary, and tasks, and then continue implementing. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue implementing the next open task from METAWSM-009 and maintain incremental commit + diary updates.
+
+**Inferred user intent:** Increase implementation completeness with reliable safeguards, not just happy-path functionality.
+
+**Commit (code):** 299a096 — "Add commit and PR preflight rejection tests"
+
+### What I did
+- Added four new tests in `internal/orchestrator/service_test.go`:
+  - `TestCommitRejectsWhenRunNotComplete`
+  - `TestCommitRejectsWhenGitPRModeOff`
+  - `TestOpenPullRequestsRejectsWithoutPreparedCommitMetadata`
+  - `TestOpenPullRequestsRejectsWhenGitPRModeOff`
+- Used lightweight run fixtures and direct store run creation where needed to set policy mode without adding production code changes.
+- Ran focused validation:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+
+### Why
+- Task 8 explicitly required coverage for commit/preflight rejection behavior.
+- These failures are policy-critical and should remain deterministic as more automation gets added.
+
+### What worked
+- New tests passed and validated expected rejection messages for all targeted preflight conditions.
+- Existing orchestrator and CLI package tests remained green.
+
+### What didn't work
+- N/A in this step; tests passed after initial implementation.
+
+### What I learned
+- The service methods already had clear preflight failure boundaries; the main missing piece was explicit regression coverage.
+
+### What was tricky to build
+- Setting up policy-mode-off cases required direct run fixture creation with custom policy JSON because the shared fixture helper defaults to a minimal policy payload.
+
+### What warrants a second pair of eyes
+- Error-string assertions currently use substring checks; reviewers may want to confirm whether these messages should be treated as stable API contracts or loosened further.
+
+### What should be done in the future
+- Implement validation framework checks (tasks 14-16) and add corresponding rejection-path tests for required-check failures.
+
+### Code review instructions
+- Review `internal/orchestrator/service_test.go`:
+  - the four new `Test*Rejects*` cases near commit/PR tests
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+
+### Technical details
+- Mode-off fixtures are created with run policy JSON:
+  - `{"git_pr":{"mode":"off"}}`
+- Missing-prepared-metadata PR preflight is asserted through:
+  - `OpenPullRequests(...)` returning the `no prepared commit metadata found` error path.
