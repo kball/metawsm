@@ -121,3 +121,14 @@ Step 8: added commit/PR preflight rejection tests for invalid run state, git_pr.
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Added four rejection-path tests for commit/pr preflight behavior
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 8 implementation details and test validation
 
+
+## 2026-02-08
+
+Step 9: added operator/agent commit-PR playbook with Proposal A setup, assist/auto command flow, and troubleshooting guidance; checked tasks 10 and 19.
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/playbook/01-operator-and-agent-commit-pr-workflow.md — New playbook covering setup
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 9 documentation work
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/tasks.md — Marked tasks 10 and 19 complete
+

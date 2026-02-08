@@ -62,12 +62,15 @@ RelatedFiles:
       Note: |-
         Added persistence test for run pull request metadata across reopen (commit d3f13f6)
         Added run_pull_requests persistence test (commit d3f13f6)
+    - Path: ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/playbook/01-operator-and-agent-commit-pr-workflow.md
+      Note: Added operator/agent commit-PR workflow and Proposal A setup playbook guidance
 ExternalSources: []
 Summary: ""
 LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -749,3 +752,67 @@ I added new orchestrator service tests that assert commit/PR calls fail fast for
   - `{"git_pr":{"mode":"off"}}`
 - Missing-prepared-metadata PR preflight is asserted through:
   - `OpenPullRequests(...)` returning the `no prepared commit metadata found` error path.
+
+## Step 9: Write Commit/PR Operator Playbook and Proposal A Setup Guidance
+
+This step closed the operator documentation gap by adding a concrete playbook for commit/PR workflows and Proposal A setup. The objective was to make the new automation features usable without reverse-engineering command order from code or changelog entries.
+
+I added a playbook document with prerequisites, command sequences for assist/auto operation, exit criteria, and troubleshooting for common auth/policy/preflight failures.
+
+### Prompt Context
+
+**User prompt (verbatim):** "use docmgr to pick up ticket METAWSM-009 --- look at the plan, diary, and tasks, and then continue implementing. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue progressing open METAWSM-009 tasks, including operational docs, while keeping diary/task/changelog state synchronized.
+
+**Inferred user intent:** Ensure implementation is operable by humans and agents, not only technically complete in code.
+
+**Commit (code):** N/A (documentation-only step)
+
+### What I did
+- Created playbook document:
+  - `ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/playbook/01-operator-and-agent-commit-pr-workflow.md`
+- Documented:
+  - Proposal A setup (`gh auth login`, `gh auth status`, git identity)
+  - Assist-mode commit/PR workflow sequence
+  - Auto-mode operator usage and policy toggle (`git_pr.mode=auto`)
+  - Exit criteria for successful commit/PR execution
+  - Troubleshooting for common failure messages
+- Checked tasks:
+  - task 10 (`Write operator and agent playbook for commit/PR workflow`)
+  - task 19 (`Add playbook section for Proposal A setup ...`)
+
+### Why
+- Completing task 7/8 without operator-facing playbook leaves adoption friction and operational ambiguity.
+- Proposal A requires exact local setup steps; documenting them prevents repeated auth/identity failures.
+
+### What worked
+- New playbook covers both normal command flow and common preflight failures.
+- Task backlog now marks documentation deliverables as complete.
+
+### What didn't work
+- N/A in this step; no implementation failures occurred.
+
+### What I learned
+- The operator loop and direct command surfaces are both needed in docs, because teams may choose gradual adoption from manual to auto mode.
+
+### What was tricky to build
+- Balancing concise command flow with enough troubleshooting detail to be immediately actionable for operators.
+
+### What warrants a second pair of eyes
+- Whether teams want additional examples for multi-ticket runs once per-ticket fanout task (17) is implemented.
+
+### What should be done in the future
+- Update this playbook after validation framework tasks (14-16) land, including examples for required check failures.
+
+### Code review instructions
+- Review playbook content and command sequencing in:
+  - `ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/playbook/01-operator-and-agent-commit-pr-workflow.md`
+- Ensure tasks 10 and 19 are checked in:
+  - `ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/tasks.md`
+
+### Technical details
+- Documented policy switch for auto readiness execution:
+  - `git_pr.mode=auto`
+- Documented critical preflight dependency path:
+  - `metawsm auth check` must be green before `metawsm commit` / `metawsm pr`.
