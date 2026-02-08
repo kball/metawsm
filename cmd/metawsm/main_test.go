@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"metawsm/internal/docfederation"
 	"metawsm/internal/model"
@@ -197,6 +199,9 @@ Agents:
 	if !strings.Contains(snapshot.UnhealthyAgents[0].Reason, "no recent activity/progress") {
 		t.Fatalf("expected stalled reason, got %q", snapshot.UnhealthyAgents[0].Reason)
 	}
+	if snapshot.UnhealthyAgents[0].Session != "s1" {
+		t.Fatalf("expected unhealthy session s1, got %q", snapshot.UnhealthyAgents[0].Session)
+	}
 }
 
 func TestClassifyWatchEventPrioritizesGuidance(t *testing.T) {
@@ -328,5 +333,105 @@ func TestIsTerminalRunStatus(t *testing.T) {
 	}
 	if isTerminalRunStatus(string(model.RunStatusRunning)) {
 		t.Fatalf("expected running to be non-terminal")
+	}
+}
+
+func TestResolveOperatorLLMMode(t *testing.T) {
+	mode, err := resolveOperatorLLMMode("", "assist")
+	if err != nil {
+		t.Fatalf("resolve from policy: %v", err)
+	}
+	if mode != "assist" {
+		t.Fatalf("expected assist mode, got %q", mode)
+	}
+
+	mode, err = resolveOperatorLLMMode("AUTO", "assist")
+	if err != nil {
+		t.Fatalf("resolve from flag: %v", err)
+	}
+	if mode != "auto" {
+		t.Fatalf("expected auto mode, got %q", mode)
+	}
+
+	if _, err := resolveOperatorLLMMode("invalid", "assist"); err == nil {
+		t.Fatalf("expected invalid mode error")
+	}
+}
+
+func TestClassifyStaleRunCandidate(t *testing.T) {
+	now := time.Now()
+	run := model.RunRecord{
+		RunID:     "run-1",
+		Status:    model.RunStatusRunning,
+		UpdatedAt: now.Add(-2 * time.Hour),
+	}
+	snapshot := watchSnapshot{
+		RunID:              "run-1",
+		RunStatus:          string(model.RunStatusRunning),
+		HasUnhealthyAgents: true,
+	}
+
+	stale, reason := classifyStaleRunCandidate(snapshot, run, now, time.Hour)
+	if !stale {
+		t.Fatalf("expected stale candidate")
+	}
+	if !strings.Contains(reason, "run appears stale") {
+		t.Fatalf("expected stale reason, got %q", reason)
+	}
+}
+
+func TestVerifyStaleRuntimeEvidenceRejectsActiveSession(t *testing.T) {
+	now := time.Now()
+	snapshot := watchSnapshot{
+		UnhealthyAgents: []watchAgentIssue{
+			{Agent: "agent@ws", Session: "session-a"},
+		},
+	}
+	probe := func(ctx context.Context, session string) (operatorSessionEvidence, error) {
+		lastActivity := now.Add(-30 * time.Second)
+		return operatorSessionEvidence{
+			Session:      session,
+			HasSession:   true,
+			LastActivity: &lastActivity,
+		}, nil
+	}
+
+	verified, reason, err := verifyStaleRuntimeEvidence(context.Background(), snapshot, now, 2*time.Minute, probe)
+	if err != nil {
+		t.Fatalf("verify stale runtime evidence: %v", err)
+	}
+	if verified {
+		t.Fatalf("expected stale verification rejection for active session")
+	}
+	if !strings.Contains(reason, "recent activity") {
+		t.Fatalf("expected recent activity reason, got %q", reason)
+	}
+}
+
+func TestVerifyStaleRuntimeEvidenceAcceptsExitedSessions(t *testing.T) {
+	now := time.Now()
+	snapshot := watchSnapshot{
+		UnhealthyAgents: []watchAgentIssue{
+			{Agent: "agent@ws", Session: "session-a"},
+		},
+	}
+	probe := func(ctx context.Context, session string) (operatorSessionEvidence, error) {
+		code := 1
+		return operatorSessionEvidence{
+			Session:    session,
+			HasSession: true,
+			ExitCode:   &code,
+		}, nil
+	}
+
+	verified, reason, err := verifyStaleRuntimeEvidence(context.Background(), snapshot, now, 2*time.Minute, probe)
+	if err != nil {
+		t.Fatalf("verify stale runtime evidence: %v", err)
+	}
+	if !verified {
+		t.Fatalf("expected stale verification success")
+	}
+	if !strings.Contains(reason, "no active tmux sessions") {
+		t.Fatalf("expected no-active-session reason, got %q", reason)
 	}
 }

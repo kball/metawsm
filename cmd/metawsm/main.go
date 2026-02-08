@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -53,6 +54,8 @@ func main() {
 		err = statusCommand(args)
 	case "watch":
 		err = watchCommand(args)
+	case "operator":
+		err = operatorCommand(args)
 	case "guide":
 		err = guideCommand(args)
 	case "resume":
@@ -347,13 +350,27 @@ type watchSnapshot struct {
 }
 
 type watchAgentIssue struct {
-	Agent       string
-	Status      string
-	Health      string
-	ActivityAge string
-	ProgressAge string
-	Reason      string
+	Agent        string
+	Session      string
+	Status       string
+	Health       string
+	LastActivity string
+	LastProgress string
+	ActivityAge  string
+	ProgressAge  string
+	Reason       string
 }
+
+type operatorSessionEvidence struct {
+	Session      string
+	HasSession   bool
+	LastActivity *time.Time
+	ExitCode     *int
+}
+
+type operatorSessionProbe func(ctx context.Context, session string) (operatorSessionEvidence, error)
+
+var operatorAgentExitRegex = regexp.MustCompile(`\[metawsm\] agent command exited with status ([0-9]+)`)
 
 type watchMode int
 
@@ -500,6 +517,335 @@ func watchCommand(args []string) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func operatorCommand(args []string) error {
+	fs := flag.NewFlagSet("operator", flag.ContinueOnError)
+	var runID string
+	var ticket string
+	var dbPath string
+	var policyPath string
+	var llmMode string
+	var intervalSeconds int
+	var notifyCmd string
+	var bell bool
+	var all bool
+	var dryRun bool
+	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (operate on latest run for this ticket)")
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&policyPath, "policy", "", "Path to policy file (defaults to .metawsm/policy.json)")
+	fs.StringVar(&llmMode, "llm-mode", "", "Operator LLM mode override (off|assist|auto)")
+	fs.IntVar(&intervalSeconds, "interval", 15, "Heartbeat interval in seconds")
+	fs.StringVar(&notifyCmd, "notify-cmd", "", "Optional shell command to run on alert (receives METAWSM_* env vars)")
+	fs.BoolVar(&bell, "bell", true, "Emit terminal bell on alert")
+	fs.BoolVar(&all, "all", false, "Operate on all active runs/tickets/agents")
+	fs.BoolVar(&dryRun, "dry-run", false, "Observe only; do not execute actions")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if intervalSeconds <= 0 {
+		return fmt.Errorf("--interval must be > 0")
+	}
+
+	mode, err := resolveWatchMode(runID, ticket, all)
+	if err != nil {
+		return err
+	}
+
+	cfg, _, err := policy.Load(policyPath)
+	if err != nil {
+		return err
+	}
+	effectiveLLMMode, err := resolveOperatorLLMMode(llmMode, cfg.Operator.LLM.Mode)
+	if err != nil {
+		return err
+	}
+	staleAge := time.Duration(cfg.Operator.StaleRunAgeSeconds) * time.Second
+	runtimeRecentWindow := time.Duration(cfg.Health.ActivityStalledSeconds) * time.Second
+
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+
+	selectedRunID := ""
+	selectedTicket := strings.TrimSpace(ticket)
+	if mode == watchModeSingleRun {
+		runID, ticket, err = requireRunSelector(runID, ticket)
+		if err != nil {
+			return err
+		}
+		selectedRunID, err = service.ResolveRunID(runID, ticket)
+		if err != nil {
+			return err
+		}
+		selectedTicket = strings.TrimSpace(ticket)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	if mode == watchModeAllActiveRuns {
+		fmt.Printf("Operator supervising all active runs (interval=%ds llm_mode=%s dry_run=%t).\n", intervalSeconds, effectiveLLMMode, dryRun)
+	} else {
+		fmt.Printf("Operator supervising run %s (interval=%ds llm_mode=%s dry_run=%t).\n", selectedRunID, intervalSeconds, effectiveLLMMode, dryRun)
+	}
+	fmt.Println("Operator signals: guidance-needed, stale-candidate-verified, stale-candidate-rejected.")
+
+	ticker := time.NewTicker(time.Duration(intervalSeconds) * time.Second)
+	defer ticker.Stop()
+
+	lastAlertByRun := map[string]string{}
+	trackedRuns := map[string]struct{}{}
+	if mode == watchModeSingleRun {
+		trackedRuns[selectedRunID] = struct{}{}
+	}
+
+	for {
+		activeRuns, err := service.ActiveRuns()
+		if err != nil {
+			return err
+		}
+		activeByRunID := map[string]model.RunRecord{}
+		for _, run := range activeRuns {
+			activeByRunID[run.RunID] = run
+		}
+
+		snapshots := []watchSnapshot{}
+		if mode == watchModeSingleRun {
+			snapshot, err := loadWatchSnapshot(ctx, service, selectedRunID, selectedTicket)
+			if err != nil {
+				if isWatchStopError(ctx, err) {
+					fmt.Println("\nOperator stopped.")
+					return nil
+				}
+				return err
+			}
+			snapshots = append(snapshots, snapshot)
+		} else {
+			snapshots, err = loadWatchSnapshotsAll(ctx, service, trackedRuns)
+			if err != nil {
+				if isWatchStopError(ctx, err) {
+					fmt.Println("\nOperator stopped.")
+					return nil
+				}
+				return err
+			}
+		}
+		sort.Slice(snapshots, func(i, j int) bool { return snapshots[i].RunID < snapshots[j].RunID })
+
+		now := time.Now()
+		if len(snapshots) == 0 {
+			fmt.Printf("[%s] operator heartbeat active_runs=0\n", now.Format(time.RFC3339))
+		}
+
+		for _, snapshot := range snapshots {
+			fmt.Printf("[%s] operator heartbeat run=%s status=%s guidance=%t unhealthy_agents=%t\n",
+				now.Format(time.RFC3339),
+				snapshot.RunID,
+				emptyValue(snapshot.RunStatus, "unknown"),
+				snapshot.HasGuidance,
+				snapshot.HasUnhealthyAgents,
+			)
+
+			if snapshot.HasGuidance {
+				event := "guidance_needed"
+				message := "operator input is required"
+				if lastAlertByRun[snapshot.RunID] != event {
+					lastAlertByRun[snapshot.RunID] = event
+					fmt.Printf("[%s] ALERT %s: %s\n", now.Format(time.RFC3339), event, message)
+					for _, line := range buildWatchDirectionHints(snapshot, event) {
+						fmt.Printf("  %s\n", line)
+					}
+					if bell {
+						fmt.Print("\a")
+					}
+					if err := runWatchNotifyCommand(ctx, notifyCmd, event, message, snapshot); err != nil {
+						fmt.Fprintf(os.Stderr, "warning: notify command failed: %v\n", err)
+					}
+				}
+				continue
+			}
+
+			runRecord, ok := activeByRunID[snapshot.RunID]
+			if !ok {
+				delete(lastAlertByRun, snapshot.RunID)
+				continue
+			}
+			isStale, staleReason := classifyStaleRunCandidate(snapshot, runRecord, now, staleAge)
+			if !isStale {
+				delete(lastAlertByRun, snapshot.RunID)
+				continue
+			}
+
+			verified, verifyReason, err := verifyStaleRuntimeEvidence(ctx, snapshot, now, runtimeRecentWindow, probeOperatorSessionEvidence)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: stale runtime evidence check failed for run %s: %v\n", snapshot.RunID, err)
+				continue
+			}
+
+			event := "stale_candidate_rejected"
+			message := fmt.Sprintf("%s; %s", staleReason, verifyReason)
+			if verified {
+				event = "stale_candidate_verified"
+			}
+			if lastAlertByRun[snapshot.RunID] == event {
+				continue
+			}
+			lastAlertByRun[snapshot.RunID] = event
+			fmt.Printf("[%s] ALERT %s: %s\n", now.Format(time.RFC3339), event, message)
+			if verified && dryRun {
+				fmt.Printf("  Dry-run: would stop stale run with metawsm stop --run-id %s\n", snapshot.RunID)
+			}
+			if bell {
+				fmt.Print("\a")
+			}
+			if err := runWatchNotifyCommand(ctx, notifyCmd, event, message, snapshot); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: notify command failed: %v\n", err)
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			fmt.Println("\nOperator stopped.")
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func resolveOperatorLLMMode(flagValue string, policyValue string) (string, error) {
+	mode := strings.TrimSpace(strings.ToLower(flagValue))
+	if mode == "" {
+		mode = strings.TrimSpace(strings.ToLower(policyValue))
+	}
+	if mode == "" {
+		mode = "assist"
+	}
+	switch mode {
+	case "off", "assist", "auto":
+		return mode, nil
+	default:
+		return "", fmt.Errorf("invalid --llm-mode %q (expected off|assist|auto)", flagValue)
+	}
+}
+
+func classifyStaleRunCandidate(snapshot watchSnapshot, run model.RunRecord, now time.Time, staleAge time.Duration) (bool, string) {
+	if staleAge <= 0 {
+		return false, ""
+	}
+	if snapshot.HasGuidance {
+		return false, ""
+	}
+	if !snapshot.HasUnhealthyAgents {
+		return false, ""
+	}
+	age := now.Sub(run.UpdatedAt)
+	if age < staleAge {
+		return false, ""
+	}
+	return true, fmt.Sprintf("run appears stale (updated %s ago, threshold=%s)", age.Truncate(time.Second), staleAge)
+}
+
+func verifyStaleRuntimeEvidence(ctx context.Context, snapshot watchSnapshot, now time.Time, recentWindow time.Duration, probe operatorSessionProbe) (bool, string, error) {
+	if probe == nil {
+		return false, "runtime probe is unavailable", nil
+	}
+	if recentWindow <= 0 {
+		recentWindow = 5 * time.Minute
+	}
+	if len(snapshot.UnhealthyAgents) == 0 {
+		return false, "no unhealthy agents available to verify", nil
+	}
+
+	evidenceCount := 0
+	for _, issue := range snapshot.UnhealthyAgents {
+		session := strings.TrimSpace(issue.Session)
+		if session == "" {
+			continue
+		}
+		evidenceCount++
+		evidence, err := probe(ctx, session)
+		if err != nil {
+			return false, "", err
+		}
+		if evidence.HasSession {
+			if evidence.LastActivity != nil && now.Sub(*evidence.LastActivity) <= recentWindow {
+				return false, fmt.Sprintf("session %s has recent activity within %s", session, recentWindow), nil
+			}
+			if evidence.ExitCode == nil || *evidence.ExitCode == 0 {
+				return false, fmt.Sprintf("session %s still appears running", session), nil
+			}
+		}
+	}
+	if evidenceCount == 0 {
+		return false, "no agent sessions available for runtime verification", nil
+	}
+	return true, "no active tmux sessions or recent activity detected", nil
+}
+
+func probeOperatorSessionEvidence(ctx context.Context, session string) (operatorSessionEvidence, error) {
+	evidence := operatorSessionEvidence{Session: session}
+	if !operatorTmuxHasSession(ctx, session) {
+		return evidence, nil
+	}
+	evidence.HasSession = true
+	if epoch := operatorFetchSessionActivity(ctx, session); epoch > 0 {
+		t := time.Unix(epoch, 0)
+		evidence.LastActivity = &t
+	}
+	if exitCode, ok := operatorReadAgentExitCode(ctx, session); ok {
+		exitCopy := exitCode
+		evidence.ExitCode = &exitCopy
+	}
+	return evidence, nil
+}
+
+func operatorTmuxHasSession(ctx context.Context, session string) bool {
+	cmd := exec.CommandContext(ctx, "zsh", "-lc", fmt.Sprintf("tmux has-session -t %s", cmdShellQuote(session)))
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	return cmd.Run() == nil
+}
+
+func operatorFetchSessionActivity(ctx context.Context, session string) int64 {
+	cmd := exec.CommandContext(ctx, "zsh", "-lc", fmt.Sprintf("tmux display-message -p -t %s '#{session_activity}'", cmdShellQuote(session)))
+	out, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	value := strings.TrimSpace(string(out))
+	epoch, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return epoch
+}
+
+func operatorReadAgentExitCode(ctx context.Context, session string) (int, bool) {
+	cmd := exec.CommandContext(ctx, "zsh", "-lc", fmt.Sprintf("tmux capture-pane -p -t %s:0 | tail -n 200", cmdShellQuote(session)))
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, false
+	}
+	return operatorParseAgentExitCode(string(out))
+}
+
+func operatorParseAgentExitCode(output string) (int, bool) {
+	matches := operatorAgentExitRegex.FindAllStringSubmatch(output, -1)
+	if len(matches) == 0 {
+		return 0, false
+	}
+	last := matches[len(matches)-1]
+	if len(last) < 2 {
+		return 0, false
+	}
+	code, err := strconv.Atoi(strings.TrimSpace(last[1]))
+	if err != nil {
+		return 0, false
+	}
+	return code, true
 }
 
 func resolveWatchMode(runID string, ticket string, all bool) (watchMode, error) {
@@ -721,6 +1067,9 @@ func parseWatchAgentLine(line string) (watchAgentIssue, bool) {
 	}
 	issue.Status = values["status"]
 	issue.Health = values["health"]
+	issue.Session = values["session"]
+	issue.LastActivity = values["last_activity"]
+	issue.LastProgress = values["last_progress"]
 	issue.ActivityAge = values["activity_age"]
 	issue.ProgressAge = values["progress_age"]
 	issue.Reason = describeUnhealthyReason(issue)
@@ -1506,6 +1855,10 @@ func splitFrontmatter(content []byte) (string, error) {
 	return text[:len("---\n")+idx+len("\n---\n")] + "\n", nil
 }
 
+func cmdShellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
 func printUsage() {
 	fmt.Println("metawsm - orchestrate multi-ticket multi-workspace agent runs")
 	fmt.Println("")
@@ -1514,6 +1867,7 @@ func printUsage() {
 	fmt.Println("  metawsm bootstrap --ticket T1 --repos repo1,repo2 [--doc-home-repo repo1] [--doc-authority-mode workspace_active] [--doc-seed-mode copy_from_repo_on_start] [--agent planner] [--base-branch main]")
 	fmt.Println("  metawsm status [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm watch [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--notify-cmd \"...\"] [--bell=true]")
+	fmt.Println("  metawsm operator [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--llm-mode off|assist|auto] [--dry-run]")
 	fmt.Println("  metawsm guide [--run-id RUN_ID | --ticket T1] --answer \"...\"")
 	fmt.Println("  metawsm resume [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm stop [--run-id RUN_ID | --ticket T1]")
