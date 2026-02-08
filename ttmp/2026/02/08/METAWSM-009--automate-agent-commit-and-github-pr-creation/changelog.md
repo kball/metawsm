@@ -100,3 +100,14 @@ Step 6: Added gh-based PR service primitive, metawsm pr command, and credential/
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Added OpenPullRequests service primitive plus PR defaults
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Added dry-run and fake-gh PR creation tests
 
+
+## 2026-02-08
+
+Step 7: integrated commit/pr readiness signals into operator loop with assist/auto execution behavior (commit b3587e3).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Added readiness parsing from status plus commit_ready/pr_ready events/actions
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/operator_llm.go — Added readiness intents and Execute semantics for rule decisions
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 7 implementation details and validation
+

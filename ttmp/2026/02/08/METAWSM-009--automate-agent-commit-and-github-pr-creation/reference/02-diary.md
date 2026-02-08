@@ -14,11 +14,17 @@ RelatedFiles:
         Added Proposal A auth check command and readiness helpers (commit 6148470)
         Added metawsm commit command and dry-run previews (commit 9de30b7)
         Added metawsm pr command with dry-run previews (commit 180a976)
+        Integrated operator commit/pr readiness parsing
     - Path: cmd/metawsm/main_test.go
       Note: |-
         Added auth check command and repo path resolution tests (commit 6148470)
         Added commit command selector validation test (commit 9de30b7)
         Added metawsm pr selector validation test (commit 180a976)
+        Added readiness parsing/rule/hint tests for operator loop integration (commit b3587e3)
+    - Path: cmd/metawsm/operator_llm.go
+      Note: Added commit_ready/pr_ready intents and per-rule execute behavior (commit b3587e3)
+    - Path: cmd/metawsm/operator_llm_test.go
+      Note: Added merge-decision execute preservation coverage (commit b3587e3)
     - Path: examples/policy.example.json
       Note: |-
         Added git_pr policy block defaults for Proposal A rollout (commit d3f13f6)
@@ -61,6 +67,7 @@ LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -587,3 +594,93 @@ I also extended run event messages so commit and PR actions include credential m
 - PR creation executes `gh pr create` from the target repo directory and parses the first `.../pull/<number>` URL token from command output.
 - Dry-run mode returns one fully-rendered shell preview action per target repo without mutating store rows.
 - Real mode updates `run_pull_requests` with `pr_url`, `pr_number`, `pr_state=open`, `actor`, `credential_mode`, and emits `pr_created` run events.
+
+## Step 7: Integrate Commit/PR Readiness Signals into Operator Loop
+
+This step connected the operator supervision loop to the commit/PR workflow so completed runs can surface explicit readiness signals instead of stopping at merge-only guidance. The purpose was to make post-run Git automation actionable from the same operator loop that already handles stale and unhealthy conditions.
+
+I added readiness detection from status output (`Diffs` and `Pull Requests`), introduced `commit_ready` and `pr_ready` operator intents, and wired auto-mode execution to call commit/PR primitives while keeping assist mode recommendation-only.
+
+### Prompt Context
+
+**User prompt (verbatim):** "use docmgr to pick up ticket METAWSM-009 --- look at the plan, diary, and tasks, and then continue implementing. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue implementing the next unchecked METAWSM-009 backlog item from the existing ticket docs, then record and commit progress incrementally.
+
+**Inferred user intent:** Keep momentum on real implementation while preserving ticket traceability and small, reviewable commits.
+
+**Commit (code):** b3587e3 — "Add operator commit/pr readiness signals"
+
+### What I did
+- Extended `watchSnapshot` parsing in `cmd/metawsm/main.go` to detect:
+  - dirty repo diffs from the `Diffs:` status section,
+  - draft/open PR counts from the `Pull Requests:` status section.
+- Added `operatorIntentCommitReady` and `operatorIntentPRReady` in `cmd/metawsm/operator_llm.go` and expanded the LLM intent allowlist/prompt accordingly.
+- Updated operator rule evaluation (`buildOperatorRuleDecision`) to emit readiness intents when:
+  - run is `completed`,
+  - `git_pr.mode` is not `off`,
+  - commit-ready (`dirty diffs`) or pr-ready (`draft PR records`) conditions are met.
+- Added per-decision `Execute` control on rule decisions so commit/PR readiness auto-executes only when `git_pr.mode=auto` and remains recommendation-only in assist mode.
+- Wired `executeOperatorAction` for new intents:
+  - `commit_ready` -> `service.Commit(...)`
+  - `pr_ready` -> `service.OpenPullRequests(...)`
+- Added operator event names and direction hints for `commit_ready` and `pr_ready`.
+- Added/updated tests in:
+  - `cmd/metawsm/main_test.go`
+  - `cmd/metawsm/operator_llm_test.go`
+- Ran focused validation:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+
+### Why
+- Task 7 required integrating commit/PR readiness signals into the operator loop.
+- Existing operator behavior handled health/staleness but not completed-run handoff into commit/PR workflow.
+
+### What worked
+- `cmd/metawsm` tests passed with new parsing, rule-decision, and intent-handling behavior.
+- Assist mode now surfaces commit/pr readiness without executing side effects.
+- Auto mode can execute commit/pr actions through existing orchestrator primitives.
+
+### What didn't work
+- N/A in this step; implementation and focused tests passed on the first validation pass.
+
+### What I learned
+- Using `status` output as the operator signal source made readiness integration straightforward without adding new database query paths.
+- A per-rule `Execute` flag is cleaner than intent-based execution hardcoding once some intents are recommendation-only in one policy mode and executable in another.
+
+### What was tricky to build
+- Ensuring readiness intents do not override existing higher-priority operator concerns (guidance needed, stale-stop, unhealthy restart) while still triggering reliably on completed runs.
+
+### What warrants a second pair of eyes
+- Whether parsing status text is robust enough long term, or if operator readiness should move to structured service APIs for lower coupling.
+- Whether auto-execution should include additional protections for multi-ticket runs before per-ticket fanout is implemented.
+
+### What should be done in the future
+- Add commit/preflight rejection tests (task 8) for explicit policy/validation failure cases.
+- Implement validation framework tasks (14-16) so auto commit/pr executes only after required checks pass.
+
+### Code review instructions
+- Start in `cmd/metawsm/main.go`:
+  - `watchSnapshot` additions
+  - `parseWatchSnapshot`
+  - `buildOperatorRuleDecision`
+  - `operatorEventMessage`
+  - `executeOperatorAction`
+  - `buildWatchDirectionHints`
+- Then review `cmd/metawsm/operator_llm.go`:
+  - new intents
+  - `operatorRuleDecision.Execute`
+  - `mergeOperatorDecisions`
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+
+### Technical details
+- New parsed readiness fields:
+  - `HasDirtyDiffs`
+  - `DraftPullRequests`
+  - `OpenPullRequests`
+- New operator events:
+  - `commit_ready`
+  - `pr_ready`
+- Auto-execution policy:
+  - `git_pr.mode=assist` -> readiness alerts only
+  - `git_pr.mode=auto` -> readiness alerts + action execution

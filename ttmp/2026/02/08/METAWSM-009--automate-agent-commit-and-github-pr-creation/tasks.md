@@ -8,7 +8,7 @@
 - [x] Implement service primitive for GitHub PR creation via gh CLI
 - [x] Add metawsm commit command with dry-run previews
 - [x] Add metawsm pr command with dry-run previews
-- [ ] Integrate commit/pr readiness signals into operator loop
+- [x] Integrate commit/pr readiness signals into operator loop
 - [ ] Add tests for commit/preflight rejection paths
 - [x] Add tests for PR creation and persisted metadata
 - [ ] Write operator and agent playbook for commit/PR workflow
