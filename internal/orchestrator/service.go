@@ -39,6 +39,9 @@ type RunOptions struct {
 	Tickets           []string
 	Repos             []string
 	DocRepo           string
+	DocHomeRepo       string
+	DocAuthorityMode  string
+	DocSeedMode       string
 	BaseBranch        string
 	AgentNames        []string
 	WorkspaceStrategy model.WorkspaceStrategy
@@ -127,9 +130,32 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunResult, error
 	if len(repos) == 0 && options.WorkspaceStrategy != model.WorkspaceStrategyReuse {
 		return RunResult{}, fmt.Errorf("at least one --repos entry is required for create/fork")
 	}
-	docRepo := normalizeDocRepo(options.DocRepo, repos)
-	if len(repos) > 0 && strings.TrimSpace(docRepo) != "" && !containsToken(repos, docRepo) {
-		return RunResult{}, fmt.Errorf("doc repo %q must be one of --repos (%s)", docRepo, strings.Join(repos, ","))
+	docHomeRepo, err := resolveDocHomeRepo(options.DocHomeRepo, options.DocRepo, repos)
+	if err != nil {
+		return RunResult{}, err
+	}
+	if len(repos) > 0 && strings.TrimSpace(docHomeRepo) != "" && !containsToken(repos, docHomeRepo) {
+		return RunResult{}, fmt.Errorf("doc home repo %q must be one of --repos (%s)", docHomeRepo, strings.Join(repos, ","))
+	}
+	docAuthorityMode := normalizeDocAuthorityMode(options.DocAuthorityMode)
+	if docAuthorityMode == "" {
+		docAuthorityMode = normalizeDocAuthorityMode(cfg.Docs.AuthorityMode)
+	}
+	if docAuthorityMode == "" {
+		docAuthorityMode = model.DocAuthorityModeWorkspaceActive
+	}
+	if !isValidDocAuthorityMode(docAuthorityMode) {
+		return RunResult{}, fmt.Errorf("doc authority mode %q is invalid", docAuthorityMode)
+	}
+	docSeedMode := normalizeDocSeedMode(options.DocSeedMode)
+	if docSeedMode == "" {
+		docSeedMode = normalizeDocSeedMode(cfg.Docs.SeedMode)
+	}
+	if docSeedMode == "" {
+		docSeedMode = model.DocSeedModeCopyFromRepoOnStart
+	}
+	if !isValidDocSeedMode(docSeedMode) {
+		return RunResult{}, fmt.Errorf("doc seed mode %q is invalid", docSeedMode)
 	}
 
 	strategy := options.WorkspaceStrategy
@@ -159,17 +185,21 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunResult, error
 	}
 
 	spec := model.RunSpec{
-		RunID:             runID,
-		Mode:              mode,
-		Tickets:           tickets,
-		Repos:             repos,
-		DocRepo:           docRepo,
-		BaseBranch:        baseBranch,
-		WorkspaceStrategy: strategy,
-		Agents:            agents,
-		PolicyPath:        policyPath,
-		DryRun:            options.DryRun,
-		CreatedAt:         time.Now(),
+		RunID:                runID,
+		Mode:                 mode,
+		Tickets:              tickets,
+		Repos:                repos,
+		DocRepo:              docHomeRepo,
+		DocHomeRepo:          docHomeRepo,
+		DocAuthorityMode:     docAuthorityMode,
+		DocSeedMode:          docSeedMode,
+		DocFreshnessRevision: "",
+		BaseBranch:           baseBranch,
+		WorkspaceStrategy:    strategy,
+		Agents:               agents,
+		PolicyPath:           policyPath,
+		DryRun:               options.DryRun,
+		CreatedAt:            time.Now(),
 	}
 
 	policyJSON, err := json.Marshal(cfg)
@@ -353,7 +383,7 @@ func (s *Service) Restart(ctx context.Context, options RestartOptions) (RestartR
 		if err != nil {
 			return RestartResult{}, err
 		}
-		agentWorkdir, err := resolveDocRepoPath(workspacePath, spec.DocRepo, spec.Repos)
+		agentWorkdir, err := resolveDocRepoPath(workspacePath, effectiveDocHomeRepo(spec), spec.Repos)
 		if err != nil {
 			return RestartResult{}, err
 		}
@@ -575,7 +605,7 @@ func (s *Service) Iterate(ctx context.Context, options IterateOptions) (IterateR
 		if err != nil {
 			return IterateResult{}, err
 		}
-		workspaceActions, err := recordIterationFeedback(workspacePath, spec.DocRepo, spec.Repos, spec.Tickets, feedback, now, options.DryRun)
+		workspaceActions, err := recordIterationFeedback(workspacePath, effectiveDocHomeRepo(spec), spec.Repos, spec.Tickets, feedback, now, options.DryRun)
 		if err != nil {
 			return IterateResult{}, err
 		}
@@ -827,6 +857,7 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 	}
 	pendingGuidance, _ := s.store.ListGuidanceRequests(runID, model.GuidanceStatusPending)
 	brief, _ := s.store.GetRunBrief(runID)
+	docSyncStates, _ := s.store.ListDocSyncStates(runID)
 
 	var doneCount, failedCount, runningCount, pendingCount int
 	for _, step := range steps {
@@ -849,6 +880,41 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 		b.WriteString(fmt.Sprintf("Mode: %s\n", spec.Mode))
 	}
 	b.WriteString(fmt.Sprintf("Tickets: %s\n", strings.Join(tickets, ", ")))
+	docHomeRepo := effectiveDocHomeRepo(spec)
+	docAuthorityMode := normalizeDocAuthorityMode(string(spec.DocAuthorityMode))
+	if docAuthorityMode == "" {
+		docAuthorityMode = model.DocAuthorityModeWorkspaceActive
+	}
+	docSeedMode := normalizeDocSeedMode(string(spec.DocSeedMode))
+	if docSeedMode == "" {
+		docSeedMode = model.DocSeedModeCopyFromRepoOnStart
+	}
+	freshnessRevision := strings.TrimSpace(spec.DocFreshnessRevision)
+	if freshnessRevision == "" {
+		freshnessRevision = latestDocFreshnessRevision(docSyncStates)
+	}
+	b.WriteString("Docs:\n")
+	b.WriteString(fmt.Sprintf("  home_repo=%s\n", emptyAsUnknown(docHomeRepo)))
+	b.WriteString(fmt.Sprintf("  authority=%s\n", docAuthorityMode))
+	b.WriteString(fmt.Sprintf("  seed_mode=%s\n", docSeedMode))
+	b.WriteString(fmt.Sprintf("  freshness_revision=%s\n", emptyAsUnknown(freshnessRevision)))
+	if len(docSyncStates) == 0 {
+		b.WriteString("  sync=none\n")
+	} else {
+		for _, state := range docSyncStates {
+			b.WriteString(fmt.Sprintf(
+				"  sync ticket=%s workspace=%s status=%s revision=%s updated_at=%s\n",
+				state.Ticket,
+				state.WorkspaceName,
+				state.Status,
+				emptyAsUnknown(state.Revision),
+				state.UpdatedAt.Format(time.RFC3339),
+			))
+		}
+	}
+	for _, warning := range docFreshnessWarnings(docSyncStates, docSeedMode, cfg.Docs.StaleWarningSeconds, now) {
+		b.WriteString(fmt.Sprintf("  warning=%s (warning-only)\n", warning))
+	}
 	if brief != nil {
 		b.WriteString("Brief:\n")
 		b.WriteString(fmt.Sprintf("  goal=%s\n", brief.Goal))
@@ -1140,7 +1206,7 @@ func (s *Service) executeSingleStep(ctx context.Context, spec model.RunSpec, cfg
 		if err != nil {
 			return err
 		}
-		agentWorkdir, err := resolveDocRepoPath(workspacePath, spec.DocRepo, spec.Repos)
+		agentWorkdir, err := resolveDocRepoPath(workspacePath, effectiveDocHomeRepo(spec), spec.Repos)
 		if err != nil {
 			return err
 		}
@@ -1171,7 +1237,46 @@ func (s *Service) executeSingleStep(ctx context.Context, spec model.RunSpec, cfg
 		if err != nil {
 			return err
 		}
-		return syncTicketDocsToWorkspace(ctx, step.Ticket, workspacePath, spec.DocRepo, spec.Repos)
+		docHomeRepo := effectiveDocHomeRepo(spec)
+		_ = s.store.UpsertDocSyncState(model.DocSyncState{
+			RunID:            spec.RunID,
+			Ticket:           step.Ticket,
+			WorkspaceName:    step.WorkspaceName,
+			DocHomeRepo:      docHomeRepo,
+			DocAuthorityMode: string(spec.DocAuthorityMode),
+			DocSeedMode:      string(spec.DocSeedMode),
+			Status:           model.DocSyncStatusPending,
+			UpdatedAt:        time.Now(),
+		})
+		revision, err := syncTicketDocsToWorkspace(ctx, step.Ticket, workspacePath, docHomeRepo, spec.Repos)
+		if err != nil {
+			_ = s.store.UpsertDocSyncState(model.DocSyncState{
+				RunID:            spec.RunID,
+				Ticket:           step.Ticket,
+				WorkspaceName:    step.WorkspaceName,
+				DocHomeRepo:      docHomeRepo,
+				DocAuthorityMode: string(spec.DocAuthorityMode),
+				DocSeedMode:      string(spec.DocSeedMode),
+				Status:           model.DocSyncStatusFailed,
+				ErrorText:        err.Error(),
+				UpdatedAt:        time.Now(),
+			})
+			return err
+		}
+		if err := s.store.UpsertDocSyncState(model.DocSyncState{
+			RunID:            spec.RunID,
+			Ticket:           step.Ticket,
+			WorkspaceName:    step.WorkspaceName,
+			DocHomeRepo:      docHomeRepo,
+			DocAuthorityMode: string(spec.DocAuthorityMode),
+			DocSeedMode:      string(spec.DocSeedMode),
+			Status:           model.DocSyncStatusSynced,
+			Revision:         revision,
+			UpdatedAt:        time.Now(),
+		}); err != nil {
+			return err
+		}
+		return s.store.UpdateRunDocFreshnessRevision(spec.RunID, revision)
 	default:
 		return fmt.Errorf("unknown step kind: %s", step.Kind)
 	}
@@ -1264,7 +1369,7 @@ func buildPlan(spec model.RunSpec, cfg policy.Config) []model.PlanStep {
 		})
 		index++
 
-		if spec.Mode == model.RunModeBootstrap {
+		if normalizeDocSeedMode(string(spec.DocSeedMode)) == model.DocSeedModeCopyFromRepoOnStart {
 			steps = append(steps, model.PlanStep{
 				Index:         index,
 				Name:          fmt.Sprintf("sync-ticket-context-%s", workspaceName),
@@ -1443,16 +1548,19 @@ func isGitRepo(path string) bool {
 	return info.IsDir() || info.Mode().IsRegular()
 }
 
-func syncTicketDocsToWorkspace(ctx context.Context, ticket string, workspacePath string, docRepo string, repos []string) error {
+func syncTicketDocsToWorkspace(ctx context.Context, ticket string, workspacePath string, docRepo string, repos []string) (string, error) {
 	sourcePath, relativePath, err := resolveTicketDocPath(ctx, ticket)
 	if err != nil {
-		return err
+		return "", err
 	}
 	docRootPath, err := resolveDocRepoPath(workspacePath, docRepo, repos)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return syncTicketDocsDirectory(sourcePath, relativePath, docRootPath)
+	if err := syncTicketDocsDirectory(sourcePath, relativePath, docRootPath); err != nil {
+		return "", err
+	}
+	return strconv.FormatInt(time.Now().UTC().UnixNano(), 10), nil
 }
 
 func resolveTicketDocPath(ctx context.Context, ticket string) (string, string, error) {
@@ -2099,6 +2207,22 @@ func generateRunID() string {
 	return "run-" + time.Now().Format("20060102-150405")
 }
 
+func resolveDocHomeRepo(docHomeRepo string, legacyDocRepo string, repos []string) (string, error) {
+	docHomeRepo = strings.TrimSpace(docHomeRepo)
+	legacyDocRepo = strings.TrimSpace(legacyDocRepo)
+	if docHomeRepo != "" && legacyDocRepo != "" && !strings.EqualFold(docHomeRepo, legacyDocRepo) {
+		return "", fmt.Errorf("doc home repo %q conflicts with --doc-repo value %q", docHomeRepo, legacyDocRepo)
+	}
+	switch {
+	case docHomeRepo != "":
+		return docHomeRepo, nil
+	case legacyDocRepo != "":
+		return legacyDocRepo, nil
+	default:
+		return normalizeDocRepo("", repos), nil
+	}
+}
+
 func normalizeDocRepo(docRepo string, repos []string) string {
 	docRepo = strings.TrimSpace(docRepo)
 	if docRepo != "" {
@@ -2108,6 +2232,97 @@ func normalizeDocRepo(docRepo string, repos []string) string {
 		return ""
 	}
 	return strings.TrimSpace(repos[0])
+}
+
+func effectiveDocHomeRepo(spec model.RunSpec) string {
+	docHomeRepo := strings.TrimSpace(spec.DocHomeRepo)
+	if docHomeRepo != "" {
+		return docHomeRepo
+	}
+	return normalizeDocRepo(spec.DocRepo, spec.Repos)
+}
+
+func normalizeDocAuthorityMode(value string) model.DocAuthorityMode {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return model.DocAuthorityMode(value)
+}
+
+func normalizeDocSeedMode(value string) model.DocSeedMode {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return model.DocSeedMode(value)
+}
+
+func isValidDocAuthorityMode(mode model.DocAuthorityMode) bool {
+	return mode == model.DocAuthorityModeWorkspaceActive
+}
+
+func isValidDocSeedMode(mode model.DocSeedMode) bool {
+	switch mode {
+	case model.DocSeedModeNone, model.DocSeedModeCopyFromRepoOnStart:
+		return true
+	default:
+		return false
+	}
+}
+
+func latestDocFreshnessRevision(states []model.DocSyncState) string {
+	latestRevision := ""
+	latestUpdated := time.Time{}
+	for _, state := range states {
+		if strings.TrimSpace(state.Revision) == "" {
+			continue
+		}
+		if state.UpdatedAt.After(latestUpdated) {
+			latestUpdated = state.UpdatedAt
+			latestRevision = state.Revision
+		}
+	}
+	return latestRevision
+}
+
+func docFreshnessWarnings(states []model.DocSyncState, seedMode model.DocSeedMode, staleWarningSeconds int, now time.Time) []string {
+	if staleWarningSeconds <= 0 {
+		staleWarningSeconds = 900
+	}
+	if seedMode != model.DocSeedModeCopyFromRepoOnStart {
+		return nil
+	}
+	warnings := []string{}
+	haveSynced := false
+	latestSyncedAt := time.Time{}
+	for _, state := range states {
+		if state.Status == model.DocSyncStatusFailed {
+			warnings = append(warnings, fmt.Sprintf("doc seed failed for %s/%s", state.Ticket, state.WorkspaceName))
+		}
+		if state.Status != model.DocSyncStatusSynced {
+			continue
+		}
+		haveSynced = true
+		if state.UpdatedAt.After(latestSyncedAt) {
+			latestSyncedAt = state.UpdatedAt
+		}
+	}
+	if !haveSynced {
+		return append(warnings, "docmgr index freshness unavailable for copy_from_repo_on_start")
+	}
+	if now.Sub(latestSyncedAt) > time.Duration(staleWarningSeconds)*time.Second {
+		warnings = append(warnings, fmt.Sprintf("docmgr index freshness stale (last seed %s)", latestSyncedAt.Format(time.RFC3339)))
+	}
+	return warnings
+}
+
+func emptyAsUnknown(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func containsToken(values []string, target string) bool {

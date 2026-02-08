@@ -185,6 +185,45 @@ func TestSQLiteStoreRoundTrip(t *testing.T) {
 		t.Fatalf("expected stored guidance answer, got %q", answered[0].Answer)
 	}
 
+	if err := s.UpsertDocSyncState(model.DocSyncState{
+		RunID:            spec.RunID,
+		Ticket:           "METAWSM-001",
+		WorkspaceName:    "metawsm-001",
+		DocHomeRepo:      "metawsm",
+		DocAuthorityMode: "workspace_active",
+		DocSeedMode:      "copy_from_repo_on_start",
+		Status:           model.DocSyncStatusSynced,
+		Revision:         "12345",
+		UpdatedAt:        time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert doc sync state: %v", err)
+	}
+	docSyncStates, err := s.ListDocSyncStates(spec.RunID)
+	if err != nil {
+		t.Fatalf("list doc sync states: %v", err)
+	}
+	if len(docSyncStates) != 1 {
+		t.Fatalf("expected one doc sync state, got %d", len(docSyncStates))
+	}
+	if docSyncStates[0].Revision != "12345" {
+		t.Fatalf("expected doc sync revision 12345, got %q", docSyncStates[0].Revision)
+	}
+
+	if err := s.UpdateRunDocFreshnessRevision(spec.RunID, "67890"); err != nil {
+		t.Fatalf("update run doc freshness revision: %v", err)
+	}
+	_, updatedSpecJSON, _, err := s.GetRun(spec.RunID)
+	if err != nil {
+		t.Fatalf("get run after freshness revision update: %v", err)
+	}
+	var updatedSpec model.RunSpec
+	if err := json.Unmarshal([]byte(updatedSpecJSON), &updatedSpec); err != nil {
+		t.Fatalf("unmarshal updated spec: %v", err)
+	}
+	if updatedSpec.DocFreshnessRevision != "67890" {
+		t.Fatalf("expected doc freshness revision 67890, got %q", updatedSpec.DocFreshnessRevision)
+	}
+
 	latestRunID, err := s.FindLatestRunIDByTicket("METAWSM-001")
 	if err != nil {
 		t.Fatalf("find latest run id by ticket: %v", err)

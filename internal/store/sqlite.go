@@ -115,6 +115,19 @@ CREATE TABLE IF NOT EXISTS guidance_requests (
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
   answered_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS doc_sync_states (
+  run_id TEXT NOT NULL,
+  ticket TEXT NOT NULL,
+  workspace_name TEXT NOT NULL,
+  doc_home_repo TEXT NOT NULL DEFAULT '',
+  doc_authority_mode TEXT NOT NULL DEFAULT '',
+  doc_seed_mode TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  revision TEXT NOT NULL DEFAULT '',
+  error_text TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, ticket, workspace_name)
 );`
 
 	return s.execSQL(schema)
@@ -436,6 +449,89 @@ func (s *SQLiteStore) AddEvent(runID, entityType, entityID, eventType, fromState
 VALUES
   (%s, %s, %s, %s, %s, %s, %s, %s);`,
 		quote(runID), quote(entityType), quote(entityID), quote(eventType), quote(fromState), quote(toState), quote(message), quote(time.Now().Format(time.RFC3339)),
+	)
+	return s.execSQL(sql)
+}
+
+func (s *SQLiteStore) UpsertDocSyncState(state model.DocSyncState) error {
+	updatedAt := state.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+	sql := fmt.Sprintf(
+		`INSERT OR REPLACE INTO doc_sync_states
+  (run_id, ticket, workspace_name, doc_home_repo, doc_authority_mode, doc_seed_mode, status, revision, error_text, updated_at)
+VALUES
+  (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);`,
+		quote(state.RunID),
+		quote(state.Ticket),
+		quote(state.WorkspaceName),
+		quote(state.DocHomeRepo),
+		quote(state.DocAuthorityMode),
+		quote(state.DocSeedMode),
+		quote(string(state.Status)),
+		quote(state.Revision),
+		quote(state.ErrorText),
+		quote(updatedAt.Format(time.RFC3339)),
+	)
+	return s.execSQL(sql)
+}
+
+func (s *SQLiteStore) ListDocSyncStates(runID string) ([]model.DocSyncState, error) {
+	sql := fmt.Sprintf(
+		`SELECT run_id, ticket, workspace_name, doc_home_repo, doc_authority_mode, doc_seed_mode, status, revision, error_text, updated_at
+FROM doc_sync_states
+WHERE run_id=%s
+ORDER BY ticket, workspace_name;`,
+		quote(runID),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.DocSyncState, 0, len(rows))
+	for _, row := range rows {
+		updatedAt, err := time.Parse(time.RFC3339, asString(row["updated_at"]))
+		if err != nil {
+			return nil, fmt.Errorf("parse doc_sync_states updated_at: %w", err)
+		}
+		out = append(out, model.DocSyncState{
+			RunID:            asString(row["run_id"]),
+			Ticket:           asString(row["ticket"]),
+			WorkspaceName:    asString(row["workspace_name"]),
+			DocHomeRepo:      asString(row["doc_home_repo"]),
+			DocAuthorityMode: asString(row["doc_authority_mode"]),
+			DocSeedMode:      asString(row["doc_seed_mode"]),
+			Status:           model.DocSyncStatus(asString(row["status"])),
+			Revision:         asString(row["revision"]),
+			ErrorText:        asString(row["error_text"]),
+			UpdatedAt:        updatedAt,
+		})
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) UpdateRunDocFreshnessRevision(runID string, revision string) error {
+	_, specJSON, _, err := s.GetRun(runID)
+	if err != nil {
+		return err
+	}
+	var spec model.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return fmt.Errorf("unmarshal run spec: %w", err)
+	}
+	spec.DocFreshnessRevision = strings.TrimSpace(revision)
+	encoded, err := json.Marshal(spec)
+	if err != nil {
+		return fmt.Errorf("marshal run spec: %w", err)
+	}
+	sql := fmt.Sprintf(
+		`UPDATE runs
+SET spec_json=%s, updated_at=%s
+WHERE run_id=%s;`,
+		quote(string(encoded)),
+		quote(time.Now().Format(time.RFC3339)),
+		quote(runID),
 	)
 	return s.execSQL(sql)
 }

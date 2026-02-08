@@ -19,6 +19,11 @@ type Config struct {
 		BranchPrefix    string `json:"branch_prefix"`
 		BaseBranch      string `json:"base_branch"`
 	} `json:"workspace"`
+	Docs struct {
+		AuthorityMode       string `json:"authority_mode"`
+		SeedMode            string `json:"seed_mode"`
+		StaleWarningSeconds int    `json:"stale_warning_seconds"`
+	} `json:"docs"`
 	Tmux struct {
 		SessionPattern string `json:"session_pattern"`
 	} `json:"tmux"`
@@ -62,6 +67,9 @@ func Default() Config {
 	cfg.Workspace.DefaultStrategy = string(model.WorkspaceStrategyCreate)
 	cfg.Workspace.BranchPrefix = "task"
 	cfg.Workspace.BaseBranch = "main"
+	cfg.Docs.AuthorityMode = string(model.DocAuthorityModeWorkspaceActive)
+	cfg.Docs.SeedMode = string(model.DocSeedModeCopyFromRepoOnStart)
+	cfg.Docs.StaleWarningSeconds = 900
 	cfg.Tmux.SessionPattern = "{agent}-{workspace}"
 	cfg.Execution.StepRetries = 1
 	cfg.Health.IdleSeconds = 300
@@ -139,6 +147,25 @@ func Validate(cfg Config) error {
 	}
 	if strings.TrimSpace(cfg.Tmux.SessionPattern) == "" {
 		return fmt.Errorf("tmux.session_pattern cannot be empty")
+	}
+	authorityMode := strings.TrimSpace(cfg.Docs.AuthorityMode)
+	if authorityMode == "" {
+		return fmt.Errorf("docs.authority_mode cannot be empty")
+	}
+	if model.DocAuthorityMode(authorityMode) != model.DocAuthorityModeWorkspaceActive {
+		return fmt.Errorf("docs.authority_mode must be %q", model.DocAuthorityModeWorkspaceActive)
+	}
+	seedMode := strings.TrimSpace(cfg.Docs.SeedMode)
+	if seedMode == "" {
+		return fmt.Errorf("docs.seed_mode cannot be empty")
+	}
+	switch model.DocSeedMode(seedMode) {
+	case model.DocSeedModeNone, model.DocSeedModeCopyFromRepoOnStart:
+	default:
+		return fmt.Errorf("docs.seed_mode must be none|copy_from_repo_on_start")
+	}
+	if cfg.Docs.StaleWarningSeconds <= 0 {
+		return fmt.Errorf("docs.stale_warning_seconds must be > 0")
 	}
 	if strings.TrimSpace(cfg.Workspace.BaseBranch) == "" {
 		return fmt.Errorf("workspace.base_branch cannot be empty")

@@ -33,6 +33,27 @@ const (
 	RunModeBootstrap RunMode = "bootstrap"
 )
 
+type DocAuthorityMode string
+
+const (
+	DocAuthorityModeWorkspaceActive DocAuthorityMode = "workspace_active"
+)
+
+type DocSeedMode string
+
+const (
+	DocSeedModeNone                DocSeedMode = "none"
+	DocSeedModeCopyFromRepoOnStart DocSeedMode = "copy_from_repo_on_start"
+)
+
+type DocSyncStatus string
+
+const (
+	DocSyncStatusPending DocSyncStatus = "pending"
+	DocSyncStatusSynced  DocSyncStatus = "synced"
+	DocSyncStatusFailed  DocSyncStatus = "failed"
+)
+
 type StepStatus string
 
 const (
@@ -74,17 +95,34 @@ type AgentSpec struct {
 }
 
 type RunSpec struct {
-	RunID             string            `json:"run_id"`
-	Mode              RunMode           `json:"mode"`
-	Tickets           []string          `json:"tickets"`
-	Repos             []string          `json:"repos"`
-	DocRepo           string            `json:"doc_repo,omitempty"`
-	BaseBranch        string            `json:"base_branch"`
-	WorkspaceStrategy WorkspaceStrategy `json:"workspace_strategy"`
-	Agents            []AgentSpec       `json:"agents"`
-	PolicyPath        string            `json:"policy_path"`
-	DryRun            bool              `json:"dry_run"`
-	CreatedAt         time.Time         `json:"created_at"`
+	RunID                string            `json:"run_id"`
+	Mode                 RunMode           `json:"mode"`
+	Tickets              []string          `json:"tickets"`
+	Repos                []string          `json:"repos"`
+	DocRepo              string            `json:"doc_repo,omitempty"`
+	DocHomeRepo          string            `json:"doc_home_repo,omitempty"`
+	DocAuthorityMode     DocAuthorityMode  `json:"doc_authority_mode,omitempty"`
+	DocSeedMode          DocSeedMode       `json:"doc_seed_mode,omitempty"`
+	DocFreshnessRevision string            `json:"doc_freshness_revision,omitempty"`
+	BaseBranch           string            `json:"base_branch"`
+	WorkspaceStrategy    WorkspaceStrategy `json:"workspace_strategy"`
+	Agents               []AgentSpec       `json:"agents"`
+	PolicyPath           string            `json:"policy_path"`
+	DryRun               bool              `json:"dry_run"`
+	CreatedAt            time.Time         `json:"created_at"`
+}
+
+type DocSyncState struct {
+	RunID            string        `json:"run_id"`
+	Ticket           string        `json:"ticket"`
+	WorkspaceName    string        `json:"workspace_name"`
+	DocHomeRepo      string        `json:"doc_home_repo"`
+	DocAuthorityMode string        `json:"doc_authority_mode"`
+	DocSeedMode      string        `json:"doc_seed_mode"`
+	Status           DocSyncStatus `json:"status"`
+	Revision         string        `json:"revision,omitempty"`
+	ErrorText        string        `json:"error_text,omitempty"`
+	UpdatedAt        time.Time     `json:"updated_at"`
 }
 
 type PlanStep struct {

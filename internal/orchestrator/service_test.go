@@ -67,6 +67,15 @@ func TestRunDryRunPersistsPlan(t *testing.T) {
 	if storedSpec.DocRepo != "metawsm" {
 		t.Fatalf("expected default doc repo metawsm, got %q", storedSpec.DocRepo)
 	}
+	if storedSpec.DocHomeRepo != "metawsm" {
+		t.Fatalf("expected default doc home repo metawsm, got %q", storedSpec.DocHomeRepo)
+	}
+	if storedSpec.DocAuthorityMode != model.DocAuthorityModeWorkspaceActive {
+		t.Fatalf("expected doc authority mode workspace_active, got %q", storedSpec.DocAuthorityMode)
+	}
+	if storedSpec.DocSeedMode != model.DocSeedModeCopyFromRepoOnStart {
+		t.Fatalf("expected doc seed mode copy_from_repo_on_start, got %q", storedSpec.DocSeedMode)
+	}
 
 	steps, err := svc.store.GetSteps(result.RunID)
 	if err != nil {
@@ -131,6 +140,9 @@ func TestRunDryRunUsesExplicitDocRepoOverride(t *testing.T) {
 	if storedSpec.DocRepo != "workspace-manager" {
 		t.Fatalf("expected doc repo workspace-manager, got %q", storedSpec.DocRepo)
 	}
+	if storedSpec.DocHomeRepo != "workspace-manager" {
+		t.Fatalf("expected doc home repo workspace-manager, got %q", storedSpec.DocHomeRepo)
+	}
 }
 
 func TestRunRejectsDocRepoOutsideRepos(t *testing.T) {
@@ -155,6 +167,33 @@ func TestRunRejectsDocRepoOutsideRepos(t *testing.T) {
 		t.Fatalf("expected doc repo validation error")
 	}
 	if !strings.Contains(err.Error(), "must be one of --repos") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunRejectsConflictingDocHomeAndLegacyDocRepo(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	svc, err := NewService(dbPath)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	_, err = svc.Run(t.Context(), RunOptions{
+		Tickets:           []string{"METAWSM-001"},
+		Repos:             []string{"metawsm", "workspace-manager"},
+		DocHomeRepo:       "metawsm",
+		DocRepo:           "workspace-manager",
+		WorkspaceStrategy: model.WorkspaceStrategyCreate,
+		DryRun:            true,
+	})
+	if err == nil {
+		t.Fatalf("expected doc home/doc repo conflict error")
+	}
+	if !strings.Contains(err.Error(), "conflicts") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -288,6 +327,7 @@ func TestBuildPlanBootstrapIncludesTicketContextSyncBeforeTmux(t *testing.T) {
 		Mode:              model.RunModeBootstrap,
 		Tickets:           []string{"METAWSM-004"},
 		Repos:             []string{"metawsm"},
+		DocSeedMode:       model.DocSeedModeCopyFromRepoOnStart,
 		WorkspaceStrategy: model.WorkspaceStrategyCreate,
 		Agents: []model.AgentSpec{
 			{Name: "agent", Command: "bash"},
@@ -309,12 +349,39 @@ func TestBuildPlanBootstrapIncludesTicketContextSyncBeforeTmux(t *testing.T) {
 	}
 }
 
-func TestBuildPlanStandardModeSkipsTicketContextSync(t *testing.T) {
+func TestBuildPlanStandardModeIncludesTicketContextSyncWhenSeedEnabled(t *testing.T) {
 	spec := model.RunSpec{
 		RunID:             "run-20260207-093100",
 		Mode:              model.RunModeStandard,
 		Tickets:           []string{"METAWSM-004"},
 		Repos:             []string{"metawsm"},
+		DocSeedMode:       model.DocSeedModeCopyFromRepoOnStart,
+		WorkspaceStrategy: model.WorkspaceStrategyCreate,
+		Agents: []model.AgentSpec{
+			{Name: "agent", Command: "bash"},
+		},
+	}
+
+	steps := buildPlan(spec, policy.Default())
+	foundSync := false
+	for _, step := range steps {
+		if step.Kind == "ticket_context_sync" {
+			foundSync = true
+			break
+		}
+	}
+	if !foundSync {
+		t.Fatalf("expected ticket_context_sync step in standard mode when seeding is enabled")
+	}
+}
+
+func TestBuildPlanSkipsTicketContextSyncWhenSeedDisabled(t *testing.T) {
+	spec := model.RunSpec{
+		RunID:             "run-20260207-093101",
+		Mode:              model.RunModeBootstrap,
+		Tickets:           []string{"METAWSM-004"},
+		Repos:             []string{"metawsm"},
+		DocSeedMode:       model.DocSeedModeNone,
 		WorkspaceStrategy: model.WorkspaceStrategyCreate,
 		Agents: []model.AgentSpec{
 			{Name: "agent", Command: "bash"},
@@ -324,7 +391,7 @@ func TestBuildPlanStandardModeSkipsTicketContextSync(t *testing.T) {
 	steps := buildPlan(spec, policy.Default())
 	for _, step := range steps {
 		if step.Kind == "ticket_context_sync" {
-			t.Fatalf("did not expect ticket_context_sync step in non-bootstrap mode")
+			t.Fatalf("did not expect ticket_context_sync step when seeding is disabled")
 		}
 	}
 }

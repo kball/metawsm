@@ -88,7 +88,10 @@ func runCommand(args []string) error {
 	var agents multiValueFlag
 	var runID string
 	var strategy string
+	var docHomeRepo string
 	var docRepo string
+	var docAuthorityMode string
+	var docSeedMode string
 	var baseBranch string
 	var policyPath string
 	var dbPath string
@@ -96,7 +99,10 @@ func runCommand(args []string) error {
 
 	fs.Var(&tickets, "ticket", "Ticket identifier (repeatable, or comma-separated)")
 	fs.Var(&repos, "repos", "Repositories list (repeatable, or comma-separated)")
-	fs.StringVar(&docRepo, "doc-repo", "", "Repository to host docmgr ttmp in workspace (defaults to first --repos entry)")
+	fs.StringVar(&docHomeRepo, "doc-home-repo", "", "Canonical repository for ticket docs in the run (defaults to first --repos entry)")
+	fs.StringVar(&docRepo, "doc-repo", "", "Deprecated alias for --doc-home-repo")
+	fs.StringVar(&docAuthorityMode, "doc-authority-mode", "", "Doc authority mode (workspace_active)")
+	fs.StringVar(&docSeedMode, "doc-seed-mode", "", "Doc seed mode (none|copy_from_repo_on_start)")
 	fs.Var(&agents, "agent", "Agent name from policy (repeatable, or comma-separated)")
 	fs.StringVar(&runID, "run-id", "", "Run identifier (optional)")
 	fs.StringVar(&strategy, "workspace-strategy", "", "Workspace strategy: create|fork|reuse")
@@ -117,6 +123,9 @@ func runCommand(args []string) error {
 		Tickets:           tickets,
 		Repos:             repos,
 		DocRepo:           docRepo,
+		DocHomeRepo:       docHomeRepo,
+		DocAuthorityMode:  docAuthorityMode,
+		DocSeedMode:       docSeedMode,
 		BaseBranch:        baseBranch,
 		AgentNames:        agents,
 		WorkspaceStrategy: model.WorkspaceStrategy(strings.TrimSpace(strategy)),
@@ -147,7 +156,10 @@ func bootstrapCommand(args []string) error {
 	var agents multiValueFlag
 	var runID string
 	var strategy string
+	var docHomeRepo string
 	var docRepo string
+	var docAuthorityMode string
+	var docSeedMode string
 	var baseBranch string
 	var policyPath string
 	var dbPath string
@@ -160,7 +172,10 @@ func bootstrapCommand(args []string) error {
 
 	fs.StringVar(&ticket, "ticket", "", "Ticket identifier")
 	fs.Var(&repos, "repos", "Repositories list (repeatable, or comma-separated) [required]")
-	fs.StringVar(&docRepo, "doc-repo", "", "Repository to host docmgr ttmp in workspace (defaults to first --repos entry)")
+	fs.StringVar(&docHomeRepo, "doc-home-repo", "", "Canonical repository for ticket docs in the run (defaults to first --repos entry)")
+	fs.StringVar(&docRepo, "doc-repo", "", "Deprecated alias for --doc-home-repo")
+	fs.StringVar(&docAuthorityMode, "doc-authority-mode", "", "Doc authority mode (workspace_active)")
+	fs.StringVar(&docSeedMode, "doc-seed-mode", "", "Doc seed mode (none|copy_from_repo_on_start)")
 	fs.Var(&agents, "agent", "Agent name from policy (repeatable, or comma-separated)")
 	fs.StringVar(&runID, "run-id", "", "Run identifier (optional)")
 	fs.StringVar(&strategy, "workspace-strategy", "", "Workspace strategy: create|fork|reuse")
@@ -211,6 +226,9 @@ func bootstrapCommand(args []string) error {
 		Tickets:           []string{ticket},
 		Repos:             repoTokens,
 		DocRepo:           docRepo,
+		DocHomeRepo:       docHomeRepo,
+		DocAuthorityMode:  docAuthorityMode,
+		DocSeedMode:       docSeedMode,
 		BaseBranch:        baseBranch,
 		AgentNames:        agents,
 		WorkspaceStrategy: model.WorkspaceStrategy(strings.TrimSpace(strategy)),
@@ -929,8 +947,8 @@ func printUsage() {
 	fmt.Println("metawsm - orchestrate multi-ticket multi-workspace agent runs")
 	fmt.Println("")
 	fmt.Println("Usage:")
-	fmt.Println("  metawsm run --ticket T1 --ticket T2 --repos repo1,repo2 [--doc-repo repo1] [--agent planner --agent coder] [--base-branch main]")
-	fmt.Println("  metawsm bootstrap --ticket T1 --repos repo1,repo2 [--doc-repo repo1] [--agent planner] [--base-branch main]")
+	fmt.Println("  metawsm run --ticket T1 --ticket T2 --repos repo1,repo2 [--doc-home-repo repo1] [--doc-authority-mode workspace_active] [--doc-seed-mode copy_from_repo_on_start] [--agent planner --agent coder] [--base-branch main]")
+	fmt.Println("  metawsm bootstrap --ticket T1 --repos repo1,repo2 [--doc-home-repo repo1] [--doc-authority-mode workspace_active] [--doc-seed-mode copy_from_repo_on_start] [--agent planner] [--base-branch main]")
 	fmt.Println("  metawsm status [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm guide [--run-id RUN_ID | --ticket T1] --answer \"...\"")
 	fmt.Println("  metawsm resume [--run-id RUN_ID | --ticket T1]")
