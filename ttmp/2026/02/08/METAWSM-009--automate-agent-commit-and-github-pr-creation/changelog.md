@@ -249,3 +249,14 @@ Step 19: added review feedback model/store persistence primitives with reopen+de
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go — run_review_feedback table and store methods
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_test.go — Persistence and dedupe tests for new review feedback store
 
+
+## 2026-02-08
+
+Step 20: added git_pr.review_feedback policy defaults and validation; completed task 40 (commit e6cc5e8).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/examples/policy.example.json — Policy example updated with review_feedback block
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy.go — Review feedback policy contract and guards
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy_test.go — Validation/default coverage for review feedback policy
+

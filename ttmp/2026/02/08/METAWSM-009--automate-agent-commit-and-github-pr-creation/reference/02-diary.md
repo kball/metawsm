@@ -34,6 +34,7 @@ RelatedFiles:
         Added git_pr policy block defaults for Proposal A rollout (commit d3f13f6)
         Added git_pr policy defaults (commit d3f13f6)
         Documented new git_pr validation configuration fields (commit d31a862)
+        Added review_feedback policy example block (commit e6cc5e8)
     - Path: internal/model/types.go
       Note: |-
         Added RunPullRequest model and pull request state enums (commit d3f13f6)
@@ -64,12 +65,14 @@ RelatedFiles:
         Added git_pr policy contract defaults/validation (commit d3f13f6)
         Branch template rendering helper (commit 678b936)
         Extended git_pr schema with test_commands and forbidden_file_patterns plus supported-check validation (commit d31a862)
+        Added git_pr.review_feedback defaults and validation rules (commit e6cc5e8)
     - Path: internal/policy/policy_test.go
       Note: |-
         Added tests for git_pr defaults and validation failures (commit d3f13f6)
         Added git_pr validation coverage (commit d3f13f6)
         Branch template rendering tests (commit 678b936)
         Added policy validation coverage for required-check and command/pattern constraints (commit d31a862)
+        Added review_feedback policy default and invalid-config coverage (commit e6cc5e8)
     - Path: internal/store/sqlite.go
       Note: |-
         Added run_pull_requests schema and store CRUD methods (commit d3f13f6)
@@ -83,13 +86,16 @@ RelatedFiles:
     - Path: ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/playbook/01-operator-and-agent-commit-pr-workflow.md
       Note: Added operator/agent commit-PR workflow and Proposal A setup playbook guidance
     - Path: ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/tasks.md
-      Note: Added and checked tasks 37-39 for review feedback model/store slice
+      Note: |-
+        Added and checked tasks 37-39 for review feedback model/store slice
+        Checked task 40 complete
 ExternalSources: []
 Summary: ""
 LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -1477,3 +1483,91 @@ I implemented review-feedback model types, SQLite persistence methods, and regre
 - Status lifecycle introduced:
   - `new -> queued -> addressed`
   - `ignored` for non-actionable records.
+
+## Step 20: Add Review Feedback Policy Defaults and Validation
+
+This step implements task 40 from the new review-feedback backlog by formalizing policy controls for ingestion behavior. The focus was to codify your decisions in default config and strict validation before wiring orchestrator behavior.
+
+I added a new `git_pr.review_feedback` policy block with defaults for V1 (review comments only, empty author filter list, auto dispatch cap set to 1) and validation coverage for invalid configurations.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok break into tasks in docmgr, then begin implementation. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue executing the new task list in small, committed slices while recording each step in the diary.
+
+**Inferred user intent:** Ensure the review-feedback implementation is controlled by an explicit, validated policy contract with safe defaults.
+
+**Commit (code):** e6cc5e8 — "Add review feedback policy defaults and validation"
+
+### What I did
+- Updated `internal/policy/policy.go`:
+  - added `git_pr.review_feedback` fields:
+    - `enabled`
+    - `mode` (`assist|auto`)
+    - `include_review_comments`
+    - `ignore_authors`
+    - `max_items_per_sync`
+    - `auto_dispatch_cap_per_interval`
+  - added V1 defaults:
+    - `enabled=false`
+    - `mode=assist`
+    - `include_review_comments=true`
+    - `ignore_authors=[]`
+    - `max_items_per_sync=50`
+    - `auto_dispatch_cap_per_interval=1`
+  - added validation rules for mode, comment scope flag, empty ignore authors, and numeric bounds.
+- Updated policy tests in `internal/policy/policy_test.go`:
+  - default assertions for new fields,
+  - invalid mode rejection,
+  - include-review-comments=false rejection,
+  - empty ignore-author rejection,
+  - invalid sync/cap limits rejection.
+- Updated `examples/policy.example.json` with the new `review_feedback` block.
+- Checked task 40 complete via:
+  - `docmgr task check --ticket METAWSM-009 --id 40`
+- Ran validation:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/policy -count=1`
+
+### Why
+- Orchestrator and CLI behavior for review ingestion should be policy-driven and reject ambiguous configuration.
+- Defaulting to assist mode and cap=1 aligns with low-risk rollout behavior.
+
+### What worked
+- Policy tests passed with the new schema and validation rules.
+- Example policy now mirrors runtime defaults for the new feature area.
+
+### What didn't work
+- N/A in this slice; no failed test or rollback was needed.
+
+### What I learned
+- Policy-first implementation reduces churn in later orchestrator logic by clarifying constraints early.
+- Enforcing V1 scope (`include_review_comments=true`) in validation prevents accidental policy drift into unsupported sources.
+
+### What was tricky to build
+- Choosing validation strictness so V1 is safe without blocking later expansion (for example allowing only assist/auto while keeping `enabled` explicit).
+
+### What warrants a second pair of eyes
+- Whether `max_items_per_sync=50` is the right default for larger repositories with high review throughput.
+- Whether mode semantics should eventually accept `off` in addition to `enabled=false`.
+
+### What should be done in the future
+- Implement task 41 next: GH API review-comment sync primitive feeding `run_review_feedback`.
+
+### Code review instructions
+- Start in `internal/policy/policy.go`:
+  - `Config.GitPR.ReviewFeedback`
+  - defaults in `Default()`
+  - validation in `Validate()`.
+- Review `internal/policy/policy_test.go` for new failure-mode tests.
+- Confirm example parity in `examples/policy.example.json`.
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/policy -count=1`
+
+### Technical details
+- New policy path:
+  - `git_pr.review_feedback.*`
+- V1-enforced scope:
+  - PR review comments only.
+- Auto dispatch safeguard:
+  - `auto_dispatch_cap_per_interval=1` default.
