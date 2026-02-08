@@ -88,3 +88,15 @@ Step 5: Added metawsm commit command wired to service commit primitives with dry
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Added commit command routing
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go — Added commit command selector validation test
 
+
+## 2026-02-08
+
+Step 6: Added gh-based PR service primitive, metawsm pr command, and credential/actor event recording for commit+pr flows (commit 180a976)
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Added metawsm pr command and CLI output for dry-run and created PR metadata
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go — Added pr command selector validation test
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Added OpenPullRequests service primitive plus PR defaults
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Added dry-run and fake-gh PR creation tests
+

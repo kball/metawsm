@@ -13,10 +13,12 @@ RelatedFiles:
       Note: |-
         Added Proposal A auth check command and readiness helpers (commit 6148470)
         Added metawsm commit command and dry-run previews (commit 9de30b7)
+        Added metawsm pr command with dry-run previews (commit 180a976)
     - Path: cmd/metawsm/main_test.go
       Note: |-
         Added auth check command and repo path resolution tests (commit 6148470)
         Added commit command selector validation test (commit 9de30b7)
+        Added metawsm pr selector validation test (commit 180a976)
     - Path: examples/policy.example.json
       Note: |-
         Added git_pr policy block defaults for Proposal A rollout (commit d3f13f6)
@@ -29,10 +31,12 @@ RelatedFiles:
       Note: |-
         Surfaced persisted run PR metadata in status output (commit 283a68b)
         Commit service primitive implementation (commit 678b936)
+        Added OpenPullRequests primitive and credential/actor run event recording for commit/pr actions (commit 180a976)
     - Path: internal/orchestrator/service_test.go
       Note: |-
         Added status test for pull request section (commit 283a68b)
         Commit primitive tests (commit 678b936)
+        Added OpenPullRequests dry-run and fake-gh integration tests (commit 180a976)
     - Path: internal/policy/policy.go
       Note: |-
         Added git_pr config schema/defaults/validation (commit d3f13f6)
@@ -57,6 +61,7 @@ LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -485,3 +490,100 @@ I added `metawsm commit` with run/ticket selection, optional commit message and 
 ### Technical details
 - `metawsm commit` delegates to `orchestrator.CommitOptions` and prints per-repo results from `CommitResult.Repos`.
 - Dry-run output includes each queued git action (`checkout -B`, `add -A`, `commit -m`) so operators can verify intent before mutation.
+
+## Step 6: Add PR Service Primitive, `metawsm pr` Command, and Commit/PR Actor Event Metadata
+
+This step completed the first end-to-end PR automation slice by adding a service primitive that invokes `gh pr create`, persists PR metadata, and exposes the workflow through a new `metawsm pr` CLI command. The intent was to close the next high-priority implementation tasks immediately after `metawsm commit` landed.
+
+I also extended run event messages so commit and PR actions include credential mode and actor identity, satisfying Proposal A tracking requirements for who performed commit/PR operations.
+
+### Prompt Context
+
+**User prompt (verbatim):** "use docmgr to pick up ticket METAWSM-009 --- look at the plan, diary, and tasks, and then continue implementing. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Keep executing the next planned implementation slices and maintain incremental commits plus ticket diary updates.
+
+**Inferred user intent:** Progress from commit-only support to practical commit+PR automation while preserving operational traceability.
+
+**Commit (code):** 180a976 — "Add pull request service and metawsm pr command"
+
+### What I did
+- Added PR service types and primitive in `internal/orchestrator/service.go`:
+  - `PullRequestOptions`, `PullRequestResult`, `PullRequestRepoResult`
+  - `Service.OpenPullRequests(...)`
+- Implemented PR primitive behavior:
+  - resolve run/ticket/rows from persisted `run_pull_requests`,
+  - render default PR title/body from run brief context,
+  - support dry-run previews with exact `gh pr create` command output,
+  - execute `gh pr create` in repo path for real mode,
+  - parse PR URL/number from command output,
+  - persist PR URL/number/state (`open`) back into `run_pull_requests`.
+- Added helper utilities in service layer:
+  - command preview/exec helpers,
+  - PR URL parsing,
+  - default PR summary/title/body generation.
+- Added run event messages for PR creation and ensured commit/pr event messages include `credential_mode` and `actor` details.
+- Added orchestrator tests in `internal/orchestrator/service_test.go`:
+  - `TestOpenPullRequestsDryRunPreviewsCreateCommand`
+  - `TestOpenPullRequestsCreatesAndPersistsMetadata` (uses a fake `gh` binary on PATH)
+- Added CLI command in `cmd/metawsm/main.go`:
+  - new `pr` command routing,
+  - `prCommand` flags (`--run-id`, `--ticket`, `--title`, `--body`, `--actor`, `--dry-run`),
+  - dry-run and real-mode output formatting.
+- Updated CLI usage output with `metawsm pr ...`.
+- Added CLI selector test in `cmd/metawsm/main_test.go`:
+  - `TestPRCommandRequiresRunSelector`
+- Ran focused tests:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+
+### Why
+- Task 4 required a service primitive for GitHub PR creation through `gh`.
+- Task 6 required a `metawsm pr` CLI surface with dry-run previews.
+- Task 13 required recording credential mode + actor identity for commit/pr actions.
+
+### What worked
+- Service and CLI flows compiled and passed targeted tests.
+- Fake `gh` test path provided deterministic PR creation verification without external network/auth dependencies.
+- Persisted PR rows now include URL/number/state and actor/credential metadata.
+
+### What didn't work
+- N/A in this step; implementation and focused tests passed without iteration failures.
+
+### What I learned
+- Existing persisted `run_pull_requests` rows created by the commit workflow made PR creation wiring straightforward and restart-safe.
+- A fake executable on `PATH` is an effective pattern for testing external CLI integrations (`gh`) in unit/integration tests.
+
+### What was tricky to build
+- Designing defaults that are useful but predictable for multi-repo runs (title/body composition, repo-specific fallback behavior, and skipping rows that already have PR URLs).
+
+### What warrants a second pair of eyes
+- Whether the current PR default title/body templates are the right long-term contract for reviewers (especially multi-repo ticket runs).
+- Whether skipped-existing-PR behavior should evolve into a first-class update/edit path (`gh pr edit`) rather than skip.
+
+### What should be done in the future
+- Add validation gate framework and enforce required checks before commit/PR execution.
+- Integrate commit/pr readiness signals into operator loop with assist/auto mode behavior controls.
+
+### Code review instructions
+- Start in `internal/orchestrator/service.go`:
+  - `Service.OpenPullRequests`
+  - `defaultPRSummary`, `defaultPRTitle`, `defaultPRBody`
+  - `parsePRCreateOutput`
+- Review PR service tests in `internal/orchestrator/service_test.go`:
+  - `TestOpenPullRequestsDryRunPreviewsCreateCommand`
+  - `TestOpenPullRequestsCreatesAndPersistsMetadata`
+- Review CLI wiring in `cmd/metawsm/main.go`:
+  - `case "pr"`
+  - `prCommand`
+  - usage line in `printUsage`
+- Review CLI tests in `cmd/metawsm/main_test.go`:
+  - `TestPRCommandRequiresRunSelector`
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+
+### Technical details
+- PR creation executes `gh pr create` from the target repo directory and parses the first `.../pull/<number>` URL token from command output.
+- Dry-run mode returns one fully-rendered shell preview action per target repo without mutating store rows.
+- Real mode updates `run_pull_requests` with `pr_url`, `pr_number`, `pr_state=open`, `actor`, `credential_mode`, and emits `pr_created` run events.
