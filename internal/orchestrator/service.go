@@ -116,6 +116,12 @@ type IterateResult struct {
 	Actions []string
 }
 
+type ActiveDocContext struct {
+	RunID       string
+	Ticket      string
+	DocHomeRepo string
+}
+
 func (s *Service) Run(ctx context.Context, options RunOptions) (RunResult, error) {
 	cfg, policyPath, err := policy.Load(options.PolicyPath)
 	if err != nil {
@@ -1005,6 +1011,37 @@ func (s *Service) ActiveRuns() ([]model.RunRecord, error) {
 	for _, run := range runs {
 		if isActiveRunStatus(run.Status) {
 			out = append(out, run)
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) ActiveDocContexts() ([]ActiveDocContext, error) {
+	runs, err := s.ActiveRuns()
+	if err != nil {
+		return nil, err
+	}
+	out := []ActiveDocContext{}
+	for _, run := range runs {
+		_, specJSON, _, err := s.store.GetRun(run.RunID)
+		if err != nil {
+			return nil, err
+		}
+		var spec model.RunSpec
+		if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+			return nil, fmt.Errorf("unmarshal run spec: %w", err)
+		}
+		docHomeRepo := effectiveDocHomeRepo(spec)
+		for _, ticket := range spec.Tickets {
+			ticket = strings.TrimSpace(ticket)
+			if ticket == "" {
+				continue
+			}
+			out = append(out, ActiveDocContext{
+				RunID:       run.RunID,
+				Ticket:      ticket,
+				DocHomeRepo: docHomeRepo,
+			})
 		}
 	}
 	return out, nil

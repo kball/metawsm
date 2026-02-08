@@ -156,3 +156,46 @@ func TestResolveAgentsFailsWhenSkillMissing(t *testing.T) {
 		t.Fatalf("unexpected error %v", err)
 	}
 }
+
+func TestValidateDocAPIEndpoints(t *testing.T) {
+	cfg := Default()
+	cfg.Docs.API.WorkspaceEndpoints = []DocAPIEndpoint{
+		{
+			Name:      "ws-metawsm",
+			BaseURL:   "http://127.0.0.1:8787",
+			WebURL:    "http://127.0.0.1:8787",
+			Repo:      "metawsm",
+			Workspace: "ws-001",
+		},
+	}
+	cfg.Docs.API.RepoEndpoints = []DocAPIEndpoint{
+		{
+			Name:    "repo-metawsm",
+			BaseURL: "http://127.0.0.1:8790",
+			WebURL:  "http://127.0.0.1:8790",
+			Repo:    "metawsm",
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("expected docs API endpoint config to validate: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidDocAPIEndpoint(t *testing.T) {
+	cfg := Default()
+	cfg.Docs.API.WorkspaceEndpoints = []DocAPIEndpoint{
+		{
+			Name:      "bad-endpoint",
+			BaseURL:   "://bad-url",
+			Repo:      "metawsm",
+			Workspace: "ws-001",
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected validation error for invalid docs API endpoint")
+	}
+	if !strings.Contains(err.Error(), "invalid base_url") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

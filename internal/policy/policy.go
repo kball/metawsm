@@ -3,6 +3,7 @@ package policy
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,11 @@ type Config struct {
 		AuthorityMode       string `json:"authority_mode"`
 		SeedMode            string `json:"seed_mode"`
 		StaleWarningSeconds int    `json:"stale_warning_seconds"`
+		API                 struct {
+			WorkspaceEndpoints []DocAPIEndpoint `json:"workspace_endpoints"`
+			RepoEndpoints      []DocAPIEndpoint `json:"repo_endpoints"`
+			RequestTimeoutSec  int              `json:"request_timeout_seconds"`
+		} `json:"api"`
 	} `json:"docs"`
 	Tmux struct {
 		SessionPattern string `json:"session_pattern"`
@@ -55,6 +61,14 @@ type RunnerOptions struct {
 	Command  string `json:"command"`
 }
 
+type DocAPIEndpoint struct {
+	Name      string `json:"name"`
+	BaseURL   string `json:"base_url"`
+	WebURL    string `json:"web_url,omitempty"`
+	Repo      string `json:"repo"`
+	Workspace string `json:"workspace,omitempty"`
+}
+
 type Agent struct {
 	Name    string `json:"name"`
 	Profile string `json:"profile"`
@@ -70,6 +84,7 @@ func Default() Config {
 	cfg.Docs.AuthorityMode = string(model.DocAuthorityModeWorkspaceActive)
 	cfg.Docs.SeedMode = string(model.DocSeedModeCopyFromRepoOnStart)
 	cfg.Docs.StaleWarningSeconds = 900
+	cfg.Docs.API.RequestTimeoutSec = 3
 	cfg.Tmux.SessionPattern = "{agent}-{workspace}"
 	cfg.Execution.StepRetries = 1
 	cfg.Health.IdleSeconds = 300
@@ -167,6 +182,16 @@ func Validate(cfg Config) error {
 	if cfg.Docs.StaleWarningSeconds <= 0 {
 		return fmt.Errorf("docs.stale_warning_seconds must be > 0")
 	}
+	if cfg.Docs.API.RequestTimeoutSec <= 0 {
+		return fmt.Errorf("docs.api.request_timeout_seconds must be > 0")
+	}
+	seenEndpointNames := map[string]struct{}{}
+	if err := validateDocAPIEndpoints("workspace", cfg.Docs.API.WorkspaceEndpoints, seenEndpointNames); err != nil {
+		return err
+	}
+	if err := validateDocAPIEndpoints("repo", cfg.Docs.API.RepoEndpoints, seenEndpointNames); err != nil {
+		return err
+	}
 	if strings.TrimSpace(cfg.Workspace.BaseBranch) == "" {
 		return fmt.Errorf("workspace.base_branch cannot be empty")
 	}
@@ -227,6 +252,39 @@ func Validate(cfg Config) error {
 		}
 		if _, ok := profileByName[profile]; !ok {
 			return fmt.Errorf("agent %q references unknown profile %q", name, profile)
+		}
+	}
+	return nil
+}
+
+func validateDocAPIEndpoints(kind string, endpoints []DocAPIEndpoint, seenNames map[string]struct{}) error {
+	for _, endpoint := range endpoints {
+		name := strings.TrimSpace(endpoint.Name)
+		if name == "" {
+			return fmt.Errorf("docs.api.%s_endpoints.name cannot be empty", kind)
+		}
+		if _, exists := seenNames[name]; exists {
+			return fmt.Errorf("duplicate docs API endpoint name %q", name)
+		}
+		seenNames[name] = struct{}{}
+		if strings.TrimSpace(endpoint.BaseURL) == "" {
+			return fmt.Errorf("docs.api endpoint %q base_url cannot be empty", name)
+		}
+		parsedBaseURL, err := url.Parse(strings.TrimSpace(endpoint.BaseURL))
+		if err != nil || parsedBaseURL.Host == "" || (parsedBaseURL.Scheme != "http" && parsedBaseURL.Scheme != "https") {
+			return fmt.Errorf("docs.api endpoint %q has invalid base_url %q", name, endpoint.BaseURL)
+		}
+		if strings.TrimSpace(endpoint.WebURL) != "" {
+			parsedWebURL, err := url.Parse(strings.TrimSpace(endpoint.WebURL))
+			if err != nil || parsedWebURL.Host == "" || (parsedWebURL.Scheme != "http" && parsedWebURL.Scheme != "https") {
+				return fmt.Errorf("docs.api endpoint %q has invalid web_url %q", name, endpoint.WebURL)
+			}
+		}
+		if strings.TrimSpace(endpoint.Repo) == "" {
+			return fmt.Errorf("docs.api endpoint %q repo cannot be empty", name)
+		}
+		if kind == "workspace" && strings.TrimSpace(endpoint.Workspace) == "" {
+			return fmt.Errorf("docs.api workspace endpoint %q requires workspace", name)
 		}
 	}
 	return nil

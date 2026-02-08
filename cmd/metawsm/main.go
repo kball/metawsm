@@ -12,10 +12,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 
+	"metawsm/internal/docfederation"
 	"metawsm/internal/model"
 	"metawsm/internal/orchestrator"
 	"metawsm/internal/policy"
@@ -69,6 +71,8 @@ func main() {
 		err = policyInitCommand(args)
 	case "tui":
 		err = tuiCommand(args)
+	case "docs":
+		err = docsCommand(args)
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -712,6 +716,116 @@ func tuiCommand(args []string) error {
 	}
 }
 
+func docsCommand(args []string) error {
+	fs := flag.NewFlagSet("docs", flag.ContinueOnError)
+	var dbPath string
+	var policyPath string
+	var refresh bool
+	var ticket string
+	var endpointNames multiValueFlag
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&policyPath, "policy", "", "Path to policy file (defaults to .metawsm/policy.json)")
+	fs.BoolVar(&refresh, "refresh", false, "Call /api/v1/index/refresh before aggregation")
+	fs.StringVar(&ticket, "ticket", "", "Optional ticket filter")
+	fs.Var(&endpointNames, "endpoint", "Endpoint names for --refresh selection (repeatable, or comma-separated)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	cfg, _, err := policy.Load(policyPath)
+	if err != nil {
+		return err
+	}
+	endpoints := federationEndpointsFromPolicy(cfg)
+	if len(endpoints) == 0 {
+		return fmt.Errorf("no docs.api endpoints configured in policy")
+	}
+
+	timeout := time.Duration(cfg.Docs.API.RequestTimeoutSec) * time.Second
+	client := docfederation.NewClient(timeout)
+	ctx := context.Background()
+
+	if refresh {
+		selected := selectFederationEndpoints(endpoints, normalizeInputTokens(endpointNames))
+		refreshResults := client.RefreshIndexes(ctx, selected)
+		fmt.Println("Refresh:")
+		for _, result := range refreshResults {
+			if result.Err != nil {
+				fmt.Printf("  - %s (%s) error=%v\n", result.Endpoint.Name, result.Endpoint.Kind, result.Err)
+				continue
+			}
+			fmt.Printf("  - %s (%s) refreshed=%t indexed_at=%s docs=%d\n",
+				result.Endpoint.Name, result.Endpoint.Kind, result.Refreshed, result.IndexedAt, result.DocsCount)
+		}
+		fmt.Println("")
+	}
+
+	snapshots := client.CollectSnapshots(ctx, endpoints)
+	activeContexts, err := service.ActiveDocContexts()
+	if err != nil {
+		return err
+	}
+	contexts := make([]docfederation.ActiveContext, 0, len(activeContexts))
+	for _, item := range activeContexts {
+		contexts = append(contexts, docfederation.ActiveContext{
+			Ticket:      item.Ticket,
+			DocHomeRepo: item.DocHomeRepo,
+		})
+	}
+	merged := docfederation.MergeWorkspaceFirst(snapshots, contexts)
+	ticketFilter := strings.TrimSpace(ticket)
+
+	fmt.Println("Doc Federation")
+	fmt.Println("Endpoints:")
+	for _, health := range merged.Health {
+		if health.Reachable {
+			fmt.Printf("  - %s kind=%s repo=%s workspace=%s indexed_at=%s web=%s\n",
+				health.Endpoint.Name,
+				health.Endpoint.Kind,
+				health.Endpoint.Repo,
+				emptyValue(health.Endpoint.Workspace, "-"),
+				emptyValue(health.IndexedAt, "unknown"),
+				emptyValue(webURLOrEndpointBase(health.Endpoint), health.Endpoint.BaseURL),
+			)
+		} else {
+			fmt.Printf("  - %s kind=%s repo=%s workspace=%s error=%s\n",
+				health.Endpoint.Name,
+				health.Endpoint.Kind,
+				health.Endpoint.Repo,
+				emptyValue(health.Endpoint.Workspace, "-"),
+				health.ErrorText,
+			)
+		}
+	}
+
+	fmt.Println("Tickets:")
+	seen := 0
+	for _, item := range merged.Tickets {
+		if ticketFilter != "" && !strings.EqualFold(ticketFilter, item.Ticket) {
+			continue
+		}
+		seen++
+		fmt.Printf("  - %s status=%s home_repo=%s active=%t source=%s/%s workspace=%s link=%s\n",
+			item.Ticket,
+			emptyValue(item.Status, "unknown"),
+			emptyValue(item.DocHomeRepo, "unknown"),
+			item.Active,
+			item.SourceKind,
+			item.SourceName,
+			emptyValue(item.SourceWS, "-"),
+			emptyValue(item.SourceWebURL, item.SourceURL),
+		)
+	}
+	if seen == 0 {
+		fmt.Println("  - none")
+	}
+	return nil
+}
+
 func printTUIFrameHeader(runID string, intervalSeconds int) {
 	fmt.Print("\033[H\033[2J")
 	fmt.Printf("metawsm tui monitor  now=%s  interval=%ds\n", time.Now().Format(time.RFC3339), intervalSeconds)
@@ -960,4 +1074,68 @@ func printUsage() {
 	fmt.Println("  metawsm close [--run-id RUN_ID | --ticket T1] [--dry-run]")
 	fmt.Println("  metawsm policy-init")
 	fmt.Println("  metawsm tui [--run-id RUN_ID | --ticket T1] [--interval 2]")
+	fmt.Println("  metawsm docs [--policy PATH] [--refresh] [--endpoint NAME] [--ticket T1]")
+}
+
+func federationEndpointsFromPolicy(cfg policy.Config) []docfederation.Endpoint {
+	endpoints := []docfederation.Endpoint{}
+	for _, endpoint := range cfg.Docs.API.WorkspaceEndpoints {
+		endpoints = append(endpoints, docfederation.Endpoint{
+			Name:      strings.TrimSpace(endpoint.Name),
+			Kind:      docfederation.EndpointKindWorkspace,
+			BaseURL:   strings.TrimSpace(endpoint.BaseURL),
+			WebURL:    strings.TrimSpace(endpoint.WebURL),
+			Repo:      strings.TrimSpace(endpoint.Repo),
+			Workspace: strings.TrimSpace(endpoint.Workspace),
+		})
+	}
+	for _, endpoint := range cfg.Docs.API.RepoEndpoints {
+		endpoints = append(endpoints, docfederation.Endpoint{
+			Name:      strings.TrimSpace(endpoint.Name),
+			Kind:      docfederation.EndpointKindRepo,
+			BaseURL:   strings.TrimSpace(endpoint.BaseURL),
+			WebURL:    strings.TrimSpace(endpoint.WebURL),
+			Repo:      strings.TrimSpace(endpoint.Repo),
+			Workspace: strings.TrimSpace(endpoint.Workspace),
+		})
+	}
+	return endpoints
+}
+
+func selectFederationEndpoints(endpoints []docfederation.Endpoint, names []string) []docfederation.Endpoint {
+	if len(names) == 0 {
+		return endpoints
+	}
+	nameSet := map[string]struct{}{}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		nameSet[name] = struct{}{}
+	}
+	selected := []docfederation.Endpoint{}
+	for _, endpoint := range endpoints {
+		if _, ok := nameSet[endpoint.Name]; ok {
+			selected = append(selected, endpoint)
+		}
+	}
+	sort.Slice(selected, func(i, j int) bool {
+		return selected[i].Name < selected[j].Name
+	})
+	return selected
+}
+
+func webURLOrEndpointBase(endpoint docfederation.Endpoint) string {
+	if strings.TrimSpace(endpoint.WebURL) != "" {
+		return endpoint.WebURL
+	}
+	return endpoint.BaseURL
+}
+
+func emptyValue(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
