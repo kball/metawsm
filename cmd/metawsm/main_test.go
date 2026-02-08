@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -355,6 +357,58 @@ func TestResolveOperatorLLMMode(t *testing.T) {
 
 	if _, err := resolveOperatorLLMMode("invalid", "assist"); err == nil {
 		t.Fatalf("expected invalid mode error")
+	}
+}
+
+func TestAuthCommandRequiresCheckSubcommand(t *testing.T) {
+	err := authCommand([]string{})
+	if err == nil {
+		t.Fatalf("expected auth usage error")
+	}
+	if !strings.Contains(err.Error(), "usage: metawsm auth check") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveWorkspaceRepoPathPrefersNestedRepoDir(t *testing.T) {
+	workspacePath := t.TempDir()
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+
+	resolved, err := resolveWorkspaceRepoPath(workspacePath, "metawsm", 2)
+	if err != nil {
+		t.Fatalf("resolve workspace repo path: %v", err)
+	}
+	if resolved != repoPath {
+		t.Fatalf("expected repo path %q, got %q", repoPath, resolved)
+	}
+}
+
+func TestResolveWorkspaceRepoPathFallsBackForSingleRepoWorkspaceRoot(t *testing.T) {
+	workspacePath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspacePath, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+
+	resolved, err := resolveWorkspaceRepoPath(workspacePath, "metawsm", 1)
+	if err != nil {
+		t.Fatalf("resolve workspace repo path fallback: %v", err)
+	}
+	if resolved != workspacePath {
+		t.Fatalf("expected fallback workspace path %q, got %q", workspacePath, resolved)
+	}
+}
+
+func TestResolveWorkspaceRepoPathErrorsWhenRepoMissing(t *testing.T) {
+	workspacePath := t.TempDir()
+	_, err := resolveWorkspaceRepoPath(workspacePath, "metawsm", 2)
+	if err == nil {
+		t.Fatalf("expected missing repo path error")
+	}
+	if !strings.Contains(err.Error(), "repo path not found") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

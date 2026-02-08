@@ -52,6 +52,8 @@ func main() {
 		err = bootstrapCommand(args)
 	case "status":
 		err = statusCommand(args)
+	case "auth":
+		err = authCommand(args)
 	case "watch":
 		err = watchCommand(args)
 	case "operator":
@@ -337,6 +339,253 @@ func statusCommand(args []string) error {
 	}
 	fmt.Print(status)
 	return nil
+}
+
+type authRepoCheck struct {
+	WorkspaceName string
+	Repo          string
+	RepoPath      string
+	GitUserName   string
+	GitUserEmail  string
+	RemoteOrigin  string
+	Ready         bool
+	Error         string
+}
+
+func authCommand(args []string) error {
+	fs := flag.NewFlagSet("auth", flag.ContinueOnError)
+	var runID string
+	var ticket string
+	var dbPath string
+	var policyPath string
+	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (check latest run for this ticket)")
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&policyPath, "policy", "", "Path to policy file (defaults to .metawsm/policy.json)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	rest := fs.Args()
+	if len(rest) == 0 || !strings.EqualFold(strings.TrimSpace(rest[0]), "check") {
+		return fmt.Errorf("usage: metawsm auth check [--run-id RUN_ID | --ticket TICKET] [--policy PATH]")
+	}
+
+	cfg, _, err := policy.Load(policyPath)
+	if err != nil {
+		return err
+	}
+	credentialMode := strings.TrimSpace(strings.ToLower(cfg.GitPR.CredentialMode))
+	if credentialMode == "" {
+		credentialMode = "local_user_auth"
+	}
+
+	if credentialMode != "local_user_auth" {
+		return fmt.Errorf("unsupported git_pr.credential_mode %q (expected local_user_auth)", cfg.GitPR.CredentialMode)
+	}
+
+	ctx := context.Background()
+	ghInstalled, ghAuthed, ghActor, ghDetail := checkGitHubLocalAuth(ctx)
+
+	effectiveRunID := ""
+	repoChecks := []authRepoCheck{}
+	if strings.TrimSpace(runID) != "" || strings.TrimSpace(ticket) != "" {
+		service, err := orchestrator.NewService(dbPath)
+		if err != nil {
+			return err
+		}
+		runID, ticket, err = requireRunSelector(runID, ticket)
+		if err != nil {
+			return err
+		}
+		effectiveRunID, err = service.ResolveRunID(runID, ticket)
+		if err != nil {
+			return err
+		}
+		runCtx, err := service.OperatorRunContext(effectiveRunID)
+		if err != nil {
+			return err
+		}
+		repoChecks, err = checkRunGitCredentials(ctx, runCtx)
+		if err != nil {
+			return err
+		}
+	}
+
+	allReposReady := true
+	for _, check := range repoChecks {
+		if !check.Ready {
+			allReposReady = false
+			break
+		}
+	}
+	pushReady := ghInstalled && ghAuthed && allReposReady
+	prReady := pushReady
+
+	fmt.Printf("Credential mode: %s\n", credentialMode)
+	if effectiveRunID != "" {
+		fmt.Printf("Run: %s\n", effectiveRunID)
+	}
+	fmt.Printf("GitHub CLI: installed=%t authed=%t actor=%s\n", ghInstalled, ghAuthed, emptyValue(ghActor, "unknown"))
+	if strings.TrimSpace(ghDetail) != "" {
+		fmt.Printf("  detail=%s\n", ghDetail)
+	}
+	if len(repoChecks) > 0 {
+		fmt.Println("Repository checks:")
+		for _, check := range repoChecks {
+			fmt.Printf("  - %s/%s ready=%t path=%s\n", check.WorkspaceName, check.Repo, check.Ready, emptyValue(check.RepoPath, "n/a"))
+			if check.Ready {
+				fmt.Printf("    git_user=%s <%s>\n", check.GitUserName, check.GitUserEmail)
+				fmt.Printf("    origin=%s\n", check.RemoteOrigin)
+			} else if strings.TrimSpace(check.Error) != "" {
+				fmt.Printf("    error=%s\n", check.Error)
+			}
+		}
+	}
+	fmt.Printf("Push ready: %t\n", pushReady)
+	fmt.Printf("PR ready: %t\n", prReady)
+
+	if !pushReady {
+		return fmt.Errorf("auth check failed: push/pr not ready")
+	}
+	return nil
+}
+
+func checkGitHubLocalAuth(ctx context.Context) (installed bool, authed bool, actor string, detail string) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return false, false, "", "gh CLI not found on PATH"
+	}
+
+	statusCmd := exec.CommandContext(ctx, "gh", "auth", "status", "-h", "github.com")
+	statusOut, statusErr := statusCmd.CombinedOutput()
+	if statusErr != nil {
+		return true, false, "", strings.TrimSpace(string(statusOut))
+	}
+
+	actorCmd := exec.CommandContext(ctx, "gh", "api", "user", "--jq", ".login")
+	actorOut, actorErr := actorCmd.CombinedOutput()
+	if actorErr != nil {
+		return true, true, "", strings.TrimSpace(string(actorOut))
+	}
+
+	return true, true, strings.TrimSpace(string(actorOut)), strings.TrimSpace(string(statusOut))
+}
+
+func checkRunGitCredentials(ctx context.Context, runCtx orchestrator.OperatorRunContext) ([]authRepoCheck, error) {
+	workspaceSet := map[string]struct{}{}
+	for _, agent := range runCtx.Agents {
+		workspaceName := strings.TrimSpace(agent.WorkspaceName)
+		if workspaceName == "" {
+			continue
+		}
+		workspaceSet[workspaceName] = struct{}{}
+	}
+
+	repos := normalizeInputTokens(runCtx.Repos)
+	if len(repos) == 0 && strings.TrimSpace(runCtx.DocHomeRepo) != "" {
+		repos = []string{strings.TrimSpace(runCtx.DocHomeRepo)}
+	}
+
+	workspaceNames := make([]string, 0, len(workspaceSet))
+	for workspaceName := range workspaceSet {
+		workspaceNames = append(workspaceNames, workspaceName)
+	}
+	sort.Strings(workspaceNames)
+
+	estimated := len(repos)
+	if estimated == 0 {
+		estimated = 1
+	}
+	checks := make([]authRepoCheck, 0, len(workspaceNames)*estimated)
+	for _, workspaceName := range workspaceNames {
+		workspacePath, err := operatorResolveWorkspacePath(workspaceName)
+		if err != nil {
+			return nil, err
+		}
+		for _, repo := range repos {
+			check := authRepoCheck{
+				WorkspaceName: workspaceName,
+				Repo:          repo,
+			}
+			repoPath, err := resolveWorkspaceRepoPath(workspacePath, repo, len(repos))
+			if err != nil {
+				check.Error = err.Error()
+				checks = append(checks, check)
+				continue
+			}
+			check.RepoPath = repoPath
+			userName, err := gitConfigValue(ctx, repoPath, "user.name")
+			if err != nil {
+				check.Error = err.Error()
+				checks = append(checks, check)
+				continue
+			}
+			userEmail, err := gitConfigValue(ctx, repoPath, "user.email")
+			if err != nil {
+				check.Error = err.Error()
+				checks = append(checks, check)
+				continue
+			}
+			originURL, err := gitRemoteOrigin(ctx, repoPath)
+			if err != nil {
+				check.Error = err.Error()
+				checks = append(checks, check)
+				continue
+			}
+			check.GitUserName = userName
+			check.GitUserEmail = userEmail
+			check.RemoteOrigin = originURL
+			check.Ready = true
+			checks = append(checks, check)
+		}
+	}
+	return checks, nil
+}
+
+func resolveWorkspaceRepoPath(workspacePath string, repo string, repoCount int) (string, error) {
+	workspacePath = filepath.Clean(strings.TrimSpace(workspacePath))
+	repo = strings.TrimSpace(repo)
+	if workspacePath == "" {
+		return "", fmt.Errorf("workspace path is empty")
+	}
+	if repo == "" {
+		return "", fmt.Errorf("repo name is empty")
+	}
+
+	repoPath := filepath.Join(workspacePath, repo)
+	if info, err := os.Stat(repoPath); err == nil && info.IsDir() {
+		return repoPath, nil
+	}
+	if repoCount == 1 && operatorIsGitRepo(workspacePath) {
+		return workspacePath, nil
+	}
+	return "", fmt.Errorf("repo path not found for %s in workspace %s", repo, workspacePath)
+}
+
+func gitConfigValue(ctx context.Context, repoPath string, key string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "config", "--get", key)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git config %s failed: %s", key, strings.TrimSpace(string(out)))
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "" {
+		return "", fmt.Errorf("git config %s is empty", key)
+	}
+	return value, nil
+}
+
+func gitRemoteOrigin(ctx context.Context, repoPath string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "remote", "get-url", "origin")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git remote get-url origin failed: %s", strings.TrimSpace(string(out)))
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "" {
+		return "", fmt.Errorf("git remote origin is empty")
+	}
+	return value, nil
 }
 
 type watchSnapshot struct {
@@ -2164,6 +2413,7 @@ func printUsage() {
 	fmt.Println("  metawsm run --ticket T1 --ticket T2 --repos repo1,repo2 [--doc-home-repo repo1] [--doc-authority-mode workspace_active] [--doc-seed-mode copy_from_repo_on_start] [--agent planner --agent coder] [--base-branch main]")
 	fmt.Println("  metawsm bootstrap --ticket T1 --repos repo1,repo2 [--doc-home-repo repo1] [--doc-authority-mode workspace_active] [--doc-seed-mode copy_from_repo_on_start] [--agent planner] [--base-branch main]")
 	fmt.Println("  metawsm status [--run-id RUN_ID | --ticket T1]")
+	fmt.Println("  metawsm auth check [--run-id RUN_ID | --ticket T1] [--policy PATH]")
 	fmt.Println("  metawsm watch [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--notify-cmd \"...\"] [--bell=true]")
 	fmt.Println("  metawsm operator [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--llm-mode off|assist|auto] [--dry-run]")
 	fmt.Println("  metawsm guide [--run-id RUN_ID | --ticket T1] --answer \"...\"")
