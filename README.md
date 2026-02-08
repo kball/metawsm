@@ -24,6 +24,7 @@ Implemented command surface:
 - `metawsm policy-init`
 - `metawsm tui`
 - `metawsm docs`
+- `metawsm web`
 
 Key implementation decisions:
 - HSM-driven lifecycle transitions for run/step/agent states.
@@ -138,6 +139,20 @@ go run ./cmd/metawsm docs --policy .metawsm/policy.json
 go run ./cmd/metawsm docs --policy .metawsm/policy.json --refresh
 ```
 
+Run the web dashboard backend (serves API + embedded/static SPA):
+
+```bash
+go run ./cmd/metawsm web --addr :3001
+```
+
+For local frontend development with Vite HMR:
+
+```bash
+npm --prefix ui install
+make dev-backend
+make dev-frontend
+```
+
 ## Policy
 
 Default policy file: `.metawsm/policy.json`.
@@ -194,6 +209,9 @@ Entries include run id, escalation intent, summary/evidence, and requested opera
 ## Build & Test
 
 ```bash
-go test ./...
+npm --prefix ui install
+go generate ./internal/web
+go test ./... -count=1
 go build ./...
+go build -tags embed ./...
 ```
