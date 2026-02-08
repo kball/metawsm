@@ -66,3 +66,15 @@ Step 3: Exposed persisted run pull request metadata in metawsm status output and
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Added PR wrappers and status section
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Added status PR section coverage
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 3 details and compile fix
+
+## 2026-02-08
+
+Step 4: Implemented branch-prep and commit creation service primitives with dry-run previews and persisted commit metadata (commit 678b936)
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Added Commit service primitive and git branch/commit orchestration
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Added commit primitive coverage for dry-run
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy.go — Added RenderGitBranch helper for policy-driven branch naming
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy_test.go — Added branch template renderer unit tests
+

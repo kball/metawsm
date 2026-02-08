@@ -22,17 +22,23 @@ RelatedFiles:
         Added RunPullRequest model and pull request state enums (commit d3f13f6)
         Added RunPullRequest model and PR state enums (commit d3f13f6)
     - Path: internal/orchestrator/service.go
-      Note: Surfaced persisted run PR metadata in status output (commit 283a68b)
+      Note: |-
+        Surfaced persisted run PR metadata in status output (commit 283a68b)
+        Commit service primitive implementation (commit 678b936)
     - Path: internal/orchestrator/service_test.go
-      Note: Added status test for pull request section (commit 283a68b)
+      Note: |-
+        Added status test for pull request section (commit 283a68b)
+        Commit primitive tests (commit 678b936)
     - Path: internal/policy/policy.go
       Note: |-
         Added git_pr config schema/defaults/validation (commit d3f13f6)
         Added git_pr policy contract defaults/validation (commit d3f13f6)
+        Branch template rendering helper (commit 678b936)
     - Path: internal/policy/policy_test.go
       Note: |-
         Added tests for git_pr defaults and validation failures (commit d3f13f6)
         Added git_pr validation coverage (commit d3f13f6)
+        Branch template rendering tests (commit 678b936)
     - Path: internal/store/sqlite.go
       Note: |-
         Added run_pull_requests schema and store CRUD methods (commit d3f13f6)
@@ -47,6 +53,7 @@ LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -314,3 +321,85 @@ I added service wrappers for `run_pull_requests`, rendered a `Pull Requests:` se
 
 ### Technical details
 - New status section is conditional and only shown when at least one `run_pull_requests` record exists for the run.
+
+## Step 4: Add Commit Preparation Service Primitives and Policy-Driven Branch Rendering
+
+This step implemented the first executable commit workflow layer in the orchestrator service so runs can deterministically prepare branches and create commits per workspace/repo. The intent was to complete the service primitive milestone before adding CLI command surfaces.
+
+I added a `Service.Commit` primitive with dry-run previews, branch creation from policy templates, commit execution, and persistence updates to `run_pull_requests` so later PR creation can reuse the same run/ticket/repo metadata.
+
+### Prompt Context
+
+**User prompt (verbatim):** "use docmgr to pick up ticket METAWSM-009 --- look at the plan, diary, and tasks, and then continue implementing. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue the ticket from existing docs, implement the next planned code slice, and keep incremental diary + commit discipline.
+
+**Inferred user intent:** Advance actual METAWSM-009 functionality now (not just planning), while preserving auditability in both git history and ticket docs.
+
+**Commit (code):** 678b936 — "Add commit preparation primitives for run workspaces"
+
+### What I did
+- Added policy helper `RenderGitBranch` in `internal/policy/policy.go` to render/sanitize branch names from `git_pr.branch_template` placeholders (`{ticket}`, `{repo}`, `{run}`).
+- Added branch-rendering tests in `internal/policy/policy_test.go` for default template behavior, custom templates, and empty-segment fallback.
+- Added orchestrator commit primitives in `internal/orchestrator/service.go`:
+  - new `CommitOptions`, `CommitResult`, `CommitRepoResult` types,
+  - new `Service.Commit` method that resolves run/ticket/workspaces/repos, enforces readiness constraints, performs branch prep + commit (or dry-run preview),
+  - helper functions for repo target resolution, allow-list filtering, base ref resolution, git command execution, and default commit message generation.
+- Persisted commit metadata into `run_pull_requests` rows (head/base branch, commit SHA, credential mode, actor) and recorded commit events.
+- Added orchestrator tests in `internal/orchestrator/service_test.go`:
+  - `TestCommitDryRunPreviewsActionsForDirtyRepo`
+  - `TestCommitCreatesBranchCommitAndPersistsPullRequestRow`
+  - `TestCommitSkipsCleanRepoWithoutPersistingRow`
+- Ran focused tests:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/policy -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+
+### Why
+- Task 3 required service-level branch prep and commit creation before command-surface wiring.
+- A reusable branch renderer in policy avoids duplicating branch naming logic and keeps behavior tied to configurable templates.
+- Persisting commit metadata at commit time prepares the PR layer to reference authoritative branch/commit state.
+
+### What worked
+- All targeted tests passed after the implementation.
+- Dry-run and real commit paths both behaved deterministically in new orchestrator tests.
+- `run_pull_requests` rows now capture commit context needed for subsequent PR creation.
+
+### What didn't work
+- N/A in this step; no failing test or command retries were required after initial implementation.
+
+### What I learned
+- The existing run/ticket/workspace abstractions in orchestrator made it straightforward to add a commit primitive without changing store schema.
+- Policy-template rendering needed an explicit helper to keep branch naming predictable and testable.
+
+### What was tricky to build
+- Handling mixed workspace layouts (nested repo directory vs single-repo workspace root) while keeping repo labels stable for branch template rendering and persistence keys.
+
+### What warrants a second pair of eyes
+- Current `Service.Commit` gate requires run status `complete`; reviewers may want to confirm whether commit execution should also be allowed in `running` or `paused` states.
+- The default commit message fallback (`ticket: first run brief goal line`) may need stronger normalization/length constraints before public CLI exposure.
+
+### What should be done in the future
+- Add `metawsm commit` CLI command wired to `Service.Commit` with explicit dry-run output formatting.
+- Implement PR creation primitive (`gh pr create`) that consumes persisted commit metadata and updates PR URL/number/state.
+
+### Code review instructions
+- Start in `internal/orchestrator/service.go`:
+  - `Service.Commit`
+  - `resolveWorkspaceCommitRepoTargets`
+  - `resolveCommitBaseRef`
+  - `runGitCommand`
+- Review branch template logic in `internal/policy/policy.go`:
+  - `RenderGitBranch`
+- Review test coverage in:
+  - `internal/orchestrator/service_test.go`
+  - `internal/policy/policy_test.go`
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/policy -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+
+### Technical details
+- Branch rendering defaults to `{ticket}/{repo}/{run}` and sanitizes each segment using the same token normalization rules as session-name rendering.
+- Commit persistence behavior updates `run_pull_requests` keyed by `(run_id, ticket, repo)` and sets `pr_state` to `draft` when no prior PR state exists.
+- Dry-run behavior returns concrete git actions (`checkout -B`, `add -A`, `commit -m`) without mutating repository state.

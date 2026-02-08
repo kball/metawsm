@@ -4,7 +4,7 @@
 
 - [x] Define policy and safety gates for automated commit/PR flow
 - [x] Design and add run pull request persistence schema
-- [ ] Implement service primitives for branch prep and commit creation
+- [x] Implement service primitives for branch prep and commit creation
 - [ ] Implement service primitive for GitHub PR creation via gh CLI
 - [ ] Add metawsm commit command with dry-run previews
 - [ ] Add metawsm pr command with dry-run previews
