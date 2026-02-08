@@ -154,3 +154,23 @@ Step 11: enforced human-only merge execution by requiring --human for non-dry-ru
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Added merge acknowledgement gate and updated operator hints
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go — Added merge acknowledgement and hint behavior tests
 
+
+## 2026-02-08
+
+Step 12: added multi-ticket workspace fanout for commit/pr workflows so run-level execution can process per-ticket metadata without requiring explicit ticket selection (task 17, commit 6ec9185).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Multi-ticket fanout logic in Commit/OpenPullRequests
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Fanout regression tests for multi-ticket runs
+
+
+## 2026-02-08
+
+Step 13: added push-before-PR execution plus end-to-end local-auth commit->push->PR coverage with local origin and fake gh (task 20, commit 627e397).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — PR workflow now pushes branch before gh pr create
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — End-to-end commit/push/PR test coverage
+

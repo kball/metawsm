@@ -46,6 +46,8 @@ RelatedFiles:
         Commit service primitive implementation (commit 678b936)
         Added OpenPullRequests primitive and credential/actor run event recording for commit/pr actions (commit 180a976)
         Wired commit/PR gate enforcement and validation_json persistence (commit d31a862)
+        Implemented multi-ticket workspace fanout for commit/pr flows (commit 6ec9185)
+        Added push-before-PR execution and dry-run push previews (commit 627e397)
     - Path: internal/orchestrator/service_test.go
       Note: |-
         Added status test for pull request section (commit 283a68b)
@@ -53,6 +55,8 @@ RelatedFiles:
         Added OpenPullRequests dry-run and fake-gh integration tests (commit 180a976)
         Added commit/pr preflight rejection coverage for mode-off and invalid-state scenarios (commit 299a096)
         Added validation-gate regression tests including require_all semantics and forbidden/clean-tree paths (commit d31a862)
+        Added multi-ticket fanout commit/pr coverage and fixture support (commit 6ec9185)
+        Added end-to-end commit/push/PR test and updated PR dry-run/real tests (commit 627e397)
     - Path: internal/policy/policy.go
       Note: |-
         Added git_pr config schema/defaults/validation (commit d3f13f6)
@@ -81,6 +85,8 @@ LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
+
 
 
 
@@ -1007,3 +1013,155 @@ I added a required `--human` acknowledgement for non-dry-run merge execution, up
 - Non-dry-run merge now requires explicit CLI acknowledgement:
   - `metawsm merge --run-id <id> --human`
 - Dry-run remains available without acknowledgement for planning/review.
+
+## Step 12: Add Multi-Ticket Commit/PR Fanout by Workspace-Ticket Mapping
+
+This step implemented per repo/ticket fanout behavior for multi-ticket runs so commit and PR workflows no longer require manual ticket selection when a run includes multiple ticket workspaces. The service now derives workspace-to-ticket ownership from persisted run steps and applies commit/PR actions with ticket-correct branch naming, metadata keys, and event messages.
+
+I removed the prior single-ticket-only constraint in multi-ticket runs, added fanout-aware filtering for optional `--ticket`, and added tests that validate commit and PR dry-run fanout across two tickets/workspaces.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Ignore them for now, continue with METAWSM-009"
+
+**Assistant interpretation:** Continue implementing remaining ticket items after finishing validation and merge-policy work.
+
+**Inferred user intent:** Close out open implementation tasks with concrete code and tests while keeping diary/task/changelog synchronized.
+
+**Commit (code):** 6ec9185 — "Fan out commit and PR workflows across multi-ticket runs"
+
+### What I did
+- Updated `Service.Commit` in `internal/orchestrator/service.go` to:
+  - support multi-ticket runs without requiring `--ticket`,
+  - resolve workspace-ticket mapping from persisted run steps,
+  - fan out commit operations per workspace ticket,
+  - render branches and persist PR rows keyed by each workspace ticket.
+- Updated `Service.OpenPullRequests` to:
+  - support multi-ticket fanout when `--ticket` is omitted,
+  - select candidates across all run tickets,
+  - preserve correct per-row ticket values in title/body defaults, validation inputs, and event metadata.
+- Added `resolveWorkspaceTickets` helper in service layer.
+- Added orchestrator tests in `internal/orchestrator/service_test.go`:
+  - `TestCommitFansOutAcrossWorkspaceTicketsWhenRunHasMultipleTickets`
+  - `TestOpenPullRequestsFansOutAcrossTicketsWhenRunHasMultipleTickets`
+- Added `createRunWithTicketsFixture` test helper for multi-ticket run fixtures with workspace-ticket step metadata.
+- Ran focused validation:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/policy -count=1`
+- Checked task 17 complete:
+  - `docmgr task check --ticket METAWSM-009 --id 17`
+
+### Why
+- Task 17 required per repo/ticket fanout orchestration for multi-repo/multi-ticket runs.
+- Previous behavior failed for multi-ticket runs unless operators manually selected one ticket per call, and it incorrectly reused a single ticket across all workspace commit metadata.
+
+### What worked
+- Multi-ticket commit and PR fanout now works in service tests with per-workspace ticket attribution.
+- Existing cmd and policy package tests remained green.
+
+### What didn't work
+- N/A in this step; implementation and test runs passed without iterative failures.
+
+### What I learned
+- Step metadata is the cleanest source of workspace-ticket ownership once runs are underway.
+- Fanout support mostly required changing ticket selection and row filtering logic while leaving git/gh execution paths intact.
+
+### What was tricky to build
+- Keeping backward-compatible behavior for single-ticket runs while enabling multi-ticket fanout and preserving optional `--ticket` filtering.
+
+### What warrants a second pair of eyes
+- Whether ambiguous/missing workspace-ticket step mappings should fail hard (current behavior) or fall back more permissively in some run modes.
+
+### What should be done in the future
+- Implement task 20 (end-to-end successful local-auth commit push and PR creation test).
+
+### Code review instructions
+- Start in `internal/orchestrator/service.go`:
+  - `Service.Commit`
+  - `Service.OpenPullRequests`
+  - `resolveWorkspaceTickets`
+- Review test coverage in `internal/orchestrator/service_test.go`:
+  - new multi-ticket fanout tests and fixture helper
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+
+### Technical details
+- Commit fanout now computes ticket per workspace and persists rows using `ticket|repo` keys derived from that mapping.
+- PR fanout now selects candidates across selected tickets (all run tickets by default) and builds per-ticket PR defaults/events.
+
+## Step 13: Push Branches Before PR Creation and Add End-to-End Local-Auth Workflow Test
+
+This step completed the final open task by making PR creation execute a real branch push to `origin` before calling `gh pr create`, then adding an end-to-end service test that exercises commit -> push -> PR metadata persistence. The primary goal was to validate a realistic local-auth workflow instead of only unit-level fake PR creation.
+
+I updated PR dry-run previews to include both push and PR commands, wired real execution to run `git push --set-upstream origin <head-branch>` first, and added an end-to-end orchestrator test with a local bare origin and fake `gh` binary.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Ignore them for now, continue with METAWSM-009"
+
+**Assistant interpretation:** Continue implementing remaining open ticket work until completion, with diary and incremental commits.
+
+**Inferred user intent:** Finish METAWSM-009 end-to-end and leave no implementation task open.
+
+**Commit (code):** 627e397 — "Push branches before PR creation and add end-to-end test"
+
+### What I did
+- Updated `internal/orchestrator/service.go` PR workflow to:
+  - include push preview action in dry-run output,
+  - execute `git push --set-upstream origin <head-branch>` before `gh pr create` in real mode.
+- Updated existing PR dry-run test to expect both actions (push + PR create).
+- Updated existing PR create/persist test to include:
+  - local bare `origin` remote setup,
+  - real head-branch push verification.
+- Added new end-to-end test in `internal/orchestrator/service_test.go`:
+  - `TestCommitAndOpenPullRequestsEndToEndPushesBranchAndPersistsMetadata`
+  - uses real `Service.Commit` + `Service.OpenPullRequests`, local bare remote, and fake `gh` output.
+- Ran focused validation:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/policy -count=1`
+- Checked task 20 complete:
+  - `docmgr task check --ticket METAWSM-009 --id 20`
+
+### Why
+- Task 20 required an end-to-end successful local-auth commit+push+PR creation test.
+- PR creation without pushing the head branch is incomplete in realistic workflows.
+
+### What worked
+- Service now pushes before PR creation and tests validate branch presence on origin.
+- End-to-end test passes with deterministic local fixtures and fake `gh` output.
+- All focused package tests remained green.
+
+### What didn't work
+- N/A in this step; implementation and test runs passed without retries.
+
+### What I learned
+- Existing commit/PR service boundaries were sufficient for end-to-end orchestration once push was inserted before `gh pr create`.
+- A local bare remote fixture provides reliable push validation without external network dependencies.
+
+### What was tricky to build
+- Updating earlier PR tests to represent realistic branch state and remote setup after introducing mandatory push-before-PR behavior.
+
+### What warrants a second pair of eyes
+- Whether push behavior should support non-`origin` remotes (for fork-based workflows) in a future credential-mode expansion.
+
+### What should be done in the future
+- N/A
+
+### Code review instructions
+- Start in `internal/orchestrator/service.go`:
+  - PR push preview and pre-PR push execution
+- Review test updates in `internal/orchestrator/service_test.go`:
+  - dry-run push preview expectation
+  - PR metadata/push verification test
+  - end-to-end commit->push->PR test
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+
+### Technical details
+- PR execution order is now:
+  1. `git push --set-upstream origin <head-branch>`
+  2. `gh pr create --base ... --head ... --title ... --body ...`
+- Dry-run actions now include both commands in order.
