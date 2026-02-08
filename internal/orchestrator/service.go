@@ -667,16 +667,15 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 	}
 
 	tickets := normalizeTokens(spec.Tickets)
-	commitTicket := strings.TrimSpace(options.Ticket)
-	if commitTicket == "" {
-		if len(tickets) == 1 {
-			commitTicket = tickets[0]
-		} else {
-			return CommitResult{}, fmt.Errorf("run %s has multiple tickets; --ticket is required for commit", runID)
-		}
+	if len(tickets) == 0 {
+		return CommitResult{}, fmt.Errorf("run %s has no tickets", runID)
 	}
-	if !containsToken(tickets, commitTicket) {
-		return CommitResult{}, fmt.Errorf("ticket %q is not part of run %s", commitTicket, runID)
+	selectedTickets := append([]string(nil), tickets...)
+	if commitTicket := strings.TrimSpace(options.Ticket); commitTicket != "" {
+		if !containsToken(tickets, commitTicket) {
+			return CommitResult{}, fmt.Errorf("ticket %q is not part of run %s", commitTicket, runID)
+		}
+		selectedTickets = []string{commitTicket}
 	}
 
 	repos := normalizeTokens(spec.Repos)
@@ -704,6 +703,10 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 	if len(workspaceNames) == 0 {
 		return CommitResult{}, fmt.Errorf("run %s has no workspaces to commit", runID)
 	}
+	workspaceTickets, err := s.resolveWorkspaceTickets(runID)
+	if err != nil {
+		return CommitResult{}, err
+	}
 
 	credentialMode := strings.TrimSpace(cfg.GitPR.CredentialMode)
 	if credentialMode == "" {
@@ -713,10 +716,7 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 	if actor == "" {
 		actor = "unknown"
 	}
-	commitMessage := strings.TrimSpace(options.Message)
-	if commitMessage == "" {
-		commitMessage = s.defaultCommitMessage(runID, commitTicket)
-	}
+	requestedMessage := strings.TrimSpace(options.Message)
 
 	existingPRs, err := s.store.ListRunPullRequests(runID)
 	if err != nil {
@@ -731,6 +731,22 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 	results := make([]CommitRepoResult, 0, len(workspaceNames)*len(repos))
 	now := time.Now()
 	for _, workspaceName := range workspaceNames {
+		workspaceTicket := strings.TrimSpace(workspaceTickets[workspaceName])
+		if workspaceTicket == "" {
+			if len(selectedTickets) == 1 {
+				workspaceTicket = selectedTickets[0]
+			} else {
+				return CommitResult{}, fmt.Errorf("workspace %s is missing a ticket mapping for run %s", workspaceName, runID)
+			}
+		}
+		if !containsToken(selectedTickets, workspaceTicket) {
+			continue
+		}
+		commitMessage := requestedMessage
+		if commitMessage == "" {
+			commitMessage = s.defaultCommitMessage(runID, workspaceTicket)
+		}
+
 		workspacePath, err := resolveWorkspacePath(workspaceName)
 		if err != nil {
 			return CommitResult{}, err
@@ -741,7 +757,7 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 		}
 		for _, target := range targets {
 			result := CommitRepoResult{
-				Ticket:        commitTicket,
+				Ticket:        workspaceTicket,
 				WorkspaceName: workspaceName,
 				Repo:          target.Repo,
 				RepoPath:      target.RepoPath,
@@ -761,14 +777,14 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 			validationReport, err := runGitPRValidations(ctx, cfg, gitPRValidationInput{
 				Operation:     gitPRValidationOperationCommit,
 				RunID:         runID,
-				Ticket:        commitTicket,
+				Ticket:        workspaceTicket,
 				WorkspaceName: workspaceName,
 				Repo:          target.Repo,
 				RepoPath:      target.RepoPath,
 				BaseBranch:    baseBranch,
 			})
 			if err != nil {
-				return CommitResult{}, fmt.Errorf("commit validation failed for ticket=%s workspace=%s repo=%s: %w", commitTicket, workspaceName, target.Repo, err)
+				return CommitResult{}, fmt.Errorf("commit validation failed for ticket=%s workspace=%s repo=%s: %w", workspaceTicket, workspaceName, target.Repo, err)
 			}
 			validationJSON := marshalGitPRValidationReport(validationReport)
 
@@ -776,7 +792,7 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 			if err != nil {
 				return CommitResult{}, err
 			}
-			branchName := policy.RenderGitBranch(cfg.GitPR.BranchTemplate, commitTicket, target.Repo, runID)
+			branchName := policy.RenderGitBranch(cfg.GitPR.BranchTemplate, workspaceTicket, target.Repo, runID)
 			result.BaseRef = baseRef
 			result.Branch = branchName
 			result.Actions = []string{
@@ -805,13 +821,13 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 			result.CommitSHA = sha
 			results = append(results, result)
 
-			key := commitTicket + "|" + target.Repo
+			key := workspaceTicket + "|" + target.Repo
 			row := existingByKey[key]
 			if row.CreatedAt.IsZero() {
 				row.CreatedAt = now
 			}
 			row.RunID = runID
-			row.Ticket = commitTicket
+			row.Ticket = workspaceTicket
 			row.Repo = target.Repo
 			row.WorkspaceName = workspaceName
 			row.HeadBranch = branchName
@@ -831,7 +847,7 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 			existingByKey[key] = row
 
 			message := fmt.Sprintf("ticket=%s workspace=%s repo=%s branch=%s commit=%s credential_mode=%s actor=%s",
-				commitTicket, workspaceName, target.Repo, branchName, sha, credentialMode, actor)
+				workspaceTicket, workspaceName, target.Repo, branchName, sha, credentialMode, actor)
 			_ = s.store.AddEvent(runID, "repo", target.Repo, "commit_created", "", sha, message)
 		}
 	}
@@ -871,16 +887,15 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 	}
 
 	tickets := normalizeTokens(spec.Tickets)
-	prTicket := strings.TrimSpace(options.Ticket)
-	if prTicket == "" {
-		if len(tickets) == 1 {
-			prTicket = tickets[0]
-		} else {
-			return PullRequestResult{}, fmt.Errorf("run %s has multiple tickets; --ticket is required for pull request creation", runID)
-		}
+	if len(tickets) == 0 {
+		return PullRequestResult{}, fmt.Errorf("run %s has no tickets", runID)
 	}
-	if !containsToken(tickets, prTicket) {
-		return PullRequestResult{}, fmt.Errorf("ticket %q is not part of run %s", prTicket, runID)
+	selectedTickets := append([]string(nil), tickets...)
+	if prTicket := strings.TrimSpace(options.Ticket); prTicket != "" {
+		if !containsToken(tickets, prTicket) {
+			return PullRequestResult{}, fmt.Errorf("ticket %q is not part of run %s", prTicket, runID)
+		}
+		selectedTickets = []string{prTicket}
 	}
 
 	allowedRepos := normalizeTokens(cfg.GitPR.AllowedRepos)
@@ -902,7 +917,7 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 	}
 	candidates := make([]model.RunPullRequest, 0, len(rows))
 	for _, row := range rows {
-		if !strings.EqualFold(strings.TrimSpace(row.Ticket), prTicket) {
+		if !containsToken(selectedTickets, row.Ticket) {
 			continue
 		}
 		if len(allowedRepos) > 0 && !containsToken(allowedRepos, row.Repo) {
@@ -911,25 +926,35 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 		candidates = append(candidates, row)
 	}
 	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].WorkspaceName == candidates[j].WorkspaceName {
-			return candidates[i].Repo < candidates[j].Repo
+		if candidates[i].Ticket == candidates[j].Ticket {
+			if candidates[i].WorkspaceName == candidates[j].WorkspaceName {
+				return candidates[i].Repo < candidates[j].Repo
+			}
+			return candidates[i].WorkspaceName < candidates[j].WorkspaceName
 		}
-		return candidates[i].WorkspaceName < candidates[j].WorkspaceName
+		return candidates[i].Ticket < candidates[j].Ticket
 	})
 	if len(candidates) == 0 {
-		return PullRequestResult{}, fmt.Errorf("no prepared commit metadata found for ticket %s; run commit first", prTicket)
+		if len(selectedTickets) == 1 {
+			return PullRequestResult{}, fmt.Errorf("no prepared commit metadata found for ticket %s; run commit first", selectedTickets[0])
+		}
+		return PullRequestResult{}, fmt.Errorf("no prepared commit metadata found for selected tickets; run commit first")
 	}
 
 	repoResults := make([]PullRequestRepoResult, 0, len(candidates))
 	now := time.Now()
 	for _, row := range candidates {
+		rowTicket := strings.TrimSpace(row.Ticket)
+		if rowTicket == "" {
+			return PullRequestResult{}, fmt.Errorf("run pull request row has empty ticket")
+		}
 		repo := strings.TrimSpace(row.Repo)
 		if repo == "" {
-			return PullRequestResult{}, fmt.Errorf("run pull request row has empty repo for ticket %s", prTicket)
+			return PullRequestResult{}, fmt.Errorf("run pull request row has empty repo for ticket %s", rowTicket)
 		}
 		workspaceName := strings.TrimSpace(row.WorkspaceName)
 		if workspaceName == "" {
-			return PullRequestResult{}, fmt.Errorf("run pull request row for ticket %s repo %s is missing workspace_name", prTicket, repo)
+			return PullRequestResult{}, fmt.Errorf("run pull request row for ticket %s repo %s is missing workspace_name", rowTicket, repo)
 		}
 
 		workspacePath, err := resolveWorkspacePath(workspaceName)
@@ -954,16 +979,16 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 		}
 		headBranch := strings.TrimSpace(row.HeadBranch)
 		if headBranch == "" {
-			return PullRequestResult{}, fmt.Errorf("run pull request row for ticket %s repo %s is missing head branch", prTicket, repo)
+			return PullRequestResult{}, fmt.Errorf("run pull request row for ticket %s repo %s is missing head branch", rowTicket, repo)
 		}
 
 		title := strings.TrimSpace(options.Title)
 		if title == "" {
-			title = defaultPRTitle(prTicket, summary, repo, len(candidates) > 1)
+			title = defaultPRTitle(rowTicket, summary, repo, len(candidates) > 1)
 		}
 		body := strings.TrimSpace(options.Body)
 		if body == "" {
-			body = defaultPRBody(runID, prTicket, repo, headBranch, baseBranch, row.CommitSHA, brief)
+			body = defaultPRBody(runID, rowTicket, repo, headBranch, baseBranch, row.CommitSHA, brief)
 		}
 
 		args := []string{
@@ -982,7 +1007,7 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 		preview := fmt.Sprintf("cd %s && %s", shellQuote(repoPath), commandPreview("gh", args...))
 
 		repoResult := PullRequestRepoResult{
-			Ticket:        prTicket,
+			Ticket:        rowTicket,
 			WorkspaceName: workspaceName,
 			Repo:          repo,
 			RepoPath:      repoPath,
@@ -1003,7 +1028,7 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 		validationReport, err := runGitPRValidations(ctx, cfg, gitPRValidationInput{
 			Operation:     gitPRValidationOperationPR,
 			RunID:         runID,
-			Ticket:        prTicket,
+			Ticket:        rowTicket,
 			WorkspaceName: workspaceName,
 			Repo:          repo,
 			RepoPath:      repoPath,
@@ -1011,7 +1036,7 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 			HeadBranch:    headBranch,
 		})
 		if err != nil {
-			return PullRequestResult{}, fmt.Errorf("pull request validation failed for ticket=%s workspace=%s repo=%s: %w", prTicket, workspaceName, repo, err)
+			return PullRequestResult{}, fmt.Errorf("pull request validation failed for ticket=%s workspace=%s repo=%s: %w", rowTicket, workspaceName, repo, err)
 		}
 		validationJSON := marshalGitPRValidationReport(validationReport)
 		if options.DryRun {
@@ -1025,7 +1050,7 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 		}
 		prURL, prNumber, err := parsePRCreateOutput(output)
 		if err != nil {
-			return PullRequestResult{}, fmt.Errorf("parse gh pr create output for %s/%s: %w", prTicket, repo, err)
+			return PullRequestResult{}, fmt.Errorf("parse gh pr create output for %s/%s: %w", rowTicket, repo, err)
 		}
 
 		row.BaseBranch = baseBranch
@@ -1046,7 +1071,7 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 		}
 
 		message := fmt.Sprintf("ticket=%s workspace=%s repo=%s pr=%s credential_mode=%s actor=%s",
-			prTicket, workspaceName, repo, prURL, credentialMode, actor)
+			rowTicket, workspaceName, repo, prURL, credentialMode, actor)
 		_ = s.store.AddEvent(runID, "repo", repo, "pr_created", "", strconv.Itoa(prNumber), message)
 
 		repoResult.PRURL = prURL
@@ -1141,6 +1166,26 @@ func (s *Service) UpsertRunPullRequest(record model.RunPullRequest) error {
 
 func (s *Service) ListRunPullRequests(runID string) ([]model.RunPullRequest, error) {
 	return s.store.ListRunPullRequests(runID)
+}
+
+func (s *Service) resolveWorkspaceTickets(runID string) (map[string]string, error) {
+	steps, err := s.store.GetSteps(runID)
+	if err != nil {
+		return nil, err
+	}
+	workspaceTickets := map[string]string{}
+	for _, step := range steps {
+		workspaceName := strings.TrimSpace(step.WorkspaceName)
+		ticket := strings.TrimSpace(step.Ticket)
+		if workspaceName == "" || ticket == "" {
+			continue
+		}
+		if _, exists := workspaceTickets[workspaceName]; exists {
+			continue
+		}
+		workspaceTickets[workspaceName] = ticket
+	}
+	return workspaceTickets, nil
 }
 
 func (s *Service) OperatorRunContext(runID string) (OperatorRunContext, error) {

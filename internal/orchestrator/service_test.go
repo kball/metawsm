@@ -1500,6 +1500,152 @@ func TestCommitSkipsCleanRepoWithoutPersistingRow(t *testing.T) {
 	}
 }
 
+func TestCommitFansOutAcrossWorkspaceTicketsWhenRunHasMultipleTickets(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-commit-fanout"
+	ticketA := "METAWSM-009"
+	ticketB := "METAWSM-010"
+	workspaceA := "ws-commit-fanout-a"
+	workspaceB := "ws-commit-fanout-b"
+	workspacePathA := filepath.Join(homeDir, "workspaces", workspaceA)
+	workspacePathB := filepath.Join(homeDir, "workspaces", workspaceB)
+	repoPathA := filepath.Join(workspacePathA, "metawsm")
+	repoPathB := filepath.Join(workspacePathB, "metawsm")
+	for _, repoPath := range []string{repoPathA, repoPathB} {
+		if err := os.MkdirAll(repoPath, 0o755); err != nil {
+			t.Fatalf("mkdir repo path: %v", err)
+		}
+		initGitRepo(t, repoPath)
+		runGit(t, repoPath, "checkout", "-B", "main")
+	}
+	if err := os.WriteFile(filepath.Join(repoPathA, "ticket-a.txt"), []byte("change a\n"), 0o644); err != nil {
+		t.Fatalf("write ticket-a file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPathB, "ticket-b.txt"), []byte("change b\n"), 0o644); err != nil {
+		t.Fatalf("write ticket-b file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceA, workspacePathA)
+	writeWorkspaceConfig(t, workspaceB, workspacePathB)
+	createRunWithTicketsFixture(t, svc, runID, []string{ticketA, ticketB}, map[string]string{
+		ticketA: workspaceA,
+		ticketB: workspaceB,
+	}, model.RunStatusComplete, `{"version":2}`)
+
+	result, err := svc.Commit(t.Context(), CommitOptions{
+		RunID:   runID,
+		Message: "METAWSM: fanout commit",
+		Actor:   "kball",
+	})
+	if err != nil {
+		t.Fatalf("commit fanout: %v", err)
+	}
+	if len(result.Repos) != 2 {
+		t.Fatalf("expected 2 repo results, got %d", len(result.Repos))
+	}
+	seenTickets := map[string]bool{}
+	for _, repoResult := range result.Repos {
+		if strings.TrimSpace(repoResult.CommitSHA) == "" {
+			t.Fatalf("expected commit SHA for repo result %+v", repoResult)
+		}
+		seenTickets[repoResult.Ticket] = true
+	}
+	if !seenTickets[ticketA] || !seenTickets[ticketB] {
+		t.Fatalf("expected fanout across tickets %s and %s, got %+v", ticketA, ticketB, seenTickets)
+	}
+
+	rows, err := svc.ListRunPullRequests(runID)
+	if err != nil {
+		t.Fatalf("list run pull requests: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 persisted rows, got %d", len(rows))
+	}
+	rowTickets := map[string]bool{}
+	for _, row := range rows {
+		rowTickets[row.Ticket] = true
+	}
+	if !rowTickets[ticketA] || !rowTickets[ticketB] {
+		t.Fatalf("expected persisted rows for both tickets, got %+v", rowTickets)
+	}
+}
+
+func TestOpenPullRequestsFansOutAcrossTicketsWhenRunHasMultipleTickets(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-pr-fanout"
+	ticketA := "METAWSM-009"
+	ticketB := "METAWSM-010"
+	workspaceA := "ws-pr-fanout-a"
+	workspaceB := "ws-pr-fanout-b"
+	workspacePathA := filepath.Join(homeDir, "workspaces", workspaceA)
+	workspacePathB := filepath.Join(homeDir, "workspaces", workspaceB)
+	repoPathA := filepath.Join(workspacePathA, "metawsm")
+	repoPathB := filepath.Join(workspacePathB, "metawsm")
+	for _, repoPath := range []string{repoPathA, repoPathB} {
+		if err := os.MkdirAll(repoPath, 0o755); err != nil {
+			t.Fatalf("mkdir repo path: %v", err)
+		}
+		initGitRepo(t, repoPath)
+		runGit(t, repoPath, "checkout", "-B", "main")
+	}
+	if err := os.WriteFile(filepath.Join(repoPathA, "ticket-a.txt"), []byte("change a\n"), 0o644); err != nil {
+		t.Fatalf("write ticket-a file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPathB, "ticket-b.txt"), []byte("change b\n"), 0o644); err != nil {
+		t.Fatalf("write ticket-b file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceA, workspacePathA)
+	writeWorkspaceConfig(t, workspaceB, workspacePathB)
+	createRunWithTicketsFixture(t, svc, runID, []string{ticketA, ticketB}, map[string]string{
+		ticketA: workspaceA,
+		ticketB: workspaceB,
+	}, model.RunStatusComplete, `{"version":2}`)
+
+	if _, err := svc.Commit(t.Context(), CommitOptions{
+		RunID:   runID,
+		Message: "METAWSM: fanout commit",
+		Actor:   "kball",
+	}); err != nil {
+		t.Fatalf("prepare commit rows for PR fanout: %v", err)
+	}
+
+	result, err := svc.OpenPullRequests(t.Context(), PullRequestOptions{
+		RunID:  runID,
+		DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("pr fanout dry-run: %v", err)
+	}
+	if len(result.Repos) != 2 {
+		t.Fatalf("expected 2 PR repo results, got %d", len(result.Repos))
+	}
+	seenTickets := map[string]bool{}
+	for _, repoResult := range result.Repos {
+		seenTickets[repoResult.Ticket] = true
+		if len(repoResult.Actions) == 0 {
+			t.Fatalf("expected dry-run actions for %s", repoResult.Ticket)
+		}
+	}
+	if !seenTickets[ticketA] || !seenTickets[ticketB] {
+		t.Fatalf("expected PR fanout across tickets %s and %s, got %+v", ticketA, ticketB, seenTickets)
+	}
+}
+
 func TestCommitRejectsWhenRunNotComplete(t *testing.T) {
 	svc := newTestService(t)
 	runID := "run-commit-reject-status"
@@ -2240,6 +2386,81 @@ func createRunWithTicketFixtureWithReposAndPolicy(t *testing.T, svc *Service, ru
 		LastProgressAt: &now,
 	}); err != nil {
 		t.Fatalf("upsert agent fixture: %v", err)
+	}
+}
+
+func createRunWithTicketsFixture(t *testing.T, svc *Service, runID string, tickets []string, workspaceByTicket map[string]string, status model.RunStatus, policyJSON string) {
+	t.Helper()
+	if len(tickets) == 0 {
+		t.Fatalf("tickets are required")
+	}
+	if strings.TrimSpace(policyJSON) == "" {
+		policyJSON = `{"version":2}`
+	}
+
+	agents := make([]model.AgentSpec, 0, len(tickets))
+	for idx := range tickets {
+		agents = append(agents, model.AgentSpec{
+			Name:    fmt.Sprintf("agent-%d", idx+1),
+			Command: "bash",
+		})
+	}
+	spec := model.RunSpec{
+		RunID:             runID,
+		Mode:              model.RunModeBootstrap,
+		Tickets:           tickets,
+		Repos:             []string{"metawsm"},
+		DocRepo:           "metawsm",
+		DocHomeRepo:       "metawsm",
+		DocAuthorityMode:  model.DocAuthorityModeWorkspaceActive,
+		DocSeedMode:       model.DocSeedModeCopyFromRepoOnStart,
+		WorkspaceStrategy: model.WorkspaceStrategyCreate,
+		Agents:            agents,
+		PolicyPath:        ".metawsm/policy.json",
+		DryRun:            false,
+		CreatedAt:         time.Now(),
+	}
+	if err := svc.store.CreateRun(spec, policyJSON); err != nil {
+		t.Fatalf("create run fixture: %v", err)
+	}
+	if status != model.RunStatusCreated {
+		if err := svc.store.UpdateRunStatus(runID, status, ""); err != nil {
+			t.Fatalf("set run status fixture: %v", err)
+		}
+	}
+
+	now := time.Now()
+	steps := make([]model.PlanStep, 0, len(tickets))
+	for idx, ticket := range tickets {
+		workspaceName := strings.TrimSpace(workspaceByTicket[ticket])
+		if workspaceName == "" {
+			t.Fatalf("workspace mapping missing for ticket %s", ticket)
+		}
+		agentName := fmt.Sprintf("agent-%d", idx+1)
+		if err := svc.store.UpsertAgent(model.AgentRecord{
+			RunID:          runID,
+			Name:           agentName,
+			WorkspaceName:  workspaceName,
+			SessionName:    fmt.Sprintf("%s-%s", agentName, workspaceName),
+			Status:         model.AgentStatusRunning,
+			HealthState:    model.HealthStateHealthy,
+			LastActivityAt: &now,
+			LastProgressAt: &now,
+		}); err != nil {
+			t.Fatalf("upsert multi-ticket agent fixture: %v", err)
+		}
+		steps = append(steps, model.PlanStep{
+			Index:         idx + 1,
+			Name:          fmt.Sprintf("workspace-create-%s", workspaceName),
+			Kind:          "workspace",
+			Ticket:        ticket,
+			WorkspaceName: workspaceName,
+			Agent:         agentName,
+			Status:        model.StepStatusDone,
+		})
+	}
+	if err := svc.store.SaveSteps(runID, steps); err != nil {
+		t.Fatalf("save multi-ticket step fixtures: %v", err)
 	}
 }
 
