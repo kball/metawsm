@@ -70,6 +70,8 @@ func main() {
 		err = cleanupCommand(args)
 	case "commit":
 		err = commitCommand(args)
+	case "pr":
+		err = prCommand(args)
 	case "merge":
 		err = mergeCommand(args)
 	case "iterate":
@@ -1945,6 +1947,75 @@ func commitCommand(args []string) error {
 	return nil
 }
 
+func prCommand(args []string) error {
+	fs := flag.NewFlagSet("pr", flag.ContinueOnError)
+	var runID string
+	var ticket string
+	var dbPath string
+	var title string
+	var body string
+	var actor string
+	var dryRun bool
+	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (open PRs for the latest run on this ticket)")
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&title, "title", "", "Explicit pull request title")
+	fs.StringVar(&body, "body", "", "Explicit pull request body")
+	fs.StringVar(&actor, "actor", "", "Actor identity to persist with pull request metadata")
+	fs.BoolVar(&dryRun, "dry-run", false, "Preview pull request actions without executing them")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	runID, ticket, err := requireRunSelector(runID, ticket)
+	if err != nil {
+		return err
+	}
+
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	result, err := service.OpenPullRequests(context.Background(), orchestrator.PullRequestOptions{
+		RunID:  runID,
+		Ticket: ticket,
+		Title:  title,
+		Body:   body,
+		Actor:  actor,
+		DryRun: dryRun,
+	})
+	if err != nil {
+		return err
+	}
+
+	if dryRun {
+		fmt.Printf("PR dry-run for run %s:\n", result.RunID)
+	} else {
+		fmt.Printf("PR creation completed for run %s.\n", result.RunID)
+	}
+	if len(result.Repos) == 0 {
+		fmt.Println("  - no pull request targets found")
+		return nil
+	}
+	for _, repo := range result.Repos {
+		fmt.Printf("  - %s/%s workspace=%s\n", repo.Ticket, repo.Repo, repo.WorkspaceName)
+		if strings.TrimSpace(repo.SkippedReason) != "" {
+			fmt.Printf("    skipped=%s\n", repo.SkippedReason)
+			continue
+		}
+		fmt.Printf("    head=%s base=%s\n", repo.HeadBranch, repo.BaseBranch)
+		fmt.Printf("    title=%s\n", repo.Title)
+		if dryRun {
+			for _, action := range repo.Actions {
+				fmt.Printf("    dry-run: %s\n", action)
+			}
+			continue
+		}
+		fmt.Printf("    pr=%s number=%d state=%s\n", emptyValue(repo.PRURL, "-"), repo.PRNumber, emptyValue(string(repo.PRState), "-"))
+	}
+	return nil
+}
+
 func iterateCommand(args []string) error {
 	fs := flag.NewFlagSet("iterate", flag.ContinueOnError)
 	var runID string
@@ -2490,6 +2561,7 @@ func printUsage() {
 	fmt.Println("  metawsm restart [--run-id RUN_ID | --ticket T1] [--dry-run]")
 	fmt.Println("  metawsm cleanup [--run-id RUN_ID | --ticket T1] [--keep-workspaces] [--dry-run]")
 	fmt.Println("  metawsm commit [--run-id RUN_ID | --ticket T1] [--message \"...\"] [--actor USER] [--dry-run]")
+	fmt.Println("  metawsm pr [--run-id RUN_ID | --ticket T1] [--title \"...\"] [--body \"...\"] [--actor USER] [--dry-run]")
 	fmt.Println("  metawsm merge [--run-id RUN_ID | --ticket T1] [--dry-run]")
 	fmt.Println("  metawsm iterate [--run-id RUN_ID | --ticket T1] --feedback \"...\" [--dry-run]")
 	fmt.Println("  metawsm close [--run-id RUN_ID | --ticket T1] [--dry-run]")

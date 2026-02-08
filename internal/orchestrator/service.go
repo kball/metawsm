@@ -111,6 +111,36 @@ type CommitRepoResult struct {
 	Actions       []string
 }
 
+type PullRequestOptions struct {
+	Ticket string
+	RunID  string
+	Title  string
+	Body   string
+	Actor  string
+	DryRun bool
+}
+
+type PullRequestResult struct {
+	RunID string
+	Repos []PullRequestRepoResult
+}
+
+type PullRequestRepoResult struct {
+	Ticket        string
+	WorkspaceName string
+	Repo          string
+	RepoPath      string
+	HeadBranch    string
+	BaseBranch    string
+	Title         string
+	Body          string
+	PRNumber      int
+	PRURL         string
+	PRState       model.PullRequestState
+	SkippedReason string
+	Actions       []string
+}
+
 type RunResult struct {
 	RunID string
 	Steps []model.PlanStep
@@ -795,6 +825,210 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 	return CommitResult{
 		RunID: runID,
 		Repos: results,
+	}, nil
+}
+
+func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptions) (PullRequestResult, error) {
+	runID, err := s.resolveRunID(options.RunID, options.Ticket)
+	if err != nil {
+		return PullRequestResult{}, err
+	}
+
+	record, specJSON, policyJSON, err := s.store.GetRun(runID)
+	if err != nil {
+		return PullRequestResult{}, err
+	}
+	if record.Status != model.RunStatusComplete {
+		return PullRequestResult{}, fmt.Errorf("run %s must be completed before opening pull requests (current: %s)", runID, record.Status)
+	}
+
+	var spec model.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return PullRequestResult{}, fmt.Errorf("unmarshal run spec: %w", err)
+	}
+	cfg := policy.Default()
+	if strings.TrimSpace(policyJSON) != "" {
+		if err := json.Unmarshal([]byte(policyJSON), &cfg); err != nil {
+			return PullRequestResult{}, fmt.Errorf("unmarshal run policy: %w", err)
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.GitPR.Mode), "off") {
+		return PullRequestResult{}, fmt.Errorf("git_pr.mode is off; pull request workflow disabled")
+	}
+
+	tickets := normalizeTokens(spec.Tickets)
+	prTicket := strings.TrimSpace(options.Ticket)
+	if prTicket == "" {
+		if len(tickets) == 1 {
+			prTicket = tickets[0]
+		} else {
+			return PullRequestResult{}, fmt.Errorf("run %s has multiple tickets; --ticket is required for pull request creation", runID)
+		}
+	}
+	if !containsToken(tickets, prTicket) {
+		return PullRequestResult{}, fmt.Errorf("ticket %q is not part of run %s", prTicket, runID)
+	}
+
+	allowedRepos := normalizeTokens(cfg.GitPR.AllowedRepos)
+	credentialMode := strings.TrimSpace(cfg.GitPR.CredentialMode)
+	if credentialMode == "" {
+		credentialMode = "local_user_auth"
+	}
+	actor := strings.TrimSpace(options.Actor)
+	if actor == "" {
+		actor = "unknown"
+	}
+
+	brief, _ := s.store.GetRunBrief(runID)
+	summary := defaultPRSummary(runID, brief)
+
+	rows, err := s.store.ListRunPullRequests(runID)
+	if err != nil {
+		return PullRequestResult{}, err
+	}
+	candidates := make([]model.RunPullRequest, 0, len(rows))
+	for _, row := range rows {
+		if !strings.EqualFold(strings.TrimSpace(row.Ticket), prTicket) {
+			continue
+		}
+		if len(allowedRepos) > 0 && !containsToken(allowedRepos, row.Repo) {
+			continue
+		}
+		candidates = append(candidates, row)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].WorkspaceName == candidates[j].WorkspaceName {
+			return candidates[i].Repo < candidates[j].Repo
+		}
+		return candidates[i].WorkspaceName < candidates[j].WorkspaceName
+	})
+	if len(candidates) == 0 {
+		return PullRequestResult{}, fmt.Errorf("no prepared commit metadata found for ticket %s; run commit first", prTicket)
+	}
+
+	repoResults := make([]PullRequestRepoResult, 0, len(candidates))
+	now := time.Now()
+	for _, row := range candidates {
+		repo := strings.TrimSpace(row.Repo)
+		if repo == "" {
+			return PullRequestResult{}, fmt.Errorf("run pull request row has empty repo for ticket %s", prTicket)
+		}
+		workspaceName := strings.TrimSpace(row.WorkspaceName)
+		if workspaceName == "" {
+			return PullRequestResult{}, fmt.Errorf("run pull request row for ticket %s repo %s is missing workspace_name", prTicket, repo)
+		}
+
+		workspacePath, err := resolveWorkspacePath(workspaceName)
+		if err != nil {
+			return PullRequestResult{}, err
+		}
+		targets, err := resolveWorkspaceCommitRepoTargets(workspacePath, []string{repo})
+		if err != nil {
+			return PullRequestResult{}, err
+		}
+		repoPath := targets[0].RepoPath
+
+		baseBranch := normalizeBaseBranch(row.BaseBranch)
+		if baseBranch == "" {
+			baseBranch = normalizeBaseBranch(spec.BaseBranch)
+		}
+		if baseBranch == "" {
+			baseBranch = normalizeBaseBranch(cfg.Workspace.BaseBranch)
+		}
+		if baseBranch == "" {
+			baseBranch = "main"
+		}
+		headBranch := strings.TrimSpace(row.HeadBranch)
+		if headBranch == "" {
+			return PullRequestResult{}, fmt.Errorf("run pull request row for ticket %s repo %s is missing head branch", prTicket, repo)
+		}
+
+		title := strings.TrimSpace(options.Title)
+		if title == "" {
+			title = defaultPRTitle(prTicket, summary, repo, len(candidates) > 1)
+		}
+		body := strings.TrimSpace(options.Body)
+		if body == "" {
+			body = defaultPRBody(runID, prTicket, repo, headBranch, baseBranch, row.CommitSHA, brief)
+		}
+
+		args := []string{
+			"pr", "create",
+			"--base", baseBranch,
+			"--head", headBranch,
+			"--title", title,
+			"--body", body,
+		}
+		for _, label := range normalizeTokens(cfg.GitPR.DefaultLabels) {
+			args = append(args, "--label", label)
+		}
+		for _, reviewer := range normalizeTokens(cfg.GitPR.DefaultReviewers) {
+			args = append(args, "--reviewer", reviewer)
+		}
+		preview := fmt.Sprintf("cd %s && %s", shellQuote(repoPath), commandPreview("gh", args...))
+
+		repoResult := PullRequestRepoResult{
+			Ticket:        prTicket,
+			WorkspaceName: workspaceName,
+			Repo:          repo,
+			RepoPath:      repoPath,
+			HeadBranch:    headBranch,
+			BaseBranch:    baseBranch,
+			Title:         title,
+			Body:          body,
+			Actions:       []string{preview},
+		}
+		if strings.TrimSpace(row.PRURL) != "" {
+			repoResult.SkippedReason = "pull request already exists: " + strings.TrimSpace(row.PRURL)
+			repoResult.PRURL = strings.TrimSpace(row.PRURL)
+			repoResult.PRNumber = row.PRNumber
+			repoResult.PRState = row.PRState
+			repoResults = append(repoResults, repoResult)
+			continue
+		}
+		if options.DryRun {
+			repoResults = append(repoResults, repoResult)
+			continue
+		}
+
+		output, err := runCommandInDir(ctx, repoPath, "gh", args...)
+		if err != nil {
+			return PullRequestResult{}, err
+		}
+		prURL, prNumber, err := parsePRCreateOutput(output)
+		if err != nil {
+			return PullRequestResult{}, fmt.Errorf("parse gh pr create output for %s/%s: %w", prTicket, repo, err)
+		}
+
+		row.BaseBranch = baseBranch
+		row.HeadBranch = headBranch
+		row.PRURL = prURL
+		row.PRNumber = prNumber
+		row.PRState = model.PullRequestStateOpen
+		row.CredentialMode = credentialMode
+		row.Actor = actor
+		row.ErrorText = ""
+		if row.CreatedAt.IsZero() {
+			row.CreatedAt = now
+		}
+		row.UpdatedAt = now
+		if err := s.store.UpsertRunPullRequest(row); err != nil {
+			return PullRequestResult{}, err
+		}
+
+		message := fmt.Sprintf("ticket=%s workspace=%s repo=%s pr=%s credential_mode=%s actor=%s",
+			prTicket, workspaceName, repo, prURL, credentialMode, actor)
+		_ = s.store.AddEvent(runID, "repo", repo, "pr_created", "", strconv.Itoa(prNumber), message)
+
+		repoResult.PRURL = prURL
+		repoResult.PRNumber = prNumber
+		repoResult.PRState = model.PullRequestStateOpen
+		repoResults = append(repoResults, repoResult)
+	}
+
+	return PullRequestResult{
+		RunID: runID,
+		Repos: repoResults,
 	}, nil
 }
 
@@ -2090,6 +2324,104 @@ func firstNonEmptyLine(value string) string {
 	return ""
 }
 
+func defaultPRSummary(runID string, brief *model.RunBrief) string {
+	summary := fmt.Sprintf("Automated updates from %s", runID)
+	if brief != nil {
+		goal := firstNonEmptyLine(brief.Goal)
+		if goal != "" {
+			summary = goal
+		}
+	}
+	summary = strings.TrimSpace(summary)
+	if len(summary) > 72 {
+		summary = strings.TrimSpace(summary[:72])
+	}
+	return summary
+}
+
+func defaultPRTitle(ticket string, summary string, repo string, includeRepo bool) string {
+	title := fmt.Sprintf("[%s] %s", strings.TrimSpace(ticket), strings.TrimSpace(summary))
+	if includeRepo {
+		title = fmt.Sprintf("%s (%s)", title, strings.TrimSpace(repo))
+	}
+	return strings.TrimSpace(title)
+}
+
+func defaultPRBody(runID string, ticket string, repo string, headBranch string, baseBranch string, commitSHA string, brief *model.RunBrief) string {
+	var body strings.Builder
+	body.WriteString("Automated pull request generated by metawsm.\n\n")
+	body.WriteString(fmt.Sprintf("- Ticket: %s\n", strings.TrimSpace(ticket)))
+	body.WriteString(fmt.Sprintf("- Run: %s\n", strings.TrimSpace(runID)))
+	body.WriteString(fmt.Sprintf("- Repo: %s\n", strings.TrimSpace(repo)))
+	body.WriteString(fmt.Sprintf("- Head branch: %s\n", strings.TrimSpace(headBranch)))
+	body.WriteString(fmt.Sprintf("- Base branch: %s\n", strings.TrimSpace(baseBranch)))
+	if strings.TrimSpace(commitSHA) != "" {
+		body.WriteString(fmt.Sprintf("- Commit: %s\n", strings.TrimSpace(commitSHA)))
+	}
+	if brief != nil {
+		goal := firstNonEmptyLine(brief.Goal)
+		if goal != "" {
+			body.WriteString("\n## Goal\n\n")
+			body.WriteString(goal)
+			body.WriteString("\n")
+		}
+		doneCriteria := firstNonEmptyLine(brief.DoneCriteria)
+		if doneCriteria != "" {
+			body.WriteString("\n## Done Criteria\n\n")
+			body.WriteString(doneCriteria)
+			body.WriteString("\n")
+		}
+	}
+	return strings.TrimSpace(body.String())
+}
+
+func commandPreview(name string, args ...string) string {
+	var preview strings.Builder
+	preview.WriteString(name)
+	for _, arg := range args {
+		preview.WriteString(" ")
+		preview.WriteString(shellQuote(arg))
+	}
+	return preview.String()
+}
+
+func runCommandInDir(ctx context.Context, dir string, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		if text == "" {
+			text = err.Error()
+		}
+		return "", fmt.Errorf("%s %s failed in %s: %s", name, strings.Join(args, " "), dir, text)
+	}
+	return text, nil
+}
+
+func parsePRCreateOutput(output string) (string, int, error) {
+	lines := strings.Fields(output)
+	for i := len(lines) - 1; i >= 0; i-- {
+		token := strings.Trim(lines[i], "\"'")
+		if !strings.HasPrefix(token, "http://") && !strings.HasPrefix(token, "https://") {
+			continue
+		}
+		if !strings.Contains(token, "/pull/") {
+			continue
+		}
+		matches := pullURLNumberRegex.FindStringSubmatch(token)
+		if len(matches) < 2 {
+			return "", 0, fmt.Errorf("pull request URL missing numeric identifier: %s", token)
+		}
+		number, err := strconv.Atoi(matches[1])
+		if err != nil {
+			return "", 0, fmt.Errorf("parse pull request number from %s: %w", token, err)
+		}
+		return token, number, nil
+	}
+	return "", 0, fmt.Errorf("no pull request URL found in output")
+}
+
 func resolveDocRepoPath(workspacePath string, docRepo string, repos []string) (string, error) {
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
@@ -2728,6 +3060,7 @@ func tmuxKillSession(ctx context.Context, sessionName string) error {
 var agentExitRegex = regexp.MustCompile(`\[metawsm\] agent command exited with status ([0-9]+)`)
 var docmgrDocsRootRegex = regexp.MustCompile("Docs root:\\s+`([^`]+)`")
 var docmgrTicketPathRegex = regexp.MustCompile("Path:\\s+`([^`]+)`")
+var pullURLNumberRegex = regexp.MustCompile(`/pull/([0-9]+)`)
 
 func readAgentExitCode(ctx context.Context, sessionName string) (int, bool) {
 	cmd := exec.CommandContext(ctx, "zsh", "-lc", fmt.Sprintf("tmux capture-pane -p -t %s:0 | tail -n 200", shellQuote(sessionName)))

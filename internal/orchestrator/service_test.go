@@ -1500,6 +1500,165 @@ func TestCommitSkipsCleanRepoWithoutPersistingRow(t *testing.T) {
 	}
 }
 
+func TestOpenPullRequestsDryRunPreviewsCreateCommand(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-pr-dry"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-pr-dry"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+	if err := svc.UpsertRunPullRequest(model.RunPullRequest{
+		RunID:         runID,
+		Ticket:        ticket,
+		Repo:          "metawsm",
+		WorkspaceName: workspaceName,
+		HeadBranch:    "metawsm-009/metawsm/run-pr-dry",
+		BaseBranch:    "main",
+		CommitSHA:     "abc123",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert run pull request fixture: %v", err)
+	}
+
+	result, err := svc.OpenPullRequests(t.Context(), PullRequestOptions{
+		RunID:  runID,
+		DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("open pull requests dry-run: %v", err)
+	}
+	if len(result.Repos) != 1 {
+		t.Fatalf("expected one pull request repo result, got %d", len(result.Repos))
+	}
+	repoResult := result.Repos[0]
+	if len(repoResult.Actions) != 1 {
+		t.Fatalf("expected one dry-run action, got %d", len(repoResult.Actions))
+	}
+	if !strings.Contains(repoResult.Actions[0], "gh 'pr' 'create'") {
+		t.Fatalf("expected gh pr create preview, got %q", repoResult.Actions[0])
+	}
+	if repoResult.PRURL != "" {
+		t.Fatalf("expected empty pr url for dry-run, got %q", repoResult.PRURL)
+	}
+
+	rows, err := svc.ListRunPullRequests(runID)
+	if err != nil {
+		t.Fatalf("list run pull requests: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one persisted row, got %d", len(rows))
+	}
+	if rows[0].PRURL != "" || rows[0].PRNumber != 0 {
+		t.Fatalf("expected dry-run not to persist PR URL/number, got url=%q number=%d", rows[0].PRURL, rows[0].PRNumber)
+	}
+}
+
+func TestOpenPullRequestsCreatesAndPersistsMetadata(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	ghScript := "#!/bin/sh\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"create\" ]; then\n  echo \"https://github.com/example/metawsm/pull/42\"\n  exit 0\nfi\necho \"unexpected gh invocation: $@\" >&2\nexit 1\n"
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatalf("write fake gh script: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-pr-real"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-pr-real"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+	if err := svc.UpsertRunPullRequest(model.RunPullRequest{
+		RunID:         runID,
+		Ticket:        ticket,
+		Repo:          "metawsm",
+		WorkspaceName: workspaceName,
+		HeadBranch:    "metawsm-009/metawsm/run-pr-real",
+		BaseBranch:    "main",
+		CommitSHA:     "def456",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert run pull request fixture: %v", err)
+	}
+
+	result, err := svc.OpenPullRequests(t.Context(), PullRequestOptions{
+		RunID: runID,
+		Actor: "kball",
+	})
+	if err != nil {
+		t.Fatalf("open pull requests: %v", err)
+	}
+	if len(result.Repos) != 1 {
+		t.Fatalf("expected one pull request repo result, got %d", len(result.Repos))
+	}
+	repoResult := result.Repos[0]
+	if repoResult.PRURL != "https://github.com/example/metawsm/pull/42" {
+		t.Fatalf("unexpected PR URL %q", repoResult.PRURL)
+	}
+	if repoResult.PRNumber != 42 {
+		t.Fatalf("expected PR number 42, got %d", repoResult.PRNumber)
+	}
+	if repoResult.PRState != model.PullRequestStateOpen {
+		t.Fatalf("expected PR state open, got %q", repoResult.PRState)
+	}
+
+	rows, err := svc.ListRunPullRequests(runID)
+	if err != nil {
+		t.Fatalf("list run pull requests: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one persisted row, got %d", len(rows))
+	}
+	row := rows[0]
+	if row.PRURL != "https://github.com/example/metawsm/pull/42" {
+		t.Fatalf("expected stored PR URL, got %q", row.PRURL)
+	}
+	if row.PRNumber != 42 {
+		t.Fatalf("expected stored PR number 42, got %d", row.PRNumber)
+	}
+	if row.PRState != model.PullRequestStateOpen {
+		t.Fatalf("expected stored PR state open, got %q", row.PRState)
+	}
+	if row.CredentialMode != "local_user_auth" {
+		t.Fatalf("expected credential mode local_user_auth, got %q", row.CredentialMode)
+	}
+	if row.Actor != "kball" {
+		t.Fatalf("expected actor kball, got %q", row.Actor)
+	}
+}
+
 func TestIterateDryRunIncludesFeedbackAndRestartActions(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")
