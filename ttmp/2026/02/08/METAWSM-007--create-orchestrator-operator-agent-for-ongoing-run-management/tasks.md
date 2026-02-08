@@ -4,8 +4,8 @@
 
 - [x] Phase 1: add operator config schema (thresholds + llm block) in policy and validation
 - [x] Phase 1: default llm runtime to Codex CLI with llm-mode=assist
-- [ ] Phase 2: add SQLite persistence for operator restart attempts and cooldown timestamps
-- [ ] Phase 2: add store tests proving operator retry/cooldown state survives service restart
+- [x] Phase 2: add SQLite persistence for operator restart attempts and cooldown timestamps
+- [x] Phase 2: add store tests proving operator retry/cooldown state survives service restart
 - [ ] Phase 3: add metawsm operator command/flags and loop scaffold (selector, interval, notify, llm-mode)
 - [ ] Phase 3: implement deterministic stale-run evidence checks via tmux session/activity/log signals
 - [ ] Phase 4: implement Codex CLI adapter with strict JSON response schema validation

@@ -72,3 +72,14 @@ Step 1: Added operator policy defaults and validation for Codex assist mode (com
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy.go — Operator policy schema/defaults/validation
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy_test.go — Coverage for operator policy validation
 
+
+## 2026-02-08
+
+Step 2: Added SQLite-backed operator restart state (attempts/cooldown) with reopen persistence test (commit 1aa8086).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/model/types.go — OperatorRunState model added
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go — operator_run_states schema + store methods
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_test.go — Persistence test for operator run state
+

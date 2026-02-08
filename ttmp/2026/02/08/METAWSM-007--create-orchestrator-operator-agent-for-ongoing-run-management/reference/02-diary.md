@@ -11,16 +11,23 @@ Owners: []
 RelatedFiles:
     - Path: examples/policy.example.json
       Note: Documented operator policy block and Codex assist defaults (commit ca5ed93)
+    - Path: internal/model/types.go
+      Note: Added OperatorRunState model persisted by store methods (commit 1aa8086)
     - Path: internal/policy/policy.go
       Note: Added operator policy schema/defaults/validation (commit ca5ed93)
     - Path: internal/policy/policy_test.go
       Note: Added policy tests for operator defaults and invalid settings (commit ca5ed93)
+    - Path: internal/store/sqlite.go
+      Note: Added operator_run_states table and CRUD helpers (commit 1aa8086)
+    - Path: internal/store/sqlite_test.go
+      Note: Added persistence test across store reopen (commit 1aa8086)
 ExternalSources: []
 Summary: ""
 LastUpdated: 2026-02-08T09:01:08.218858-08:00
 WhatFor: Implementation diary for METAWSM-007 hybrid deterministic+LLM operator work.
 WhenToUse: Use to review what changed, why, failures encountered, and how to validate each commit.
 ---
+
 
 
 # Diary
@@ -121,3 +128,73 @@ This unlocked predictable configuration behavior for later phases (store-backed 
   }
 }
 ```
+
+## Step 2: Persist Operator Retry State in SQLite
+
+This step implemented the persistence layer for operator retry/cooldown state so behavior remains consistent across process restarts. I added a first-class model plus store table/methods for `restart_attempts` and restart timing fields.
+
+This unlocks restart-safe enforcement of retry budgets and cooldown windows in the upcoming operator loop, which was a hard requirement for V1.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok implement. Keep a diary along the way. Commit as you go"
+
+**Assistant interpretation:** Continue implementing the planned operator system with incremental commits and keep documenting each step in the diary.
+
+**Inferred user intent:** Build the feature in auditable, resumable increments without losing operational state across restarts.
+
+**Commit (code):** `1aa8086` — "Persist operator restart budget state in sqlite"
+
+### What I did
+- Added `model.OperatorRunState` in `internal/model/types.go`.
+- Extended SQLite schema in `internal/store/sqlite.go` with `operator_run_states`.
+- Added store methods:
+- `UpsertOperatorRunState`
+- `GetOperatorRunState`
+- Added persistence test in `internal/store/sqlite_test.go`:
+- write operator state
+- reopen store
+- verify state round-trips with expected timestamps and attempts
+- Ran formatting and focused tests.
+
+### Why
+- Retry/cooldown counters must survive process restarts so safety behavior is deterministic and restartable in production use.
+
+### What worked
+- Schema migration pattern (`CREATE TABLE IF NOT EXISTS`) integrated cleanly.
+- Round-trip test validates durability across store reopen.
+- `internal/store` tests pass with local Go cache overrides.
+
+### What didn't work
+- No new functional blockers in this step.
+- Continued requirement: run tests with `GOCACHE`/`GOMODCACHE` overrides in sandbox.
+
+### What I learned
+- Existing store patterns were easy to extend for operator-specific state without introducing a new migration subsystem.
+
+### What was tricky to build
+- Time-field fidelity in tests (`RFC3339` parse/format and equality) required second-level truncation to avoid flaky comparisons.
+
+### What warrants a second pair of eyes
+- Whether `OperatorRunState` should also track additional counters (for example consecutive unhealthy observations) now or later.
+- Long-term schema evolution strategy once operator state grows.
+
+### What should be done in the future
+- Add a targeted reset/delete API for operator state during terminal run transitions if we decide to prune stale rows automatically.
+
+### Code review instructions
+- Start with `internal/store/sqlite.go`:
+- schema addition for `operator_run_states`
+- new `UpsertOperatorRunState`/`GetOperatorRunState` methods
+- Then check `internal/store/sqlite_test.go`:
+- `TestOperatorRunStatePersistsAcrossStoreReopen`
+- Validate with:
+- `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/store -count=1`
+
+### Technical details
+- Stored columns:
+- `run_id` (PK)
+- `restart_attempts` (integer)
+- `last_restart_at` (RFC3339 string)
+- `cooldown_until` (RFC3339 string)
+- `updated_at` (RFC3339 string)
