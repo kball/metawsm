@@ -759,6 +759,9 @@ func (s *Service) Close(ctx context.Context, options CloseOptions) error {
 	}
 
 	workspaces := workspaceNamesFromAgents(agents)
+	if err := s.ensureWorkspaceDocCloseChecks(ctx, options.RunID, spec, workspaces, tickets); err != nil {
+		return err
+	}
 
 	for _, workspaceName := range workspaces {
 		path, err := resolveWorkspacePath(workspaceName)
@@ -1114,6 +1117,66 @@ func (s *Service) ensureBootstrapCloseChecks(runID string, workspaceNames []stri
 		}
 		if strings.TrimSpace(result.DoneCriteria) != strings.TrimSpace(brief.DoneCriteria) {
 			return fmt.Errorf("workspace %s validation done_criteria mismatch; close blocked", workspaceName)
+		}
+	}
+	return nil
+}
+
+func (s *Service) ensureWorkspaceDocCloseChecks(ctx context.Context, runID string, spec model.RunSpec, workspaceNames []string, tickets []string) error {
+	docSeedMode := normalizeDocSeedMode(string(spec.DocSeedMode))
+	if docSeedMode == "" {
+		docSeedMode = model.DocSeedModeCopyFromRepoOnStart
+	}
+	if docSeedMode != model.DocSeedModeCopyFromRepoOnStart {
+		return nil
+	}
+
+	docSyncStates, err := s.store.ListDocSyncStates(runID)
+	if err != nil {
+		return err
+	}
+	stateByTicketWorkspace := map[string]model.DocSyncState{}
+	for _, state := range docSyncStates {
+		key := state.Ticket + "|" + state.WorkspaceName
+		stateByTicketWorkspace[key] = state
+	}
+
+	docHomeRepo := effectiveDocHomeRepo(spec)
+	for _, workspaceName := range workspaceNames {
+		workspacePath, err := resolveWorkspacePath(workspaceName)
+		if err != nil {
+			return err
+		}
+		docRootPath, err := resolveDocRepoPath(workspacePath, docHomeRepo, spec.Repos)
+		if err != nil {
+			return err
+		}
+		for _, ticket := range tickets {
+			key := ticket + "|" + workspaceName
+			state, ok := stateByTicketWorkspace[key]
+			if !ok {
+				return fmt.Errorf("workspace %s ticket %s missing doc sync state; close blocked", workspaceName, ticket)
+			}
+			if state.Status != model.DocSyncStatusSynced {
+				return fmt.Errorf("workspace %s ticket %s doc sync status=%s; close blocked", workspaceName, ticket, state.Status)
+			}
+			if strings.TrimSpace(state.Revision) == "" {
+				return fmt.Errorf("workspace %s ticket %s missing doc sync revision; close blocked", workspaceName, ticket)
+			}
+			ticketPaths, err := locateTicketDocDirsInWorkspace(docRootPath, ticket)
+			if err != nil {
+				return err
+			}
+			if len(ticketPaths) == 0 {
+				return fmt.Errorf("workspace %s ticket %s docs missing under %s; close blocked", workspaceName, ticket, filepath.Join(docRootPath, "ttmp"))
+			}
+		}
+		dirty, err := hasDirtyGitState(ctx, docRootPath)
+		if err != nil {
+			return err
+		}
+		if dirty {
+			return fmt.Errorf("workspace %s doc home repo %s has uncommitted changes; close blocked", workspaceName, docRootPath)
 		}
 	}
 	return nil

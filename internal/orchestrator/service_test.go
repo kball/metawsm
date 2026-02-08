@@ -799,10 +799,12 @@ func TestCloseBootstrapRequiresValidationResult(t *testing.T) {
 	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
 	}
+	writeTicketDocDirFixture(t, workspacePath, "METAWSM-002")
 	initGitRepo(t, workspacePath)
 	writeWorkspaceConfig(t, workspaceName, workspacePath)
 
 	createBootstrapRunFixture(t, svc, runID, workspaceName)
+	upsertDocSyncStateFixture(t, svc, runID, "METAWSM-002", workspaceName, model.DocSyncStatusSynced, "rev-1")
 
 	err := svc.Close(t.Context(), CloseOptions{RunID: runID, DryRun: true})
 	if err == nil {
@@ -830,11 +832,13 @@ func TestCloseBootstrapDryRunPassesWithValidationResult(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(workspacePath, ".metawsm"), 0o755); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
 	}
+	writeTicketDocDirFixture(t, workspacePath, "METAWSM-002")
 	writeValidationResult(t, workspacePath, runID, "tests pass")
 	initGitRepo(t, workspacePath)
 	writeWorkspaceConfig(t, workspaceName, workspacePath)
 
 	createBootstrapRunFixture(t, svc, runID, workspaceName)
+	upsertDocSyncStateFixture(t, svc, runID, "METAWSM-002", workspaceName, model.DocSyncStatusSynced, "rev-2")
 
 	if err := svc.Close(t.Context(), CloseOptions{RunID: runID, DryRun: true}); err != nil {
 		t.Fatalf("close dry-run with validation: %v", err)
@@ -882,6 +886,16 @@ func TestCloseBootstrapDryRunBlocksWhenNestedRepoDirty(t *testing.T) {
 	writeWorkspaceConfig(t, workspaceName, workspacePath)
 
 	createBootstrapRunFixtureWithRepos(t, svc, runID, workspaceName, []string{"repo-a", "repo-b"})
+	ticketDir := filepath.Join(workspacePath, "repo-a", "ttmp", "2026", "02", "08", "metawsm-002--fixture")
+	if err := os.MkdirAll(ticketDir, 0o755); err != nil {
+		t.Fatalf("mkdir ticket dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ticketDir, "README.md"), []byte("fixture\n"), 0o644); err != nil {
+		t.Fatalf("write ticket fixture: %v", err)
+	}
+	runGit(t, repoA, "add", ".")
+	runGit(t, repoA, "commit", "-m", "add ticket fixture")
+	upsertDocSyncStateFixture(t, svc, runID, "METAWSM-002", workspaceName, model.DocSyncStatusSynced, "rev-3")
 
 	err := svc.Close(t.Context(), CloseOptions{RunID: runID, DryRun: true})
 	if err == nil {
@@ -889,6 +903,69 @@ func TestCloseBootstrapDryRunBlocksWhenNestedRepoDirty(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "repo-b") {
 		t.Fatalf("expected dirty nested repo path in error, got: %v", err)
+	}
+}
+
+func TestCloseDryRunBlocksWhenDocSyncStateMissing(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-close-missing-sync"
+	workspaceName := "ws-close-missing-sync"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	if err := os.MkdirAll(filepath.Join(workspacePath, ".metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	writeTicketDocDirFixture(t, workspacePath, "METAWSM-002")
+	writeValidationResult(t, workspacePath, runID, "tests pass")
+	initGitRepo(t, workspacePath)
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createBootstrapRunFixture(t, svc, runID, workspaceName)
+
+	err := svc.Close(t.Context(), CloseOptions{RunID: runID, DryRun: true})
+	if err == nil {
+		t.Fatalf("expected close to fail when doc sync state is missing")
+	}
+	if !strings.Contains(err.Error(), "missing doc sync state") {
+		t.Fatalf("expected missing doc sync state error, got: %v", err)
+	}
+}
+
+func TestCloseDryRunBlocksWhenDocSyncFailed(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-close-failed-sync"
+	workspaceName := "ws-close-failed-sync"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	if err := os.MkdirAll(filepath.Join(workspacePath, ".metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	writeTicketDocDirFixture(t, workspacePath, "METAWSM-002")
+	writeValidationResult(t, workspacePath, runID, "tests pass")
+	initGitRepo(t, workspacePath)
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createBootstrapRunFixture(t, svc, runID, workspaceName)
+	upsertDocSyncStateFixture(t, svc, runID, "METAWSM-002", workspaceName, model.DocSyncStatusFailed, "")
+
+	err := svc.Close(t.Context(), CloseOptions{RunID: runID, DryRun: true})
+	if err == nil {
+		t.Fatalf("expected close to fail when doc sync state is failed")
+	}
+	if !strings.Contains(err.Error(), "doc sync status=failed") {
+		t.Fatalf("expected failed doc sync state error, got: %v", err)
 	}
 }
 
@@ -1156,6 +1233,9 @@ func createBootstrapRunFixtureWithRepos(t *testing.T, svc *Service, runID string
 		Tickets:           []string{"METAWSM-002"},
 		Repos:             repos,
 		DocRepo:           docRepo,
+		DocHomeRepo:       docRepo,
+		DocAuthorityMode:  model.DocAuthorityModeWorkspaceActive,
+		DocSeedMode:       model.DocSeedModeCopyFromRepoOnStart,
 		WorkspaceStrategy: model.WorkspaceStrategyCreate,
 		Agents:            []model.AgentSpec{{Name: "agent", Command: "bash"}},
 		PolicyPath:        ".metawsm/policy.json",
@@ -1215,6 +1295,9 @@ func createRunWithTicketFixtureWithRepos(t *testing.T, svc *Service, runID strin
 		Tickets:           []string{ticket},
 		Repos:             repos,
 		DocRepo:           docRepo,
+		DocHomeRepo:       docRepo,
+		DocAuthorityMode:  model.DocAuthorityModeWorkspaceActive,
+		DocSeedMode:       model.DocSeedModeCopyFromRepoOnStart,
 		WorkspaceStrategy: model.WorkspaceStrategyCreate,
 		Agents:            []model.AgentSpec{{Name: "agent", Command: "bash"}},
 		PolicyPath:        ".metawsm/policy.json",
@@ -1269,6 +1352,34 @@ func writeValidationResult(t *testing.T, workspacePath string, runID string, don
 	}
 	if err := os.WriteFile(filepath.Join(workspacePath, ".metawsm", "validation-result.json"), b, 0o644); err != nil {
 		t.Fatalf("write validation result: %v", err)
+	}
+}
+
+func upsertDocSyncStateFixture(t *testing.T, svc *Service, runID string, ticket string, workspaceName string, status model.DocSyncStatus, revision string) {
+	t.Helper()
+	if err := svc.store.UpsertDocSyncState(model.DocSyncState{
+		RunID:            runID,
+		Ticket:           ticket,
+		WorkspaceName:    workspaceName,
+		DocHomeRepo:      "metawsm",
+		DocAuthorityMode: string(model.DocAuthorityModeWorkspaceActive),
+		DocSeedMode:      string(model.DocSeedModeCopyFromRepoOnStart),
+		Status:           status,
+		Revision:         revision,
+		UpdatedAt:        time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert doc sync state fixture: %v", err)
+	}
+}
+
+func writeTicketDocDirFixture(t *testing.T, workspacePath string, ticket string) {
+	t.Helper()
+	ticketDir := filepath.Join(workspacePath, "ttmp", "2026", "02", "08", strings.ToLower(ticket)+"--fixture")
+	if err := os.MkdirAll(ticketDir, 0o755); err != nil {
+		t.Fatalf("mkdir ticket doc fixture dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ticketDir, "README.md"), []byte("# Fixture\n"), 0o644); err != nil {
+		t.Fatalf("write ticket doc fixture file: %v", err)
 	}
 }
 
