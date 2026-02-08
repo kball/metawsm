@@ -50,6 +50,7 @@ RelatedFiles:
         Wired commit/PR gate enforcement and validation_json persistence (commit d31a862)
         Implemented multi-ticket workspace fanout for commit/pr flows (commit 6ec9185)
         Added push-before-PR execution and dry-run push previews (commit 627e397)
+        Added SyncReviewFeedback primitive with GH comment ingestion and normalization (commit 5178ee6)
     - Path: internal/orchestrator/service_test.go
       Note: |-
         Added status test for pull request section (commit 283a68b)
@@ -59,6 +60,7 @@ RelatedFiles:
         Added validation-gate regression tests including require_all semantics and forbidden/clean-tree paths (commit d31a862)
         Added multi-ticket fanout commit/pr coverage and fixture support (commit 6ec9185)
         Added end-to-end commit/push/PR test and updated PR dry-run/real tests (commit 627e397)
+        Added fake-gh coverage for sync persistence
     - Path: internal/policy/policy.go
       Note: |-
         Added git_pr config schema/defaults/validation (commit d3f13f6)
@@ -89,12 +91,14 @@ RelatedFiles:
       Note: |-
         Added and checked tasks 37-39 for review feedback model/store slice
         Checked task 40 complete
+        Checked task 41 complete
 ExternalSources: []
 Summary: ""
 LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -1571,3 +1575,94 @@ I added a new `git_pr.review_feedback` policy block with defaults for V1 (review
   - PR review comments only.
 - Auto dispatch safeguard:
   - `auto_dispatch_cap_per_interval=1` default.
+
+## Step 21: Add Orchestrator PR Review-Comment Sync Primitive
+
+This step implements task 41 by adding a first-class orchestrator method to ingest PR review comments from GitHub and persist normalized feedback rows for each run. The goal was to establish deterministic ingestion behavior before wiring CLI/operator automation.
+
+I added `SyncReviewFeedback` with policy gating, open-PR discovery, `gh api` comment fetching, normalization into `run_review_feedback`, dry-run behavior, and sync-focused regression tests.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok break into tasks in docmgr, then begin implementation. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue through the new task list with incremental coding, tests, commits, and diary updates.
+
+**Inferred user intent:** Ensure PR review feedback ingestion is implemented as a robust orchestrator primitive with clear policy control and test coverage.
+
+**Commit (code):** 5178ee6 — "Add orchestrator PR review feedback sync primitive"
+
+### What I did
+- Added new sync types in `internal/orchestrator/service.go`:
+  - `ReviewFeedbackSyncOptions`
+  - `ReviewFeedbackSyncResult`
+  - `ReviewFeedbackSyncRepoResult`.
+- Implemented `Service.SyncReviewFeedback` in `internal/orchestrator/service.go`:
+  - resolves run/ticket selection,
+  - enforces run-complete and `git_pr.review_feedback` policy gates,
+  - selects eligible open PR rows from `run_pull_requests`,
+  - fetches review comments via `gh api repos/<owner>/<repo>/pulls/<n>/comments --paginate`,
+  - normalizes comments into `model.RunReviewFeedback`,
+  - upserts deduped records and emits sync events,
+  - honors `--dry-run` behavior by reporting without persisting.
+- Added service wrappers:
+  - `ListRunReviewFeedback`
+  - `ListRunReviewFeedbackByStatus`
+  - `UpsertRunReviewFeedback`.
+- Added helper logic:
+  - PR URL owner/repo parsing,
+  - GH review comment JSON parsing,
+  - feedback record keying and changed-row detection.
+- Added tests in `internal/orchestrator/service_test.go`:
+  - `TestSyncReviewFeedbackPersistsQueuedReviewComments`
+  - `TestSyncReviewFeedbackDryRunDoesNotPersistRows`
+  - `TestSyncReviewFeedbackRejectsWhenPolicyDisabled`
+- Checked task completion:
+  - `docmgr task check --ticket METAWSM-009 --id 41`
+- Ran validation:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -run SyncReviewFeedback -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+
+### Why
+- Feedback ingestion must exist independently of CLI/operator surfaces so later workflow layers can be thin wrappers over tested service behavior.
+- Persisting queued comments now creates the state needed for ticket-feedback dispatch in the next task.
+
+### What worked
+- Fake-`gh` test harness validated sync, dry-run no-write behavior, and policy-gated rejection.
+- Full `internal/orchestrator` package tests passed after integration.
+
+### What didn't work
+- N/A in this slice; no failed test cycle required rollback.
+
+### What I learned
+- Using PR URL-derived owner/repo avoids needing local git checkout context during feedback sync.
+- Persisting `last_seen_at` in each sync cycle makes later stale/duplicate handling straightforward.
+
+### What was tricky to build
+- Balancing idempotent dedupe behavior with useful update accounting (`Added` vs `Updated`) without over-counting unchanged rows.
+- Preserving compatibility with existing run/ticket selection semantics and allowed-repo filtering.
+
+### What warrants a second pair of eyes
+- Whether sync failures should be fail-fast (current behavior) or partial-tolerant per PR when one repo API call fails.
+- Whether addressed/ignored statuses should be preserved exactly as-is during repeated syncs in all edge cases.
+
+### What should be done in the future
+- Implement task 42 next: dispatch queued review feedback through `Iterate` and handle queued/addressed lifecycle transitions.
+
+### Code review instructions
+- Start in `internal/orchestrator/service.go`:
+  - `SyncReviewFeedback`
+  - helper parsers and key/change detection
+  - store wrapper methods.
+- Review `internal/orchestrator/service_test.go` sync tests for fake-`gh` behavior.
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -run SyncReviewFeedback -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+
+### Technical details
+- Sync endpoint used in V1:
+  - `gh api repos/<owner>/<repo>/pulls/<pr_number>/comments --paginate`
+- Feedback source type persisted:
+  - `pr_review_comment`
+- Eligible PR rows:
+  - state `open`, non-empty `pr_url`, positive `pr_number`.

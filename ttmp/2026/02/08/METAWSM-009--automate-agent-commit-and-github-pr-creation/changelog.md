@@ -260,3 +260,13 @@ Step 20: added git_pr.review_feedback policy defaults and validation; completed 
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy.go — Review feedback policy contract and guards
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/policy/policy_test.go — Validation/default coverage for review feedback policy
 
+
+## 2026-02-08
+
+Step 21: added orchestrator SyncReviewFeedback primitive for PR review comments with fake-gh tests; completed task 41 (commit 5178ee6).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Review-comment sync orchestration and persistence integration
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Sync primitive behavior coverage
+
