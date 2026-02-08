@@ -21,6 +21,7 @@ Implemented command surface:
 - `metawsm close`
 - `metawsm policy-init`
 - `metawsm tui`
+- `metawsm docs`
 
 Key implementation decisions:
 - HSM-driven lifecycle transitions for run/step/agent states.
@@ -43,7 +44,8 @@ Plan a run (no side effects):
 go run ./cmd/metawsm run \
   --ticket METAWSM-001 \
   --repos metawsm \
-  --doc-repo metawsm \
+  --doc-home-repo metawsm \
+  --doc-seed-mode copy_from_repo_on_start \
   --agent agent \
   --dry-run
 ```
@@ -54,7 +56,7 @@ Start a bootstrap run with interactive intake:
 go run ./cmd/metawsm bootstrap \
   --ticket METAWSM-002 \
   --repos metawsm \
-  --doc-repo metawsm \
+  --doc-home-repo metawsm \
   --base-branch main
 ```
 
@@ -111,6 +113,13 @@ go run ./cmd/metawsm tui --run-id RUN_ID
 go run ./cmd/metawsm tui
 ```
 
+Doc federation view and optional index refresh:
+
+```bash
+go run ./cmd/metawsm docs --policy .metawsm/policy.json
+go run ./cmd/metawsm docs --policy .metawsm/policy.json --refresh
+```
+
 ## Policy
 
 Default policy file: `.metawsm/policy.json`.
@@ -124,13 +133,19 @@ Important fields:
 - `health.activity_stalled_seconds`
 - `health.progress_stalled_seconds`
 - `close.require_clean_git`
+- `docs.authority_mode` (`workspace_active`)
+- `docs.seed_mode` (`none|copy_from_repo_on_start`)
+- `docs.api.workspace_endpoints[]` (workspace-scoped docmgr API endpoints)
+- `docs.api.repo_endpoints[]` (repo fallback docmgr API endpoints)
+- `docs.api.request_timeout_seconds`
 - `agent_profiles[].runner` (currently `codex` or `shell`)
 - `agent_profiles[].base_prompt`
 - `agent_profiles[].skills`
 - `agents[].profile` (maps each agent to an `agent_profiles` entry)
 
-Kickoff doc-repo selection:
-- `--doc-repo` selects which workspace repo hosts `ttmp/` for docmgr operations.
+Kickoff doc-home selection:
+- `--doc-home-repo` selects which workspace repo hosts `ttmp/` for docmgr operations.
+- `--doc-repo` remains as a legacy alias for compatibility.
 - Default behavior picks the first `--repos` entry.
 
 ## Bootstrap Signals

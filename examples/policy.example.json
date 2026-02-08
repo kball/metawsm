@@ -5,6 +5,31 @@
     "branch_prefix": "task",
     "base_branch": "main"
   },
+  "docs": {
+    "authority_mode": "workspace_active",
+    "seed_mode": "copy_from_repo_on_start",
+    "stale_warning_seconds": 900,
+    "api": {
+      "request_timeout_seconds": 3,
+      "workspace_endpoints": [
+        {
+          "name": "workspace-metawsm",
+          "base_url": "http://127.0.0.1:8787",
+          "web_url": "http://127.0.0.1:8787",
+          "repo": "metawsm",
+          "workspace": "metawsm-001"
+        }
+      ],
+      "repo_endpoints": [
+        {
+          "name": "repo-metawsm",
+          "base_url": "http://127.0.0.1:8790",
+          "web_url": "http://127.0.0.1:8790",
+          "repo": "metawsm"
+        }
+      ]
+    }
+  },
   "tmux": {
     "session_pattern": "{agent}-{workspace}"
   },

@@ -158,3 +158,49 @@ func TestRefreshIndexesPostsRefreshEndpoint(t *testing.T) {
 		t.Fatalf("unexpected indexedAt: %q", results[0].IndexedAt)
 	}
 }
+
+func TestMergeKeepsDistinctDocHomeRepos(t *testing.T) {
+	snapshots := []EndpointSnapshot{
+		{
+			Endpoint: Endpoint{
+				Name:    "repo-metawsm",
+				Kind:    EndpointKindRepo,
+				BaseURL: "http://repo-metawsm.local",
+				Repo:    "metawsm",
+			},
+			Status: WorkspaceStatus{IndexedAt: "2026-02-08T10:00:00Z"},
+			Tickets: []TicketItem{
+				{
+					Ticket:    "CLARIFY_INFO_FLOW",
+					Title:     "Clarify info flow (metawsm)",
+					Status:    "active",
+					UpdatedAt: "2026-02-08T09:00:00Z",
+				},
+			},
+		},
+		{
+			Endpoint: Endpoint{
+				Name:    "repo-workspace-manager",
+				Kind:    EndpointKindRepo,
+				BaseURL: "http://repo-wsm.local",
+				Repo:    "workspace-manager",
+			},
+			Status: WorkspaceStatus{IndexedAt: "2026-02-08T10:01:00Z"},
+			Tickets: []TicketItem{
+				{
+					Ticket:    "CLARIFY_INFO_FLOW",
+					Title:     "Clarify info flow (wsm)",
+					Status:    "active",
+					UpdatedAt: "2026-02-08T09:30:00Z",
+				},
+			},
+		},
+	}
+	result := MergeWorkspaceFirst(snapshots, nil)
+	if len(result.Tickets) != 2 {
+		t.Fatalf("expected two merged tickets (one per doc_home_repo), got %d", len(result.Tickets))
+	}
+	if result.Tickets[0].DocHomeRepo == result.Tickets[1].DocHomeRepo {
+		t.Fatalf("expected distinct doc home repos in merged output")
+	}
+}

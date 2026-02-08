@@ -1072,6 +1072,54 @@ func TestStatusIncludesPerRepoDiffsForWorkspace(t *testing.T) {
 	}
 }
 
+func TestStatusShowsWarningOnlyForStaleDocFreshness(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-status-stale-docs"
+	ticket := "METAWSM-012"
+	workspaceName := "ws-status-stale-docs"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+	if err := svc.store.UpsertDocSyncState(model.DocSyncState{
+		RunID:            runID,
+		Ticket:           ticket,
+		WorkspaceName:    workspaceName,
+		DocHomeRepo:      "metawsm",
+		DocAuthorityMode: string(model.DocAuthorityModeWorkspaceActive),
+		DocSeedMode:      string(model.DocSeedModeCopyFromRepoOnStart),
+		Status:           model.DocSyncStatusSynced,
+		Revision:         "stale-revision",
+		UpdatedAt:        time.Now().Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("upsert stale doc sync state: %v", err)
+	}
+
+	status, err := svc.Status(t.Context(), runID)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(status, "warning=docmgr index freshness stale") {
+		t.Fatalf("expected stale freshness warning in status output, got:\n%s", status)
+	}
+	if !strings.Contains(status, "(warning-only)") {
+		t.Fatalf("expected warning-only marker in status output, got:\n%s", status)
+	}
+}
+
 func TestIterateDryRunIncludesFeedbackAndRestartActions(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")

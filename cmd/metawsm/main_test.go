@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"metawsm/internal/docfederation"
 	"metawsm/internal/model"
+	"metawsm/internal/policy"
 )
 
 func TestCollectBootstrapBriefNonInteractiveRequiresAllFields(t *testing.T) {
@@ -108,5 +110,54 @@ func TestRequireRunSelector(t *testing.T) {
 	}
 	if runID != "" || ticket != "METAWSM-003" {
 		t.Fatalf("unexpected selector result run=%q ticket=%q", runID, ticket)
+	}
+}
+
+func TestFederationEndpointsFromPolicyWorkspaceFirst(t *testing.T) {
+	cfg := policy.Default()
+	cfg.Docs.API.WorkspaceEndpoints = []policy.DocAPIEndpoint{
+		{
+			Name:      "ws-metawsm",
+			BaseURL:   "http://127.0.0.1:8787",
+			WebURL:    "http://127.0.0.1:8787",
+			Repo:      "metawsm",
+			Workspace: "ws-001",
+		},
+	}
+	cfg.Docs.API.RepoEndpoints = []policy.DocAPIEndpoint{
+		{
+			Name:    "repo-metawsm",
+			BaseURL: "http://127.0.0.1:8790",
+			WebURL:  "http://127.0.0.1:8790",
+			Repo:    "metawsm",
+		},
+	}
+	endpoints := federationEndpointsFromPolicy(cfg)
+	if len(endpoints) != 2 {
+		t.Fatalf("expected 2 endpoints, got %d", len(endpoints))
+	}
+	if endpoints[0].Kind != docfederation.EndpointKindWorkspace {
+		t.Fatalf("expected workspace endpoint first, got %s", endpoints[0].Kind)
+	}
+	if endpoints[1].Kind != docfederation.EndpointKindRepo {
+		t.Fatalf("expected repo endpoint second, got %s", endpoints[1].Kind)
+	}
+}
+
+func TestSelectFederationEndpointsByName(t *testing.T) {
+	endpoints := []docfederation.Endpoint{
+		{Name: "repo-z", Kind: docfederation.EndpointKindRepo},
+		{Name: "workspace-a", Kind: docfederation.EndpointKindWorkspace},
+		{Name: "repo-b", Kind: docfederation.EndpointKindRepo},
+	}
+	selected := selectFederationEndpoints(endpoints, []string{"repo-b", "workspace-a"})
+	if len(selected) != 2 {
+		t.Fatalf("expected 2 selected endpoints, got %d", len(selected))
+	}
+	if selected[0].Name != "repo-b" {
+		t.Fatalf("expected sorted selection starting with repo-b, got %q", selected[0].Name)
+	}
+	if selected[1].Name != "workspace-a" {
+		t.Fatalf("expected sorted selection ending with workspace-a, got %q", selected[1].Name)
 	}
 }
