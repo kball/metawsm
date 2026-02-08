@@ -21,6 +21,10 @@ RelatedFiles:
       Note: |-
         Added RunPullRequest model and pull request state enums (commit d3f13f6)
         Added RunPullRequest model and PR state enums (commit d3f13f6)
+    - Path: internal/orchestrator/service.go
+      Note: Surfaced persisted run PR metadata in status output (commit 283a68b)
+    - Path: internal/orchestrator/service_test.go
+      Note: Added status test for pull request section (commit 283a68b)
     - Path: internal/policy/policy.go
       Note: |-
         Added git_pr config schema/defaults/validation (commit d3f13f6)
@@ -43,6 +47,7 @@ LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -240,3 +245,72 @@ metawsm auth check [--run-id RUN_ID | --ticket TICKET] [--policy PATH]
   - per-repo readiness lines
   - `Push ready`
   - `PR ready`
+
+## Step 3: Surface Persisted Run PR Metadata in Orchestrator Status
+
+This step connected the new persisted PR state to user-visible status output so operators can see PR lifecycle context directly in `metawsm status` without manual DB inspection. The main objective was observability before commit/pr command automation is fully wired.
+
+I added service wrappers for `run_pull_requests`, rendered a `Pull Requests:` section in status output, and added a test that verifies this section appears with expected ticket/repo/state/URL details.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok go ahead and implement. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue implementing METAWSM-009 in incremental slices and keep documentation and commits synchronized.
+
+**Inferred user intent:** Ship practical end-user capabilities incrementally, not just internal data structures.
+
+**Commit (code):** 283a68b — "Expose persisted run PRs in orchestrator status"
+
+### What I did
+- Added service wrappers in `internal/orchestrator/service.go`:
+  - `UpsertRunPullRequest`
+  - `ListRunPullRequests`
+- Updated `Service.Status` rendering to include a `Pull Requests:` section when records exist.
+- Added test `TestStatusShowsPersistedRunPullRequests` in `internal/orchestrator/service_test.go`.
+- Ran focused tests:
+  - `go test ./internal/orchestrator -count=1`
+  - `go test ./cmd/metawsm -count=1`
+
+### Why
+- PR automation needs operator-facing visibility from the core status surface.
+- This avoids hidden state and makes upcoming commit/pr workflows easier to review and debug.
+
+### What worked
+- New status section renders with ticket/repo/state/head/base/number/url/actor fields.
+- Added test passed and existing orchestrator/cmd tests remained green.
+
+### What didn't work
+- First test run failed due a helper function typo introduced during status rendering.
+- Error:
+  - `undefined: emptyValue`
+- Fix:
+  - replaced references with a local service helper `valueOrDefault` and reran tests successfully.
+- While writing changelog text, backticks in a `docmgr changelog update --entry ...` shell argument again triggered command substitution.
+- Error: `zsh:1: command not found: metawsm`
+- Fix: corrected the changelog line to plain `metawsm status` text without shell-interpreted backticks.
+
+### What I learned
+- Status rendering changes are low-risk if backed by precise string-presence tests, especially in this CLI-first workflow.
+
+### What was tricky to build
+- Keeping status output concise while still exposing enough PR metadata to be actionable for operators.
+
+### What warrants a second pair of eyes
+- Whether the displayed PR fields are sufficient for operator triage, or if we should include timestamp/error context directly in the section.
+
+### What should be done in the future
+- Wire commit/pr commands to create and update these records in real workflows.
+
+### Code review instructions
+- Start in `internal/orchestrator/service.go`:
+  - PR wrapper methods
+  - `Pull Requests:` render block in `Status`
+- Then review `internal/orchestrator/service_test.go`:
+  - `TestStatusShowsPersistedRunPullRequests`
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+
+### Technical details
+- New status section is conditional and only shown when at least one `run_pull_requests` record exists for the run.

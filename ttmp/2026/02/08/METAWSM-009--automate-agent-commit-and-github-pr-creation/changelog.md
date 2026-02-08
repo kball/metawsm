@@ -56,3 +56,13 @@ Step 2: Added Proposal A auth preflight command (metawsm auth check) with run-sc
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — New auth command and helper functions
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go — Auth command and repo-path tests
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 2 implementation and validation
+
+## 2026-02-08
+
+Step 3: Exposed persisted run pull request metadata in metawsm status output and added status rendering tests (commit 283a68b).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Added PR wrappers and status section
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Added status PR section coverage
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 3 details and compile fix
