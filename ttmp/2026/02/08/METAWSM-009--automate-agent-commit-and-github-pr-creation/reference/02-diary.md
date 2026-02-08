@@ -1253,3 +1253,35 @@ I added native busy-timeout behavior to all sqlite3 invocations, bounded retry/b
 
 ### What should be done next
 - Implement run-level commit/pr mutation locking and typed in-progress errors (Phase 2B.4/2B.5).
+
+## Step 16: Add Run-Level Commit/PR Mutation Locking
+
+This step adds run-scoped mutation locking for non-dry-run `commit` and `pr` operations so concurrent invocations fail fast with a typed error instead of racing into inconsistent state updates.
+
+### What I did
+- Added `RunMutationInProgressError` in `internal/orchestrator/service.go` with lock path and holder metadata.
+- Added lock helpers:
+  - `acquireRunMutationLock`
+  - `runMutationLockPath`
+  - `sanitizeLockToken`
+- Integrated locking in service flow:
+  - `Service.Commit` now acquires lock for non-dry-run operations.
+  - `Service.OpenPullRequests` now acquires lock for non-dry-run operations.
+- Added orchestrator regression tests in `internal/orchestrator/service_test.go`:
+  - `TestCommitRejectsWhenRunMutationLockExists`
+  - `TestOpenPullRequestsRejectsWhenRunMutationLockExists`
+- Ran validation:
+  - `go test ./internal/orchestrator -count=1`
+
+### Why
+- Concurrent commit/pr command execution on the same run should produce an explicit "operation in progress" signal rather than lock-race behavior.
+
+### What worked
+- Both service paths now return typed lock errors when a run mutation lock exists.
+- Existing orchestrator tests remained green.
+
+### What didn't work
+- N/A in this slice; no implementation rollback was needed.
+
+### What should be done next
+- Implement native branch-prep handling for stale-base dirty trees and add regression tests (Phase 2A.*).

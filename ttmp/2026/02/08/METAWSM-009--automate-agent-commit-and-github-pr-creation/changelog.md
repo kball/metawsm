@@ -204,3 +204,14 @@ Phase 2B storage hardening: added sqlite busy-timeout + retry/backoff behavior a
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_test.go — Added write-lock contention test verifying retries and eventual success
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 15 implementation notes and validation
 
+
+## 2026-02-08
+
+Phase 2B mutation locking: added run-level lock files for non-dry-run commit/pr operations and typed in-progress errors with regression tests for lock rejection.
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Added run mutation lock acquisition and RunMutationInProgressError
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Added commit/pr lock rejection coverage
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 16 mutation lock implementation
+

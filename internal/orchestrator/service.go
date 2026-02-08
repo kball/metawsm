@@ -26,6 +26,24 @@ type Service struct {
 	store *store.SQLiteStore
 }
 
+type RunMutationInProgressError struct {
+	RunID     string
+	Operation string
+	LockPath  string
+	Holder    string
+}
+
+func (e *RunMutationInProgressError) Error() string {
+	base := fmt.Sprintf("run %s %s operation is already in progress", strings.TrimSpace(e.RunID), strings.TrimSpace(e.Operation))
+	if strings.TrimSpace(e.LockPath) != "" {
+		base += fmt.Sprintf(" (lock=%s)", strings.TrimSpace(e.LockPath))
+	}
+	if strings.TrimSpace(e.Holder) != "" {
+		base += fmt.Sprintf("; holder=%s", strings.TrimSpace(e.Holder))
+	}
+	return base
+}
+
 func NewService(dbPath string) (*Service, error) {
 	sqliteStore := store.NewSQLiteStore(dbPath)
 	if err := sqliteStore.Init(); err != nil {
@@ -665,6 +683,13 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 	if strings.EqualFold(strings.TrimSpace(cfg.GitPR.Mode), "off") {
 		return CommitResult{}, fmt.Errorf("git_pr.mode is off; commit workflow disabled")
 	}
+	if !options.DryRun {
+		releaseLock, err := s.acquireRunMutationLock(runID, "commit")
+		if err != nil {
+			return CommitResult{}, err
+		}
+		defer releaseLock()
+	}
 
 	tickets := normalizeTokens(spec.Tickets)
 	if len(tickets) == 0 {
@@ -884,6 +909,13 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.GitPR.Mode), "off") {
 		return PullRequestResult{}, fmt.Errorf("git_pr.mode is off; pull request workflow disabled")
+	}
+	if !options.DryRun {
+		releaseLock, err := s.acquireRunMutationLock(runID, "pr")
+		if err != nil {
+			return PullRequestResult{}, err
+		}
+		defer releaseLock()
 	}
 
 	tickets := normalizeTokens(spec.Tickets)
@@ -2498,6 +2530,67 @@ func parsePRCreateOutput(output string) (string, int, error) {
 		return token, number, nil
 	}
 	return "", 0, fmt.Errorf("no pull request URL found in output")
+}
+
+func (s *Service) acquireRunMutationLock(runID string, operation string) (func(), error) {
+	lockPath := runMutationLockPath(s.store.DBPath, runID)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return nil, fmt.Errorf("create mutation lock dir: %w", err)
+	}
+	payload := fmt.Sprintf("pid=%d operation=%s at=%s", os.Getpid(), strings.TrimSpace(operation), time.Now().Format(time.RFC3339))
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		if os.IsExist(err) {
+			holderBytes, _ := os.ReadFile(lockPath)
+			return nil, &RunMutationInProgressError{
+				RunID:     runID,
+				Operation: operation,
+				LockPath:  lockPath,
+				Holder:    strings.TrimSpace(string(holderBytes)),
+			}
+		}
+		return nil, fmt.Errorf("acquire mutation lock %s: %w", lockPath, err)
+	}
+	if _, err := lockFile.WriteString(payload + "\n"); err != nil {
+		_ = lockFile.Close()
+		_ = os.Remove(lockPath)
+		return nil, fmt.Errorf("write mutation lock %s: %w", lockPath, err)
+	}
+	if err := lockFile.Close(); err != nil {
+		_ = os.Remove(lockPath)
+		return nil, fmt.Errorf("close mutation lock %s: %w", lockPath, err)
+	}
+	return func() {
+		_ = os.Remove(lockPath)
+	}, nil
+}
+
+func runMutationLockPath(dbPath string, runID string) string {
+	lockDir := filepath.Join(filepath.Dir(strings.TrimSpace(dbPath)), "locks")
+	return filepath.Join(lockDir, fmt.Sprintf("run-%s.gitpr.lock", sanitizeLockToken(runID)))
+}
+
+func sanitizeLockToken(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	var out strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			out.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			out.WriteRune(r)
+		case r >= '0' && r <= '9':
+			out.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			out.WriteRune(r)
+		default:
+			out.WriteRune('_')
+		}
+	}
+	return out.String()
 }
 
 func resolveDocRepoPath(workspacePath string, docRepo string, repos []string) (string, error) {

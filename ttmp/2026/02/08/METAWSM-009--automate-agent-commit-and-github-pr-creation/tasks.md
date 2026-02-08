@@ -30,8 +30,8 @@
 - [x] Phase 2B.1: add sqlite3 busy-timeout configuration to all store query/exec invocations
 - [x] Phase 2B.2: add bounded retry/backoff for transient sqlite lock/busy failures
 - [x] Phase 2B.3: add store tests that hold write locks and verify retry-based eventual success
-- [ ] Phase 2B.4: add run-level commit/pr mutation lock and typed operation-in-progress error
-- [ ] Phase 2B.5: add orchestrator tests covering concurrent commit/pr lock rejection behavior
+- [x] Phase 2B.4: add run-level commit/pr mutation lock and typed operation-in-progress error
+- [x] Phase 2B.5: add orchestrator tests covering concurrent commit/pr lock rejection behavior
 - [ ] Phase 2C.1: implement actor resolution chain (flag -> gh auth actor -> git identity)
 - [ ] Phase 2C.2: persist resolved actor identity in run pull request rows for commit and PR operations
 - [ ] Phase 2C.3: add tests for actor fallback behavior across flag/gh/git scenarios

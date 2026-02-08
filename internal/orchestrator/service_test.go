@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1695,6 +1696,36 @@ func TestCommitRejectsWhenGitPRModeOff(t *testing.T) {
 	}
 }
 
+func TestCommitRejectsWhenRunMutationLockExists(t *testing.T) {
+	svc := newTestService(t)
+	runID := "run-commit-lock-busy"
+	ticket := "METAWSM-009"
+	createRunWithTicketFixture(t, svc, runID, ticket, "ws-commit-lock-busy", model.RunStatusComplete, false)
+
+	lockPath := runMutationLockPath(svc.store.DBPath, runID)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatalf("mkdir lock dir: %v", err)
+	}
+	if err := os.WriteFile(lockPath, []byte("pid=999 operation=commit at=2026-02-08T00:00:00Z\n"), 0o644); err != nil {
+		t.Fatalf("write mutation lock fixture: %v", err)
+	}
+
+	_, err := svc.Commit(t.Context(), CommitOptions{RunID: runID})
+	if err == nil {
+		t.Fatalf("expected mutation lock rejection")
+	}
+	var lockErr *RunMutationInProgressError
+	if !errors.As(err, &lockErr) {
+		t.Fatalf("expected RunMutationInProgressError, got %T (%v)", err, err)
+	}
+	if lockErr.Operation != "commit" {
+		t.Fatalf("expected operation commit, got %q", lockErr.Operation)
+	}
+	if lockErr.LockPath != lockPath {
+		t.Fatalf("expected lock path %q, got %q", lockPath, lockErr.LockPath)
+	}
+}
+
 func TestCommitRejectsWhenRequiredTestCommandFails(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")
@@ -1865,6 +1896,36 @@ func TestOpenPullRequestsRejectsWhenGitPRModeOff(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "git_pr.mode is off") {
 		t.Fatalf("unexpected PR mode-off error: %v", err)
+	}
+}
+
+func TestOpenPullRequestsRejectsWhenRunMutationLockExists(t *testing.T) {
+	svc := newTestService(t)
+	runID := "run-pr-lock-busy"
+	ticket := "METAWSM-009"
+	createRunWithTicketFixture(t, svc, runID, ticket, "ws-pr-lock-busy", model.RunStatusComplete, false)
+
+	lockPath := runMutationLockPath(svc.store.DBPath, runID)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatalf("mkdir lock dir: %v", err)
+	}
+	if err := os.WriteFile(lockPath, []byte("pid=888 operation=commit at=2026-02-08T00:00:00Z\n"), 0o644); err != nil {
+		t.Fatalf("write mutation lock fixture: %v", err)
+	}
+
+	_, err := svc.OpenPullRequests(t.Context(), PullRequestOptions{RunID: runID})
+	if err == nil {
+		t.Fatalf("expected mutation lock rejection")
+	}
+	var lockErr *RunMutationInProgressError
+	if !errors.As(err, &lockErr) {
+		t.Fatalf("expected RunMutationInProgressError, got %T (%v)", err, err)
+	}
+	if lockErr.Operation != "pr" {
+		t.Fatalf("expected operation pr, got %q", lockErr.Operation)
+	}
+	if lockErr.LockPath != lockPath {
+		t.Fatalf("expected lock path %q, got %q", lockPath, lockErr.LockPath)
 	}
 }
 
