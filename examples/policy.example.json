@@ -82,7 +82,15 @@
     ],
     "allowed_repos": [],
     "default_labels": [],
-    "default_reviewers": []
+    "default_reviewers": [],
+    "review_feedback": {
+      "enabled": false,
+      "mode": "assist",
+      "include_review_comments": true,
+      "ignore_authors": [],
+      "max_items_per_sync": 50,
+      "auto_dispatch_cap_per_interval": 1
+    }
   },
   "agent_profiles": [
     {

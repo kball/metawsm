@@ -45,6 +45,18 @@ func TestDefaultPolicyIsValid(t *testing.T) {
 	if len(cfg.GitPR.ForbiddenPatterns) == 0 {
 		t.Fatalf("expected default git_pr forbidden_file_patterns")
 	}
+	if cfg.GitPR.ReviewFeedback.Mode != "assist" {
+		t.Fatalf("expected default git_pr.review_feedback.mode assist, got %q", cfg.GitPR.ReviewFeedback.Mode)
+	}
+	if !cfg.GitPR.ReviewFeedback.IncludeReviewComments {
+		t.Fatalf("expected default git_pr.review_feedback.include_review_comments=true")
+	}
+	if len(cfg.GitPR.ReviewFeedback.IgnoreAuthors) != 0 {
+		t.Fatalf("expected default git_pr.review_feedback.ignore_authors empty")
+	}
+	if cfg.GitPR.ReviewFeedback.AutoDispatchCapPerInterval != 1 {
+		t.Fatalf("expected default git_pr.review_feedback.auto_dispatch_cap_per_interval=1, got %d", cfg.GitPR.ReviewFeedback.AutoDispatchCapPerInterval)
+	}
 }
 
 func TestLoadPolicyFromFile(t *testing.T) {
@@ -343,6 +355,67 @@ func TestValidateRejectsEmptyGitPRForbiddenPattern(t *testing.T) {
 		t.Fatalf("expected git_pr.forbidden_file_patterns validation error")
 	}
 	if !strings.Contains(err.Error(), "git_pr.forbidden_file_patterns") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidReviewFeedbackMode(t *testing.T) {
+	cfg := Default()
+	cfg.GitPR.ReviewFeedback.Mode = "off"
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected git_pr.review_feedback.mode validation error")
+	}
+	if !strings.Contains(err.Error(), "git_pr.review_feedback.mode") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsReviewFeedbackWithIncludeReviewCommentsFalse(t *testing.T) {
+	cfg := Default()
+	cfg.GitPR.ReviewFeedback.IncludeReviewComments = false
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected git_pr.review_feedback.include_review_comments validation error")
+	}
+	if !strings.Contains(err.Error(), "git_pr.review_feedback.include_review_comments") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsReviewFeedbackWithEmptyIgnoreAuthor(t *testing.T) {
+	cfg := Default()
+	cfg.GitPR.ReviewFeedback.IgnoreAuthors = []string{"dependabot[bot]", " "}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected git_pr.review_feedback.ignore_authors validation error")
+	}
+	if !strings.Contains(err.Error(), "git_pr.review_feedback.ignore_authors") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsReviewFeedbackWithInvalidLimits(t *testing.T) {
+	cfg := Default()
+	cfg.GitPR.ReviewFeedback.MaxItemsPerSync = 0
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected git_pr.review_feedback.max_items_per_sync validation error")
+	}
+	if !strings.Contains(err.Error(), "git_pr.review_feedback.max_items_per_sync") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cfg = Default()
+	cfg.GitPR.ReviewFeedback.AutoDispatchCapPerInterval = 0
+	err = Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected git_pr.review_feedback.auto_dispatch_cap_per_interval validation error")
+	}
+	if !strings.Contains(err.Error(), "git_pr.review_feedback.auto_dispatch_cap_per_interval") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

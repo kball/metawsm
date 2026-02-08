@@ -68,6 +68,14 @@ type Config struct {
 		AllowedRepos      []string `json:"allowed_repos"`
 		DefaultLabels     []string `json:"default_labels"`
 		DefaultReviewers  []string `json:"default_reviewers"`
+		ReviewFeedback    struct {
+			Enabled                    bool     `json:"enabled"`
+			Mode                       string   `json:"mode"`
+			IncludeReviewComments      bool     `json:"include_review_comments"`
+			IgnoreAuthors              []string `json:"ignore_authors"`
+			MaxItemsPerSync            int      `json:"max_items_per_sync"`
+			AutoDispatchCapPerInterval int      `json:"auto_dispatch_cap_per_interval"`
+		} `json:"review_feedback"`
 	} `json:"git_pr"`
 	AgentProfiles []AgentProfile `json:"agent_profiles"`
 	Agents        []Agent        `json:"agents"`
@@ -144,6 +152,12 @@ func Default() Config {
 	cfg.GitPR.AllowedRepos = []string{}
 	cfg.GitPR.DefaultLabels = []string{}
 	cfg.GitPR.DefaultReviewers = []string{}
+	cfg.GitPR.ReviewFeedback.Enabled = false
+	cfg.GitPR.ReviewFeedback.Mode = "assist"
+	cfg.GitPR.ReviewFeedback.IncludeReviewComments = true
+	cfg.GitPR.ReviewFeedback.IgnoreAuthors = []string{}
+	cfg.GitPR.ReviewFeedback.MaxItemsPerSync = 50
+	cfg.GitPR.ReviewFeedback.AutoDispatchCapPerInterval = 1
 	cfg.AgentProfiles = []AgentProfile{
 		{
 			Name:       "default-shell",
@@ -326,6 +340,25 @@ func Validate(cfg Config) error {
 		if strings.TrimSpace(reviewer) == "" {
 			return fmt.Errorf("git_pr.default_reviewers cannot contain empty values")
 		}
+	}
+	switch strings.TrimSpace(strings.ToLower(cfg.GitPR.ReviewFeedback.Mode)) {
+	case "assist", "auto":
+	default:
+		return fmt.Errorf("git_pr.review_feedback.mode must be assist|auto")
+	}
+	if !cfg.GitPR.ReviewFeedback.IncludeReviewComments {
+		return fmt.Errorf("git_pr.review_feedback.include_review_comments must be true for V1")
+	}
+	for _, author := range cfg.GitPR.ReviewFeedback.IgnoreAuthors {
+		if strings.TrimSpace(author) == "" {
+			return fmt.Errorf("git_pr.review_feedback.ignore_authors cannot contain empty values")
+		}
+	}
+	if cfg.GitPR.ReviewFeedback.MaxItemsPerSync <= 0 {
+		return fmt.Errorf("git_pr.review_feedback.max_items_per_sync must be > 0")
+	}
+	if cfg.GitPR.ReviewFeedback.AutoDispatchCapPerInterval <= 0 {
+		return fmt.Errorf("git_pr.review_feedback.auto_dispatch_cap_per_interval must be > 0")
 	}
 	if cfg.Execution.StepRetries < 0 {
 		return fmt.Errorf("execution.step_retries must be >= 0")
