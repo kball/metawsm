@@ -10,7 +10,9 @@ Intent: long-term
 Owners: []
 RelatedFiles:
     - Path: README.md
-      Note: Documented new git_pr validation policy knobs (commit d31a862)
+      Note: |-
+        Documented new git_pr validation policy knobs (commit d31a862)
+        Task 46 docs update for review feedback command/policy usage
     - Path: cmd/metawsm/main.go
       Note: |-
         Added Proposal A auth check command and readiness helpers (commit 6148470)
@@ -18,6 +20,7 @@ RelatedFiles:
         Added metawsm pr command with dry-run previews (commit 180a976)
         Integrated operator commit/pr readiness parsing
         Enforced --human acknowledgement for merge and updated run_done hints/usage (commit 4dca4ec)
+        Step 23 review sync command and operator wiring (commit 78a61bf)
     - Path: cmd/metawsm/main_test.go
       Note: |-
         Added auth check command and repo path resolution tests (commit 6148470)
@@ -25,8 +28,11 @@ RelatedFiles:
         Added metawsm pr selector validation test (commit 180a976)
         Added readiness parsing/rule/hint tests for operator loop integration (commit b3587e3)
         Added merge human-ack and run_done hint coverage (commit 4dca4ec)
+        Step 23 CLI/operator test coverage (commit 78a61bf)
     - Path: cmd/metawsm/operator_llm.go
-      Note: Added commit_ready/pr_ready intents and per-rule execute behavior (commit b3587e3)
+      Note: |-
+        Added commit_ready/pr_ready intents and per-rule execute behavior (commit b3587e3)
+        Step 23 review_feedback_ready intent contract (commit 78a61bf)
     - Path: cmd/metawsm/operator_llm_test.go
       Note: Added merge-decision execute preservation coverage (commit b3587e3)
     - Path: examples/policy.example.json
@@ -52,6 +58,7 @@ RelatedFiles:
         Added push-before-PR execution and dry-run push previews (commit 627e397)
         Added SyncReviewFeedback primitive with GH comment ingestion and normalization (commit 5178ee6)
         Added queued-feedback dispatch and commit/pr lifecycle transitions (commit 82dc694)
+        Step 23 status counters for review feedback (commit 78a61bf)
     - Path: internal/orchestrator/service_test.go
       Note: |-
         Added status test for pull request section (commit 283a68b)
@@ -88,7 +95,9 @@ RelatedFiles:
         Added run_pull_requests persistence test (commit d3f13f6)
         Added reopen/state-transition/dedupe coverage for review feedback persistence (commit 967c146)
     - Path: ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/playbook/01-operator-and-agent-commit-pr-workflow.md
-      Note: Added operator/agent commit-PR workflow and Proposal A setup playbook guidance
+      Note: |-
+        Added operator/agent commit-PR workflow and Proposal A setup playbook guidance
+        Task 46 workflow updates for review feedback loop
     - Path: ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/tasks.md
       Note: |-
         Added and checked tasks 37-39 for review feedback model/store slice
@@ -101,6 +110,7 @@ LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -1758,3 +1768,93 @@ I added `DispatchQueuedReviewFeedback`, markdown rendering for queued review com
   - `queued` (awaiting work dispatch)
   - `new` (work dispatched and commit completed)
   - `addressed` (PR command path completed after commit).
+
+## Step 23: Add Review Sync CLI and Operator `review_feedback_ready` Intent
+
+This step delivers tasks 43-45 by exposing review feedback sync/dispatch through CLI and wiring the operator decision loop to recognize queued review feedback as a first-class readiness signal.
+
+I added `metawsm review sync`, extended status/watch/operator surfaces for review feedback counts, and introduced a new operator intent that can auto-execute sync+dispatch within a per-interval cap.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok break into tasks in docmgr, then begin implementation. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue the backlog implementation through CLI/operator integration and test coverage with commit-by-commit diary updates.
+
+**Inferred user intent:** Move from service primitives to operator-usable workflows so review comments can be detected and acted on automatically.
+
+**Commit (code):** 78a61bf — "Add review sync CLI and operator review-feedback intent"
+
+### What I did
+- Added `metawsm review sync` command in `cmd/metawsm/main.go`:
+  - supports run/ticket selectors,
+  - supports `--max-items`, `--dry-run`, and `--dispatch`,
+  - prints per-repo sync actions and totals,
+  - optionally dispatches queued feedback through iterate flow.
+- Updated usage output in `cmd/metawsm/main.go` to include `review sync`.
+- Added CLI tests in `cmd/metawsm/main_test.go`:
+  - `TestReviewCommandRequiresSyncSubcommand`
+  - `TestReviewCommandRequiresRunSelector`
+- Extended orchestrator status output in `internal/orchestrator/service.go`:
+  - added `Review Feedback:` section with queued/new/addressed/ignored counts.
+- Extended watch snapshot parsing in `cmd/metawsm/main.go`:
+  - parses `Review Feedback` section counts into snapshot fields.
+- Added new operator intent in `cmd/metawsm/operator_llm.go`:
+  - `review_feedback_ready`
+  - included in LLM allowlist and prompt contract.
+- Updated operator rule/action flow in `cmd/metawsm/main.go`:
+  - rule engine now considers queued review feedback when run is completed and review feedback policy is enabled,
+  - auto mode executes sync + dispatch using configured `auto_dispatch_cap_per_interval`.
+- Added operator decision coverage in `cmd/metawsm/main_test.go`:
+  - `TestBuildOperatorRuleDecisionReviewFeedbackReadyAuto`
+  - expanded snapshot parsing assertions for review feedback counts.
+- Checked task completion:
+  - `docmgr task check --ticket METAWSM-009 --id 43`
+  - `docmgr task check --ticket METAWSM-009 --id 44`
+  - `docmgr task check --ticket METAWSM-009 --id 45`
+- Ran validation:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+
+### Why
+- Operators need a direct CLI surface for review sync/dispatch.
+- Auto mode needs deterministic intent routing to reduce manual polling and copy/paste loops.
+
+### What worked
+- CLI, operator intent, and status/watch parsing compile and pass tests.
+- Operator auto-execution path now supports review feedback handling with a bounded cap.
+
+### What didn't work
+- N/A in this slice; no failing test cycles required rework.
+
+### What I learned
+- Adding review feedback counts to status output made watch/operator integration straightforward because existing parsing patterns already handled sectioned counters.
+
+### What was tricky to build
+- Threading new intent behavior through rule decisions, LLM allowlisting, action execution, and hinting while preserving existing commit/pr readiness behavior.
+
+### What warrants a second pair of eyes
+- Whether auto-execution ordering should ever prioritize review feedback over commit/pr readiness when multiple conditions are true.
+
+### What should be done in the future
+- Complete task 46 with README/playbook updates and finalize diary/changelog trail for this feature set.
+
+### Code review instructions
+- Start in `cmd/metawsm/main.go`:
+  - `reviewCommand`
+  - watch snapshot parsing additions
+  - operator rule/action changes for `review_feedback_ready`.
+- Review `cmd/metawsm/operator_llm.go` allowlist update.
+- Review `cmd/metawsm/main_test.go` new command and decision tests.
+- Review `internal/orchestrator/service.go` status output additions for `Review Feedback`.
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./cmd/metawsm -count=1`
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/orchestrator -count=1`
+
+### Technical details
+- New operator intent:
+  - `review_feedback_ready`
+- Auto action path:
+  - `SyncReviewFeedback` then `DispatchQueuedReviewFeedback`
+- Execution cap source:
+  - `git_pr.review_feedback.auto_dispatch_cap_per_interval`.

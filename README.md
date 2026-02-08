@@ -11,6 +11,8 @@ Implemented command surface:
 - `metawsm run`
 - `metawsm bootstrap`
 - `metawsm status`
+- `metawsm auth check`
+- `metawsm review sync`
 - `metawsm watch`
 - `metawsm operator`
 - `metawsm guide`
@@ -18,6 +20,8 @@ Implemented command surface:
 - `metawsm stop`
 - `metawsm restart`
 - `metawsm cleanup`
+- `metawsm commit`
+- `metawsm pr`
 - `metawsm merge`
 - `metawsm iterate`
 - `metawsm close`
@@ -85,6 +89,16 @@ Send operator feedback and kick off another agent iteration:
 
 ```bash
 go run ./cmd/metawsm iterate --ticket METAWSM-003 --feedback "Address the diff comments and add regression tests."
+```
+
+Sync PR review comments and optionally dispatch them into iterate workflow:
+
+```bash
+# sync only (preview)
+go run ./cmd/metawsm review sync --ticket METAWSM-003 --dry-run
+
+# sync + dispatch queued review feedback to agents
+go run ./cmd/metawsm review sync --ticket METAWSM-003 --dispatch
 ```
 
 Restart the latest run for a ticket:
@@ -165,6 +179,12 @@ Important fields:
 - `git_pr.forbidden_file_patterns[]` (glob patterns blocked in changed files)
 - `git_pr.allowed_repos[]` (optional allow-list for commit/PR workflows)
 - `git_pr.default_labels[]` and `git_pr.default_reviewers[]`
+- `git_pr.review_feedback.enabled` (enable PR review feedback sync)
+- `git_pr.review_feedback.mode` (`assist|auto`)
+- `git_pr.review_feedback.include_review_comments` (V1 must be `true`)
+- `git_pr.review_feedback.ignore_authors[]` (optional commenter ignore list)
+- `git_pr.review_feedback.max_items_per_sync` (ingest cap per sync pass)
+- `git_pr.review_feedback.auto_dispatch_cap_per_interval` (operator auto cap)
 - `close.require_clean_git`
 - `docs.authority_mode` (`workspace_active`)
 - `docs.seed_mode` (`none|copy_from_repo_on_start`)

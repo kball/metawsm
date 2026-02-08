@@ -47,4 +47,4 @@
 - [x] CLI: add metawsm review sync command with dry-run previews
 - [x] Status/watch/operator: surface review feedback counts and add review_feedback_ready intent with per-interval cap
 - [x] Validation: add fake-gh orchestrator tests for sync/dispatch and operator decision coverage
-- [ ] Docs: update playbook/README and diary for review-feedback loop workflow
+- [x] Docs: update playbook/README and diary for review-feedback loop workflow

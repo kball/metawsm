@@ -280,3 +280,16 @@ Step 22: dispatched queued review feedback through iterate flow and added queued
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Dispatch helper and feedback status transition hooks
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Dispatch and lifecycle transition coverage
 
+
+## 2026-02-08
+
+Step 23: added review sync CLI, status/watch review feedback counters, and operator review_feedback_ready intent with capped auto execution; completed tasks 43-45 (commit 78a61bf).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Review sync command
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go — Command validation and operator decision coverage
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/operator_llm.go — New review_feedback_ready intent allowlist
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Status output includes review feedback counters
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 23 implementation details
+
