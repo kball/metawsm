@@ -1206,3 +1206,50 @@ I added a dedicated Phase 2 design plan and replaced the coarse backlog items wi
   2. SQLite lock resilience + mutation lock semantics,
   3. actor fallback and diagnostics improvements,
   4. playbook/e2e updates.
+
+## Step 15: Add SQLite Busy Timeout + Retry Backoff in Store Layer
+
+This step implements the first hardening slice from Phase 2B by making store operations resilient to transient SQLite lock contention.
+
+I added native busy-timeout behavior to all sqlite3 invocations, bounded retry/backoff for busy/locked failures, and a lock-contention test that proves retries happen and eventually succeed once the write lock is released.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Break those into tasks, then implement them, keeping a diary and committing as you go"
+
+**Assistant interpretation:** Implement Phase 2 tasks incrementally with tests, diary updates, and commits after each coherent slice.
+
+**Inferred user intent:** Convert the lock-related workaround into first-class product behavior with regression coverage.
+
+### What I did
+- Updated `internal/store/sqlite.go`:
+  - Added store-level settings for busy timeout and retry policy:
+    - `BusyTimeoutMS`
+    - `BusyRetryCount`
+    - `BusyRetryBackoffMS`
+  - Added sqlite CLI argument builder that applies `.timeout` across query and exec calls.
+  - Refactored query/exec into single-attempt helpers plus retry wrappers.
+  - Added lock/busy error detection helper (`isSQLiteBusyError`).
+  - Added optional retry observer hook (test-only instrumentation in same package).
+- Added `TestSQLiteStoreRetriesBusyWriteLock` in `internal/store/sqlite_test.go`:
+  - holds a write lock with a long-lived sqlite3 session (`BEGIN IMMEDIATE`),
+  - attempts a competing write through store API,
+  - releases the lock and verifies write success and retry count.
+- Ran validation:
+  - `go test ./internal/store -count=1`
+  - `go test ./internal/orchestrator -count=1`
+
+### Why
+- Real `database is locked` failures surfaced in CLI flows and required manual retries.
+- Retry/backoff in the store layer is the narrowest point to harden all command paths consistently.
+
+### What worked
+- Store tests pass with lock contention simulation.
+- Orchestrator tests remained green with no behavior regressions.
+
+### What didn't work
+- Initial sandboxed test execution could not access Go build cache (`operation not permitted`).
+- Fix: reran tests with escalated permissions.
+
+### What should be done next
+- Implement run-level commit/pr mutation locking and typed in-progress errors (Phase 2B.4/2B.5).

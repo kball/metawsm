@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -276,6 +277,76 @@ func TestOperatorRunStatePersistsAcrossStoreReopen(t *testing.T) {
 	}
 	if state.CooldownUntil == nil || !state.CooldownUntil.Equal(cooldownUntil) {
 		t.Fatalf("expected cooldown until %s, got %v", cooldownUntil.Format(time.RFC3339), state.CooldownUntil)
+	}
+}
+
+func TestSQLiteStoreRetriesBusyWriteLock(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	s := NewSQLiteStore(dbPath)
+	s.BusyTimeoutMS = 50
+	s.BusyRetryCount = 10
+	s.BusyRetryBackoffMS = 50
+	retries := 0
+	s.retryObserver = func(operation string, attempt int, err error) {
+		if operation == "exec" {
+			retries++
+		}
+	}
+	if err := s.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+	if err := s.execSQL("CREATE TABLE IF NOT EXISTS lock_test (id INTEGER PRIMARY KEY);"); err != nil {
+		t.Fatalf("create lock_test table: %v", err)
+	}
+
+	locker := exec.Command("sqlite3", dbPath)
+	lockerStdin, err := locker.StdinPipe()
+	if err != nil {
+		t.Fatalf("open locker stdin: %v", err)
+	}
+	if err := locker.Start(); err != nil {
+		t.Fatalf("start locker sqlite3 process: %v", err)
+	}
+	defer func() {
+		_ = locker.Process.Kill()
+		_, _ = locker.Process.Wait()
+	}()
+
+	if _, err := io.WriteString(lockerStdin, "BEGIN IMMEDIATE;\nINSERT INTO lock_test (id) VALUES (1);\n"); err != nil {
+		t.Fatalf("seed locker transaction: %v", err)
+	}
+	time.Sleep(120 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		time.Sleep(350 * time.Millisecond)
+		_, _ = io.WriteString(lockerStdin, "COMMIT;\n.quit\n")
+		_ = lockerStdin.Close()
+		_ = locker.Wait()
+		close(done)
+	}()
+
+	if err := s.execSQL("INSERT INTO lock_test (id) VALUES (2);"); err != nil {
+		t.Fatalf("exec sql with retry while locked: %v", err)
+	}
+	<-done
+
+	rows, err := s.queryJSON("SELECT COUNT(*) AS c FROM lock_test;")
+	if err != nil {
+		t.Fatalf("query lock_test count: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one row, got %d", len(rows))
+	}
+	if asInt(rows[0]["c"]) != 2 {
+		t.Fatalf("expected two inserted rows after lock release, got %d", asInt(rows[0]["c"]))
+	}
+	if retries == 0 {
+		t.Fatalf("expected at least one retry when DB was locked")
 	}
 }
 

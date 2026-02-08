@@ -193,3 +193,14 @@ Expanded reopened Phase 2 backlog into implementation-ready sub-tasks (branch pr
 
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/tasks.md — Replaced coarse Phase 2 items with atomic executable tasks
 
+
+## 2026-02-08
+
+Phase 2B storage hardening: added sqlite busy-timeout + retry/backoff behavior and a contention test that verifies lock recovery without manual reruns.
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go — Added timeout/retry logic for sqlite query and exec paths
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_test.go — Added write-lock contention test verifying retries and eventual success
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 15 implementation notes and validation
+

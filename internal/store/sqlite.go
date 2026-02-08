@@ -15,8 +15,13 @@ import (
 )
 
 type SQLiteStore struct {
-	DBPath     string
-	SQLitePath string
+	DBPath             string
+	SQLitePath         string
+	BusyTimeoutMS      int
+	BusyRetryCount     int
+	BusyRetryBackoffMS int
+
+	retryObserver func(operation string, attempt int, err error)
 }
 
 func NewSQLiteStore(dbPath string) *SQLiteStore {
@@ -24,8 +29,11 @@ func NewSQLiteStore(dbPath string) *SQLiteStore {
 		dbPath = ".metawsm/metawsm.db"
 	}
 	return &SQLiteStore{
-		DBPath:     dbPath,
-		SQLitePath: "sqlite3",
+		DBPath:             dbPath,
+		SQLitePath:         "sqlite3",
+		BusyTimeoutMS:      1500,
+		BusyRetryCount:     6,
+		BusyRetryBackoffMS: 100,
 	}
 }
 
@@ -848,7 +856,43 @@ FROM agents WHERE run_id=%s ORDER BY workspace_name, agent_name;`,
 }
 
 func (s *SQLiteStore) execSQL(sql string) error {
-	cmd := exec.Command(s.SQLitePath, s.DBPath, sql)
+	attempts := s.retryAttempts()
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		err := s.execSQLOnce(sql)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isSQLiteBusyError(err) || attempt == attempts {
+			return err
+		}
+		s.notifyRetry("exec", attempt, err)
+		time.Sleep(s.retryDelay(attempt))
+	}
+	return lastErr
+}
+
+func (s *SQLiteStore) queryJSON(sql string) ([]map[string]any, error) {
+	attempts := s.retryAttempts()
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		rows, err := s.queryJSONOnce(sql)
+		if err == nil {
+			return rows, nil
+		}
+		lastErr = err
+		if !isSQLiteBusyError(err) || attempt == attempts {
+			return nil, err
+		}
+		s.notifyRetry("query", attempt, err)
+		time.Sleep(s.retryDelay(attempt))
+	}
+	return nil, lastErr
+}
+
+func (s *SQLiteStore) execSQLOnce(sql string) error {
+	cmd := exec.Command(s.SQLitePath, s.sqliteCLIArgs(sql, false)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -857,8 +901,8 @@ func (s *SQLiteStore) execSQL(sql string) error {
 	return nil
 }
 
-func (s *SQLiteStore) queryJSON(sql string) ([]map[string]any, error) {
-	cmd := exec.Command(s.SQLitePath, "-json", s.DBPath, sql)
+func (s *SQLiteStore) queryJSONOnce(sql string) ([]map[string]any, error) {
+	cmd := exec.Command(s.SQLitePath, s.sqliteCLIArgs(sql, true)...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -876,6 +920,50 @@ func (s *SQLiteStore) queryJSON(sql string) ([]map[string]any, error) {
 		return nil, fmt.Errorf("parse sqlite json output: %w", err)
 	}
 	return rows, nil
+}
+
+func (s *SQLiteStore) sqliteCLIArgs(sql string, jsonMode bool) []string {
+	args := []string{}
+	if s.BusyTimeoutMS > 0 {
+		args = append(args, "-cmd", ".timeout "+strconv.Itoa(s.BusyTimeoutMS))
+	}
+	if jsonMode {
+		args = append(args, "-json")
+	}
+	args = append(args, s.DBPath, sql)
+	return args
+}
+
+func (s *SQLiteStore) retryAttempts() int {
+	if s.BusyRetryCount < 0 {
+		return 1
+	}
+	return s.BusyRetryCount + 1
+}
+
+func (s *SQLiteStore) retryDelay(attempt int) time.Duration {
+	base := s.BusyRetryBackoffMS
+	if base <= 0 {
+		base = 100
+	}
+	return time.Duration(base*attempt) * time.Millisecond
+}
+
+func (s *SQLiteStore) notifyRetry(operation string, attempt int, err error) {
+	if s.retryObserver == nil {
+		return
+	}
+	s.retryObserver(operation, attempt, err)
+}
+
+func isSQLiteBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "database is locked") ||
+		strings.Contains(lower, "database is busy") ||
+		strings.Contains(lower, "sql logic error (5)")
 }
 
 func parseRunRecord(row map[string]any) (model.RunRecord, error) {

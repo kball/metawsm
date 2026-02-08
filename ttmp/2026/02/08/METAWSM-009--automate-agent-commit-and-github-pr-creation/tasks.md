@@ -27,9 +27,9 @@
 - [ ] Phase 2A.3: implement checkout-to-base plus stash reapply flow with conflict-safe error reporting
 - [ ] Phase 2A.4: add regression tests for stale-base dirty-tree commit success path
 - [ ] Phase 2A.5: add regression tests for stash reapply conflict reporting path
-- [ ] Phase 2B.1: add sqlite3 busy-timeout configuration to all store query/exec invocations
-- [ ] Phase 2B.2: add bounded retry/backoff for transient sqlite lock/busy failures
-- [ ] Phase 2B.3: add store tests that hold write locks and verify retry-based eventual success
+- [x] Phase 2B.1: add sqlite3 busy-timeout configuration to all store query/exec invocations
+- [x] Phase 2B.2: add bounded retry/backoff for transient sqlite lock/busy failures
+- [x] Phase 2B.3: add store tests that hold write locks and verify retry-based eventual success
 - [ ] Phase 2B.4: add run-level commit/pr mutation lock and typed operation-in-progress error
 - [ ] Phase 2B.5: add orchestrator tests covering concurrent commit/pr lock rejection behavior
 - [ ] Phase 2C.1: implement actor resolution chain (flag -> gh auth actor -> git identity)
