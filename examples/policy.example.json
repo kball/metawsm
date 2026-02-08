@@ -57,6 +57,18 @@
       "max_tokens": 400
     }
   },
+  "git_pr": {
+    "mode": "assist",
+    "credential_mode": "local_user_auth",
+    "branch_template": "{ticket}/{repo}/{run}",
+    "require_all": true,
+    "required_checks": [
+      "tests"
+    ],
+    "allowed_repos": [],
+    "default_labels": [],
+    "default_reviewers": []
+  },
   "agent_profiles": [
     {
       "name": "codex-default",

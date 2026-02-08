@@ -278,3 +278,63 @@ func TestOperatorRunStatePersistsAcrossStoreReopen(t *testing.T) {
 		t.Fatalf("expected cooldown until %s, got %v", cooldownUntil.Format(time.RFC3339), state.CooldownUntil)
 	}
 }
+
+func TestRunPullRequestStatePersistsAcrossStoreReopen(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	s := NewSQLiteStore(dbPath)
+	if err := s.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Second)
+	if err := s.UpsertRunPullRequest(model.RunPullRequest{
+		RunID:          "run-pr-1",
+		Ticket:         "METAWSM-009",
+		Repo:           "metawsm",
+		WorkspaceName:  "metawsm-009-ws",
+		HeadBranch:     "METAWSM-009/metawsm/run-pr-1",
+		BaseBranch:     "main",
+		RemoteName:     "origin",
+		CommitSHA:      "abc123",
+		PRNumber:       42,
+		PRURL:          "https://github.com/example/metawsm/pull/42",
+		PRState:        model.PullRequestStateOpen,
+		CredentialMode: "local_user_auth",
+		Actor:          "kball",
+		ValidationJSON: `{"checks":[{"name":"tests","status":"passed"}]}`,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("upsert run pull request: %v", err)
+	}
+
+	reopened := NewSQLiteStore(dbPath)
+	if err := reopened.Init(); err != nil {
+		t.Fatalf("re-init reopened store: %v", err)
+	}
+
+	rows, err := reopened.ListRunPullRequests("run-pr-1")
+	if err != nil {
+		t.Fatalf("list run pull requests: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one run pull request row, got %d", len(rows))
+	}
+	row := rows[0]
+	if row.Ticket != "METAWSM-009" || row.Repo != "metawsm" {
+		t.Fatalf("unexpected ticket/repo: %s/%s", row.Ticket, row.Repo)
+	}
+	if row.PRNumber != 42 || row.PRState != model.PullRequestStateOpen {
+		t.Fatalf("unexpected pr metadata: number=%d state=%s", row.PRNumber, row.PRState)
+	}
+	if row.CredentialMode != "local_user_auth" || row.Actor != "kball" {
+		t.Fatalf("unexpected auth metadata: mode=%q actor=%q", row.CredentialMode, row.Actor)
+	}
+	if row.CreatedAt.IsZero() || row.UpdatedAt.IsZero() {
+		t.Fatalf("expected created_at and updated_at to be populated")
+	}
+}

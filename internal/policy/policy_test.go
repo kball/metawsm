@@ -21,6 +21,18 @@ func TestDefaultPolicyIsValid(t *testing.T) {
 	if cfg.Operator.LLM.Mode != "assist" {
 		t.Fatalf("expected default operator llm mode assist, got %q", cfg.Operator.LLM.Mode)
 	}
+	if cfg.GitPR.CredentialMode != "local_user_auth" {
+		t.Fatalf("expected default git_pr credential mode local_user_auth, got %q", cfg.GitPR.CredentialMode)
+	}
+	if cfg.GitPR.Mode != "assist" {
+		t.Fatalf("expected default git_pr mode assist, got %q", cfg.GitPR.Mode)
+	}
+	if !cfg.GitPR.RequireAll {
+		t.Fatalf("expected default git_pr require_all=true")
+	}
+	if len(cfg.GitPR.RequiredChecks) == 0 {
+		t.Fatalf("expected default git_pr required checks")
+	}
 }
 
 func TestLoadPolicyFromFile(t *testing.T) {
@@ -241,6 +253,45 @@ func TestValidateRejectsInvalidOperatorBudgets(t *testing.T) {
 		t.Fatalf("expected restart budget validation error")
 	}
 	if !strings.Contains(err.Error(), "operator.restart_budget") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidGitPRMode(t *testing.T) {
+	cfg := Default()
+	cfg.GitPR.Mode = "maybe"
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected git_pr mode validation error")
+	}
+	if !strings.Contains(err.Error(), "git_pr.mode") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidGitPRCredentialMode(t *testing.T) {
+	cfg := Default()
+	cfg.GitPR.CredentialMode = "token_broker"
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected git_pr credential mode validation error")
+	}
+	if !strings.Contains(err.Error(), "git_pr.credential_mode") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsEmptyGitPRBranchTemplate(t *testing.T) {
+	cfg := Default()
+	cfg.GitPR.BranchTemplate = " "
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected git_pr branch template validation error")
+	}
+	if !strings.Contains(err.Error(), "git_pr.branch_template") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

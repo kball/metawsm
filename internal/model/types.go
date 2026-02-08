@@ -239,3 +239,32 @@ type OperatorRunState struct {
 	CooldownUntil   *time.Time `json:"cooldown_until,omitempty"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
+
+type PullRequestState string
+
+const (
+	PullRequestStateOpen   PullRequestState = "open"
+	PullRequestStateClosed PullRequestState = "closed"
+	PullRequestStateMerged PullRequestState = "merged"
+	PullRequestStateDraft  PullRequestState = "draft"
+)
+
+type RunPullRequest struct {
+	RunID          string           `json:"run_id"`
+	Ticket         string           `json:"ticket"`
+	Repo           string           `json:"repo"`
+	WorkspaceName  string           `json:"workspace_name,omitempty"`
+	HeadBranch     string           `json:"head_branch,omitempty"`
+	BaseBranch     string           `json:"base_branch,omitempty"`
+	RemoteName     string           `json:"remote_name,omitempty"`
+	CommitSHA      string           `json:"commit_sha,omitempty"`
+	PRNumber       int              `json:"pr_number,omitempty"`
+	PRURL          string           `json:"pr_url,omitempty"`
+	PRState        PullRequestState `json:"pr_state,omitempty"`
+	CredentialMode string           `json:"credential_mode,omitempty"`
+	Actor          string           `json:"actor,omitempty"`
+	ValidationJSON string           `json:"validation_json,omitempty"`
+	ErrorText      string           `json:"error_text,omitempty"`
+	CreatedAt      time.Time        `json:"created_at"`
+	UpdatedAt      time.Time        `json:"updated_at"`
+}

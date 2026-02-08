@@ -135,6 +135,26 @@ CREATE TABLE IF NOT EXISTS operator_run_states (
   last_restart_at TEXT NOT NULL DEFAULT '',
   cooldown_until TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS run_pull_requests (
+  run_id TEXT NOT NULL,
+  ticket TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  workspace_name TEXT NOT NULL DEFAULT '',
+  head_branch TEXT NOT NULL DEFAULT '',
+  base_branch TEXT NOT NULL DEFAULT '',
+  remote_name TEXT NOT NULL DEFAULT '',
+  commit_sha TEXT NOT NULL DEFAULT '',
+  pr_number INTEGER NOT NULL DEFAULT 0,
+  pr_url TEXT NOT NULL DEFAULT '',
+  pr_state TEXT NOT NULL DEFAULT '',
+  credential_mode TEXT NOT NULL DEFAULT '',
+  actor TEXT NOT NULL DEFAULT '',
+  validation_json TEXT NOT NULL DEFAULT '',
+  error_text TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, ticket, repo)
 );`
 
 	return s.execSQL(schema)
@@ -506,6 +526,87 @@ WHERE run_id=%s;`,
 		UpdatedAt:       updatedAt,
 	}
 	return state, nil
+}
+
+func (s *SQLiteStore) UpsertRunPullRequest(record model.RunPullRequest) error {
+	now := time.Now()
+	createdAt := record.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	updatedAt := record.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = now
+	}
+	sql := fmt.Sprintf(
+		`INSERT OR REPLACE INTO run_pull_requests
+  (run_id, ticket, repo, workspace_name, head_branch, base_branch, remote_name, commit_sha, pr_number, pr_url, pr_state, credential_mode, actor, validation_json, error_text, created_at, updated_at)
+VALUES
+  (%s, %s, %s, %s, %s, %s, %s, %s, %d, %s, %s, %s, %s, %s, %s, %s, %s);`,
+		quote(record.RunID),
+		quote(record.Ticket),
+		quote(record.Repo),
+		quote(record.WorkspaceName),
+		quote(record.HeadBranch),
+		quote(record.BaseBranch),
+		quote(record.RemoteName),
+		quote(record.CommitSHA),
+		record.PRNumber,
+		quote(record.PRURL),
+		quote(string(record.PRState)),
+		quote(record.CredentialMode),
+		quote(record.Actor),
+		quote(record.ValidationJSON),
+		quote(record.ErrorText),
+		quote(createdAt.Format(time.RFC3339)),
+		quote(updatedAt.Format(time.RFC3339)),
+	)
+	return s.execSQL(sql)
+}
+
+func (s *SQLiteStore) ListRunPullRequests(runID string) ([]model.RunPullRequest, error) {
+	sql := fmt.Sprintf(
+		`SELECT run_id, ticket, repo, workspace_name, head_branch, base_branch, remote_name, commit_sha, pr_number, pr_url, pr_state, credential_mode, actor, validation_json, error_text, created_at, updated_at
+FROM run_pull_requests
+WHERE run_id=%s
+ORDER BY ticket, repo;`,
+		quote(runID),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.RunPullRequest, 0, len(rows))
+	for _, row := range rows {
+		createdAt, err := time.Parse(time.RFC3339, asString(row["created_at"]))
+		if err != nil {
+			return nil, fmt.Errorf("parse run_pull_requests created_at: %w", err)
+		}
+		updatedAt, err := time.Parse(time.RFC3339, asString(row["updated_at"]))
+		if err != nil {
+			return nil, fmt.Errorf("parse run_pull_requests updated_at: %w", err)
+		}
+		out = append(out, model.RunPullRequest{
+			RunID:          asString(row["run_id"]),
+			Ticket:         asString(row["ticket"]),
+			Repo:           asString(row["repo"]),
+			WorkspaceName:  asString(row["workspace_name"]),
+			HeadBranch:     asString(row["head_branch"]),
+			BaseBranch:     asString(row["base_branch"]),
+			RemoteName:     asString(row["remote_name"]),
+			CommitSHA:      asString(row["commit_sha"]),
+			PRNumber:       asInt(row["pr_number"]),
+			PRURL:          asString(row["pr_url"]),
+			PRState:        model.PullRequestState(asString(row["pr_state"])),
+			CredentialMode: asString(row["credential_mode"]),
+			Actor:          asString(row["actor"]),
+			ValidationJSON: asString(row["validation_json"]),
+			ErrorText:      asString(row["error_text"]),
+			CreatedAt:      createdAt,
+			UpdatedAt:      updatedAt,
+		})
+	}
+	return out, nil
 }
 
 func (s *SQLiteStore) UpsertDocSyncState(state model.DocSyncState) error {

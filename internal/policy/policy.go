@@ -57,6 +57,16 @@ type Config struct {
 			MaxTokens      int    `json:"max_tokens"`
 		} `json:"llm"`
 	} `json:"operator"`
+	GitPR struct {
+		Mode             string   `json:"mode"`
+		CredentialMode   string   `json:"credential_mode"`
+		BranchTemplate   string   `json:"branch_template"`
+		RequireAll       bool     `json:"require_all"`
+		RequiredChecks   []string `json:"required_checks"`
+		AllowedRepos     []string `json:"allowed_repos"`
+		DefaultLabels    []string `json:"default_labels"`
+		DefaultReviewers []string `json:"default_reviewers"`
+	} `json:"git_pr"`
 	AgentProfiles []AgentProfile `json:"agent_profiles"`
 	Agents        []Agent        `json:"agents"`
 }
@@ -113,6 +123,14 @@ func Default() Config {
 	cfg.Operator.LLM.Model = ""
 	cfg.Operator.LLM.TimeoutSeconds = 30
 	cfg.Operator.LLM.MaxTokens = 400
+	cfg.GitPR.Mode = "assist"
+	cfg.GitPR.CredentialMode = "local_user_auth"
+	cfg.GitPR.BranchTemplate = "{ticket}/{repo}/{run}"
+	cfg.GitPR.RequireAll = true
+	cfg.GitPR.RequiredChecks = []string{"tests"}
+	cfg.GitPR.AllowedRepos = []string{}
+	cfg.GitPR.DefaultLabels = []string{}
+	cfg.GitPR.DefaultReviewers = []string{}
 	cfg.AgentProfiles = []AgentProfile{
 		{
 			Name:       "default-shell",
@@ -248,6 +266,39 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Operator.LLM.MaxTokens <= 0 {
 		return fmt.Errorf("operator.llm.max_tokens must be > 0")
+	}
+	switch strings.TrimSpace(strings.ToLower(cfg.GitPR.Mode)) {
+	case "off", "assist", "auto":
+	default:
+		return fmt.Errorf("git_pr.mode must be off|assist|auto")
+	}
+	switch strings.TrimSpace(strings.ToLower(cfg.GitPR.CredentialMode)) {
+	case "local_user_auth":
+	default:
+		return fmt.Errorf("git_pr.credential_mode must be local_user_auth")
+	}
+	if strings.TrimSpace(cfg.GitPR.BranchTemplate) == "" {
+		return fmt.Errorf("git_pr.branch_template cannot be empty")
+	}
+	for _, check := range cfg.GitPR.RequiredChecks {
+		if strings.TrimSpace(check) == "" {
+			return fmt.Errorf("git_pr.required_checks cannot contain empty values")
+		}
+	}
+	for _, repo := range cfg.GitPR.AllowedRepos {
+		if strings.TrimSpace(repo) == "" {
+			return fmt.Errorf("git_pr.allowed_repos cannot contain empty values")
+		}
+	}
+	for _, label := range cfg.GitPR.DefaultLabels {
+		if strings.TrimSpace(label) == "" {
+			return fmt.Errorf("git_pr.default_labels cannot contain empty values")
+		}
+	}
+	for _, reviewer := range cfg.GitPR.DefaultReviewers {
+		if strings.TrimSpace(reviewer) == "" {
+			return fmt.Errorf("git_pr.default_reviewers cannot contain empty values")
+		}
 	}
 	if cfg.Execution.StepRetries < 0 {
 		return fmt.Errorf("execution.step_retries must be >= 0")
