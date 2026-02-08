@@ -238,3 +238,14 @@ Phase 2D complete: added stale-base end-to-end commit->push->PR coverage and upd
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/playbook/01-operator-and-agent-commit-pr-workflow.md — Documented native stale-base and lock handling behavior
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 18 completion summary
 
+
+## 2026-02-08
+
+Step 19: added review feedback model/store persistence primitives with reopen+dedupe tests; completed tasks 37-39 (commit 967c146).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/model/types.go — Review feedback lifecycle and record model
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go — run_review_feedback table and store methods
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_test.go — Persistence and dedupe tests for new review feedback store
+

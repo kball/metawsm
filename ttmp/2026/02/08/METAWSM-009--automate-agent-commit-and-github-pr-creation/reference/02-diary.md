@@ -38,6 +38,7 @@ RelatedFiles:
       Note: |-
         Added RunPullRequest model and pull request state enums (commit d3f13f6)
         Added RunPullRequest model and PR state enums (commit d3f13f6)
+        Added review feedback model/status types and source metadata (commit 967c146)
     - Path: internal/orchestrator/git_pr_validation.go
       Note: Added extensible required-check validation framework and built-in checks (commit d31a862)
     - Path: internal/orchestrator/service.go
@@ -73,18 +74,23 @@ RelatedFiles:
       Note: |-
         Added run_pull_requests schema and store CRUD methods (commit d3f13f6)
         Added run_pull_requests schema and store methods (commit d3f13f6)
+        Added run_review_feedback schema and store CRUD/status methods (commit 967c146)
     - Path: internal/store/sqlite_test.go
       Note: |-
         Added persistence test for run pull request metadata across reopen (commit d3f13f6)
         Added run_pull_requests persistence test (commit d3f13f6)
+        Added reopen/state-transition/dedupe coverage for review feedback persistence (commit 967c146)
     - Path: ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/playbook/01-operator-and-agent-commit-pr-workflow.md
       Note: Added operator/agent commit-PR workflow and Proposal A setup playbook guidance
+    - Path: ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/tasks.md
+      Note: Added and checked tasks 37-39 for review feedback model/store slice
 ExternalSources: []
 Summary: ""
 LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -1378,3 +1384,96 @@ This step closes the remaining Phase 2 backlog by documenting native behavior in
 
 ### Outcome
 - Phase 2 native handling implementation is complete and documented.
+
+## Step 19: Add Review Feedback V1 Model and Store Persistence Primitives
+
+This step starts the new review-feedback loop implementation for reopened METAWSM-009 scope. The goal was to establish durable storage and typed lifecycle records before wiring policy, orchestrator sync, and CLI/operator behavior.
+
+I implemented review-feedback model types, SQLite persistence methods, and regression tests for reopen persistence, status transitions, and composite-key dedupe semantics.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok break into tasks in docmgr, then begin implementation. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Break the new review-feedback plan into executable ticket tasks, then immediately begin coding in incremental, test-backed commits while keeping the diary current.
+
+**Inferred user intent:** Execute the new feature with disciplined ticket tracking and auditable implementation history.
+
+**Commit (code):** 967c146 — "Add review feedback model/store persistence primitives"
+
+### What I did
+- Added tasks 37-46 in `tasks.md` for the review-feedback implementation plan and checked tasks 37-39 complete.
+- Added model types in `internal/model/types.go`:
+  - `ReviewFeedbackStatus` (`new|queued|addressed|ignored`)
+  - `ReviewFeedbackSourceType` (`pr_review_comment`)
+  - `RunReviewFeedback` record shape.
+- Added SQLite schema in `internal/store/sqlite.go`:
+  - table `run_review_feedback`
+  - index `idx_run_review_feedback_run_status`.
+- Added store methods in `internal/store/sqlite.go`:
+  - `UpsertRunReviewFeedback`
+  - `ListRunReviewFeedback`
+  - `ListRunReviewFeedbackByStatus`
+  - `UpdateRunReviewFeedbackStatus`.
+- Added parser helper `parseRunReviewFeedbackRows`.
+- Added tests in `internal/store/sqlite_test.go`:
+  - `TestRunReviewFeedbackPersistsAcrossStoreReopen`
+  - `TestRunReviewFeedbackUpsertDedupesByCompositeKey`.
+- Formatted files with `gofmt`.
+- Ran validation:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/store -count=1`
+
+### Why
+- Review comment ingestion needs a stable, idempotent persistence layer before adding GH API sync and dispatch logic.
+- Composite-key dedupe and status transitions are core invariants for avoiding duplicate iteration prompts.
+
+### What worked
+- Store tests passed with the new schema and methods.
+- Reopen persistence and status transition coverage behaves as expected.
+- Composite primary key upsert semantics correctly dedupe and update latest row data.
+
+### What didn't work
+- Initial schema patch attempt failed due stale context mismatch.
+- Command/tool failure:
+  - `apply_patch` on `internal/store/sqlite.go`
+  - Error: `Failed to find expected lines in /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go:   updated_at TEXT NOT NULL,   PRIMARY KEY (run_id, ticket, repo) );`
+- Fix:
+  - Re-read current file sections with `sed`,
+  - re-applied smaller targeted patches for schema and methods.
+
+### What I learned
+- For long raw-string SQL schema blocks, small targeted patches are more reliable than large-context patches after nearby edits.
+- Capturing `last_seen_at` and optional `addressed_at` now avoids future migration churn when dispatch semantics are added.
+
+### What was tricky to build
+- Designing a composite key that remains future-proof for additional source types while satisfying current V1 constraints.
+- Ensuring timestamps are consistently normalized (`created_at`, `updated_at`, `last_seen_at`, optional `addressed_at`) through both upsert and update paths.
+
+### What warrants a second pair of eyes
+- Status transition semantics in `UpdateRunReviewFeedbackStatus` and whether addressed timestamps should be auto-cleared in all non-addressed transitions.
+- Whether the current index strategy (`run_id,status`) is sufficient once run-level feedback volume grows.
+
+### What should be done in the future
+- Implement task 40 next: policy contract for `git_pr.review_feedback` defaults/validation.
+- Then implement task 41: GH PR review-comment sync primitive into `run_review_feedback`.
+
+### Code review instructions
+- Start with `internal/model/types.go` new review-feedback types.
+- Review `internal/store/sqlite.go`:
+  - schema block for `run_review_feedback`
+  - upsert/list/status-update methods
+  - row parsing helper.
+- Review tests in `internal/store/sqlite_test.go`:
+  - reopen/state transition coverage
+  - dedupe-by-composite-key behavior.
+- Validate with:
+  - `GOCACHE=/tmp/metawsm-gocache GOMODCACHE=/tmp/metawsm-gomodcache go test ./internal/store -count=1`
+
+### Technical details
+- Composite key for review feedback:
+  - `(run_id, ticket, repo, pr_number, source_type, source_id)`
+- V1 source type constant:
+  - `pr_review_comment`
+- Status lifecycle introduced:
+  - `new -> queued -> addressed`
+  - `ignored` for non-actionable records.
