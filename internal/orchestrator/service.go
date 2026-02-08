@@ -165,6 +165,32 @@ type PullRequestRepoResult struct {
 	Actions       []string
 }
 
+type ReviewFeedbackSyncOptions struct {
+	Ticket   string
+	RunID    string
+	MaxItems int
+	DryRun   bool
+}
+
+type ReviewFeedbackSyncResult struct {
+	RunID   string
+	Repos   []ReviewFeedbackSyncRepoResult
+	Added   int
+	Updated int
+}
+
+type ReviewFeedbackSyncRepoResult struct {
+	Ticket        string
+	Repo          string
+	PRNumber      int
+	PRURL         string
+	Fetched       int
+	Added         int
+	Updated       int
+	SkippedReason string
+	Actions       []string
+}
+
 type RunResult struct {
 	RunID string
 	Steps []model.PlanStep
@@ -1129,6 +1155,209 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 	}, nil
 }
 
+func (s *Service) SyncReviewFeedback(ctx context.Context, options ReviewFeedbackSyncOptions) (ReviewFeedbackSyncResult, error) {
+	runID, err := s.resolveRunID(options.RunID, options.Ticket)
+	if err != nil {
+		return ReviewFeedbackSyncResult{}, err
+	}
+
+	record, specJSON, policyJSON, err := s.store.GetRun(runID)
+	if err != nil {
+		return ReviewFeedbackSyncResult{}, err
+	}
+	if record.Status != model.RunStatusComplete {
+		return ReviewFeedbackSyncResult{}, fmt.Errorf("run %s must be completed before syncing review feedback (current: %s)", runID, record.Status)
+	}
+
+	var spec model.RunSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return ReviewFeedbackSyncResult{}, fmt.Errorf("unmarshal run spec: %w", err)
+	}
+	cfg := policy.Default()
+	if strings.TrimSpace(policyJSON) != "" {
+		if err := json.Unmarshal([]byte(policyJSON), &cfg); err != nil {
+			return ReviewFeedbackSyncResult{}, fmt.Errorf("unmarshal run policy: %w", err)
+		}
+	}
+	if !cfg.GitPR.ReviewFeedback.Enabled {
+		return ReviewFeedbackSyncResult{}, fmt.Errorf("git_pr.review_feedback.enabled is false; review feedback sync disabled")
+	}
+	if !cfg.GitPR.ReviewFeedback.IncludeReviewComments {
+		return ReviewFeedbackSyncResult{}, fmt.Errorf("git_pr.review_feedback.include_review_comments must be true for V1")
+	}
+
+	tickets := normalizeTokens(spec.Tickets)
+	if len(tickets) == 0 {
+		return ReviewFeedbackSyncResult{}, fmt.Errorf("run %s has no tickets", runID)
+	}
+	selectedTickets := append([]string(nil), tickets...)
+	if selectedTicket := strings.TrimSpace(options.Ticket); selectedTicket != "" {
+		if !containsToken(tickets, selectedTicket) {
+			return ReviewFeedbackSyncResult{}, fmt.Errorf("ticket %q is not part of run %s", selectedTicket, runID)
+		}
+		selectedTickets = []string{selectedTicket}
+	}
+
+	allowedRepos := normalizeTokens(cfg.GitPR.AllowedRepos)
+	rows, err := s.store.ListRunPullRequests(runID)
+	if err != nil {
+		return ReviewFeedbackSyncResult{}, err
+	}
+	candidates := make([]model.RunPullRequest, 0, len(rows))
+	for _, row := range rows {
+		if !containsToken(selectedTickets, row.Ticket) {
+			continue
+		}
+		if len(allowedRepos) > 0 && !containsToken(allowedRepos, row.Repo) {
+			continue
+		}
+		if row.PRState != model.PullRequestStateOpen {
+			continue
+		}
+		if strings.TrimSpace(row.PRURL) == "" || row.PRNumber <= 0 {
+			continue
+		}
+		candidates = append(candidates, row)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Ticket == candidates[j].Ticket {
+			if candidates[i].Repo == candidates[j].Repo {
+				return candidates[i].PRNumber < candidates[j].PRNumber
+			}
+			return candidates[i].Repo < candidates[j].Repo
+		}
+		return candidates[i].Ticket < candidates[j].Ticket
+	})
+	if len(candidates) == 0 {
+		return ReviewFeedbackSyncResult{}, fmt.Errorf("no open pull requests with metadata found for selected run/tickets")
+	}
+
+	maxItems := cfg.GitPR.ReviewFeedback.MaxItemsPerSync
+	if options.MaxItems > 0 && options.MaxItems < maxItems {
+		maxItems = options.MaxItems
+	}
+	if maxItems <= 0 {
+		return ReviewFeedbackSyncResult{}, fmt.Errorf("review feedback max items must be > 0")
+	}
+	remaining := maxItems
+
+	existingRows, err := s.store.ListRunReviewFeedback(runID)
+	if err != nil {
+		return ReviewFeedbackSyncResult{}, err
+	}
+	existingByKey := map[string]model.RunReviewFeedback{}
+	for _, row := range existingRows {
+		key := runReviewFeedbackKey(row.Ticket, row.Repo, row.PRNumber, row.SourceType, row.SourceID)
+		existingByKey[key] = row
+	}
+
+	now := time.Now()
+	result := ReviewFeedbackSyncResult{
+		RunID: runID,
+		Repos: make([]ReviewFeedbackSyncRepoResult, 0, len(candidates)),
+	}
+
+	for _, row := range candidates {
+		repoResult := ReviewFeedbackSyncRepoResult{
+			Ticket:   strings.TrimSpace(row.Ticket),
+			Repo:     strings.TrimSpace(row.Repo),
+			PRNumber: row.PRNumber,
+			PRURL:    strings.TrimSpace(row.PRURL),
+		}
+		if remaining <= 0 {
+			repoResult.SkippedReason = "max_items_per_sync limit reached"
+			result.Repos = append(result.Repos, repoResult)
+			continue
+		}
+
+		ownerRepo, prNumber, err := parseGitHubPullURL(row.PRURL)
+		if err != nil {
+			repoResult.SkippedReason = err.Error()
+			result.Repos = append(result.Repos, repoResult)
+			continue
+		}
+		endpoint := fmt.Sprintf("repos/%s/pulls/%d/comments", ownerRepo, prNumber)
+		repoResult.Actions = []string{commandPreview("gh", "api", endpoint, "--paginate")}
+
+		output, err := runCommandInDir(ctx, "", "gh", "api", endpoint, "--paginate")
+		if err != nil {
+			return ReviewFeedbackSyncResult{}, err
+		}
+		comments, err := parsePRReviewComments(output)
+		if err != nil {
+			return ReviewFeedbackSyncResult{}, fmt.Errorf("parse review comments for %s: %w", row.PRURL, err)
+		}
+		repoResult.Fetched = len(comments)
+		if len(comments) > remaining {
+			comments = comments[:remaining]
+		}
+
+		for _, comment := range comments {
+			sourceID := strconv.FormatInt(comment.ID, 10)
+			key := runReviewFeedbackKey(row.Ticket, row.Repo, row.PRNumber, model.ReviewFeedbackSourceTypePRReviewComment, sourceID)
+			existing, exists := existingByKey[key]
+
+			status := model.ReviewFeedbackStatusQueued
+			if exists && strings.TrimSpace(string(existing.Status)) != "" {
+				status = existing.Status
+			}
+			createdAt := now
+			if exists && !existing.CreatedAt.IsZero() {
+				createdAt = existing.CreatedAt
+			}
+			record := model.RunReviewFeedback{
+				RunID:         runID,
+				Ticket:        row.Ticket,
+				Repo:          row.Repo,
+				WorkspaceName: row.WorkspaceName,
+				PRNumber:      row.PRNumber,
+				PRURL:         row.PRURL,
+				SourceType:    model.ReviewFeedbackSourceTypePRReviewComment,
+				SourceID:      sourceID,
+				SourceURL:     comment.HTMLURL,
+				Author:        strings.TrimSpace(comment.User.Login),
+				Body:          strings.TrimSpace(comment.Body),
+				FilePath:      strings.TrimSpace(comment.Path),
+				Line:          comment.EffectiveLine(),
+				Status:        status,
+				ErrorText:     "",
+				CreatedAt:     createdAt,
+				UpdatedAt:     now,
+				LastSeenAt:    now,
+				AddressedAt:   existing.AddressedAt,
+			}
+			if !options.DryRun {
+				if err := s.store.UpsertRunReviewFeedback(record); err != nil {
+					return ReviewFeedbackSyncResult{}, err
+				}
+			}
+			if exists {
+				if runReviewFeedbackChanged(existing, record) {
+					repoResult.Updated++
+					result.Updated++
+				}
+			} else {
+				repoResult.Added++
+				result.Added++
+			}
+			existingByKey[key] = record
+			remaining--
+			if remaining <= 0 {
+				break
+			}
+		}
+
+		if !options.DryRun {
+			message := fmt.Sprintf("ticket=%s repo=%s pr=%d fetched=%d added=%d updated=%d",
+				repoResult.Ticket, repoResult.Repo, repoResult.PRNumber, repoResult.Fetched, repoResult.Added, repoResult.Updated)
+			_ = s.store.AddEvent(runID, "repo", repoResult.Repo, "review_feedback_synced", "", "", message)
+		}
+		result.Repos = append(result.Repos, repoResult)
+	}
+
+	return result, nil
+}
+
 func (s *Service) Iterate(ctx context.Context, options IterateOptions) (IterateResult, error) {
 	feedback := strings.TrimSpace(options.Feedback)
 	if feedback == "" {
@@ -1209,6 +1438,18 @@ func (s *Service) UpsertRunPullRequest(record model.RunPullRequest) error {
 
 func (s *Service) ListRunPullRequests(runID string) ([]model.RunPullRequest, error) {
 	return s.store.ListRunPullRequests(runID)
+}
+
+func (s *Service) UpsertRunReviewFeedback(record model.RunReviewFeedback) error {
+	return s.store.UpsertRunReviewFeedback(record)
+}
+
+func (s *Service) ListRunReviewFeedback(runID string) ([]model.RunReviewFeedback, error) {
+	return s.store.ListRunReviewFeedback(runID)
+}
+
+func (s *Service) ListRunReviewFeedbackByStatus(runID string, status model.ReviewFeedbackStatus) ([]model.RunReviewFeedback, error) {
+	return s.store.ListRunReviewFeedbackByStatus(runID, status)
 }
 
 func (s *Service) resolveWorkspaceTickets(runID string) (map[string]string, error) {
@@ -2736,6 +2977,102 @@ func parsePRCreateOutput(output string) (string, int, error) {
 	return "", 0, fmt.Errorf("no pull request URL found in output")
 }
 
+type ghPRReviewComment struct {
+	ID      int64  `json:"id"`
+	HTMLURL string `json:"html_url"`
+	Body    string `json:"body"`
+	Path    string `json:"path"`
+	Line    *int   `json:"line"`
+	User    struct {
+		Login string `json:"login"`
+	} `json:"user"`
+}
+
+func (c ghPRReviewComment) EffectiveLine() int {
+	if c.Line == nil {
+		return 0
+	}
+	return *c.Line
+}
+
+func parsePRReviewComments(output string) ([]ghPRReviewComment, error) {
+	text := strings.TrimSpace(output)
+	if text == "" {
+		return nil, nil
+	}
+	comments := []ghPRReviewComment{}
+	if err := json.Unmarshal([]byte(text), &comments); err != nil {
+		return nil, err
+	}
+	return comments, nil
+}
+
+func parseGitHubPullURL(prURL string) (string, int, error) {
+	matches := pullURLRepoNumberRegex.FindStringSubmatch(strings.TrimSpace(prURL))
+	if len(matches) < 3 {
+		return "", 0, fmt.Errorf("unsupported pull request URL: %s", strings.TrimSpace(prURL))
+	}
+	prNumber, err := strconv.Atoi(strings.TrimSpace(matches[2]))
+	if err != nil {
+		return "", 0, fmt.Errorf("parse pull request number from URL %s: %w", strings.TrimSpace(prURL), err)
+	}
+	return strings.TrimSpace(matches[1]), prNumber, nil
+}
+
+func runReviewFeedbackKey(ticket string, repo string, prNumber int, sourceType model.ReviewFeedbackSourceType, sourceID string) string {
+	return strings.Join([]string{
+		strings.TrimSpace(ticket),
+		strings.TrimSpace(repo),
+		strconv.Itoa(prNumber),
+		string(sourceType),
+		strings.TrimSpace(sourceID),
+	}, "|")
+}
+
+func runReviewFeedbackChanged(existing model.RunReviewFeedback, next model.RunReviewFeedback) bool {
+	if strings.TrimSpace(existing.PRURL) != strings.TrimSpace(next.PRURL) {
+		return true
+	}
+	if strings.TrimSpace(existing.SourceURL) != strings.TrimSpace(next.SourceURL) {
+		return true
+	}
+	if strings.TrimSpace(existing.Author) != strings.TrimSpace(next.Author) {
+		return true
+	}
+	if strings.TrimSpace(existing.Body) != strings.TrimSpace(next.Body) {
+		return true
+	}
+	if strings.TrimSpace(existing.FilePath) != strings.TrimSpace(next.FilePath) {
+		return true
+	}
+	if existing.Line != next.Line {
+		return true
+	}
+	if strings.TrimSpace(string(existing.Status)) != strings.TrimSpace(string(next.Status)) {
+		return true
+	}
+	if strings.TrimSpace(existing.ErrorText) != strings.TrimSpace(next.ErrorText) {
+		return true
+	}
+	if !existing.LastSeenAt.Equal(next.LastSeenAt) {
+		return true
+	}
+	if !equalTimePtr(existing.AddressedAt, next.AddressedAt) {
+		return true
+	}
+	return false
+}
+
+func equalTimePtr(a *time.Time, b *time.Time) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Equal(*b)
+}
+
 func (s *Service) acquireRunMutationLock(runID string, operation string) (func(), error) {
 	lockPath := runMutationLockPath(s.store.DBPath, runID)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
@@ -3436,6 +3773,7 @@ var agentExitRegex = regexp.MustCompile(`\[metawsm\] agent command exited with s
 var docmgrDocsRootRegex = regexp.MustCompile("Docs root:\\s+`([^`]+)`")
 var docmgrTicketPathRegex = regexp.MustCompile("Path:\\s+`([^`]+)`")
 var pullURLNumberRegex = regexp.MustCompile(`/pull/([0-9]+)`)
+var pullURLRepoNumberRegex = regexp.MustCompile(`https?://[^/]+/([^/]+/[^/]+)/pull/([0-9]+)`)
 
 func readAgentExitCode(ctx context.Context, sessionName string) (int, bool) {
 	cmd := exec.CommandContext(ctx, "zsh", "-lc", fmt.Sprintf("tmux capture-pane -p -t %s:0 | tail -n 200", shellQuote(sessionName)))

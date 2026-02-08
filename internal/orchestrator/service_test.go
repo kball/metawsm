@@ -2689,6 +2689,140 @@ func TestCommitAndOpenPullRequestsEndToEndHandlesStaleBaseWorkspace(t *testing.T
 	}
 }
 
+func TestSyncReviewFeedbackPersistsQueuedReviewComments(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	ghScript := "#!/bin/sh\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"repos/example/metawsm/pulls/42/comments\" ]; then\n  echo '[{\"id\":9001,\"html_url\":\"https://github.com/example/metawsm/pull/42#discussion_r9001\",\"body\":\"Please add a regression test.\",\"path\":\"internal/orchestrator/service.go\",\"line\":1044,\"user\":{\"login\":\"reviewer-a\"}},{\"id\":9002,\"html_url\":\"https://github.com/example/metawsm/pull/42#discussion_r9002\",\"body\":\"Can you tighten the error message?\",\"path\":\"internal/store/sqlite.go\",\"line\":631,\"user\":{\"login\":\"reviewer-b\"}}]'\n  exit 0\nfi\necho \"unexpected gh invocation: $@\" >&2\nexit 1\n"
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatalf("write fake gh script: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	svc := newTestService(t)
+	runID := "run-review-sync-1"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-review-sync-1"
+	createRunWithTicketFixtureWithReposAndPolicy(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"}, `{"version":2,"git_pr":{"review_feedback":{"enabled":true}}}`)
+	if err := svc.UpsertRunPullRequest(model.RunPullRequest{
+		RunID:         runID,
+		Ticket:        ticket,
+		Repo:          "metawsm",
+		WorkspaceName: workspaceName,
+		PRNumber:      42,
+		PRURL:         "https://github.com/example/metawsm/pull/42",
+		PRState:       model.PullRequestStateOpen,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert run pull request fixture: %v", err)
+	}
+
+	result, err := svc.SyncReviewFeedback(t.Context(), ReviewFeedbackSyncOptions{RunID: runID})
+	if err != nil {
+		t.Fatalf("sync review feedback: %v", err)
+	}
+	if result.Added != 2 {
+		t.Fatalf("expected 2 added feedback items, got %d", result.Added)
+	}
+	if result.Updated != 0 {
+		t.Fatalf("expected 0 updated feedback items, got %d", result.Updated)
+	}
+	if len(result.Repos) != 1 {
+		t.Fatalf("expected one repo result, got %d", len(result.Repos))
+	}
+	if result.Repos[0].Fetched != 2 {
+		t.Fatalf("expected fetched=2, got %d", result.Repos[0].Fetched)
+	}
+
+	rows, err := svc.ListRunReviewFeedback(runID)
+	if err != nil {
+		t.Fatalf("list run review feedback: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 persisted feedback rows, got %d", len(rows))
+	}
+	for _, row := range rows {
+		if row.Status != model.ReviewFeedbackStatusQueued {
+			t.Fatalf("expected queued status, got %q", row.Status)
+		}
+		if row.SourceType != model.ReviewFeedbackSourceTypePRReviewComment {
+			t.Fatalf("expected PR review comment source type, got %q", row.SourceType)
+		}
+	}
+}
+
+func TestSyncReviewFeedbackDryRunDoesNotPersistRows(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	ghScript := "#!/bin/sh\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"repos/example/metawsm/pulls/43/comments\" ]; then\n  echo '[{\"id\":9010,\"html_url\":\"https://github.com/example/metawsm/pull/43#discussion_r9010\",\"body\":\"Nit: rename this var.\",\"path\":\"cmd/metawsm/main.go\",\"line\":2200,\"user\":{\"login\":\"reviewer-c\"}}]'\n  exit 0\nfi\necho \"unexpected gh invocation: $@\" >&2\nexit 1\n"
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatalf("write fake gh script: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	svc := newTestService(t)
+	runID := "run-review-sync-2"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-review-sync-2"
+	createRunWithTicketFixtureWithReposAndPolicy(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"}, `{"version":2,"git_pr":{"review_feedback":{"enabled":true}}}`)
+	if err := svc.UpsertRunPullRequest(model.RunPullRequest{
+		RunID:         runID,
+		Ticket:        ticket,
+		Repo:          "metawsm",
+		WorkspaceName: workspaceName,
+		PRNumber:      43,
+		PRURL:         "https://github.com/example/metawsm/pull/43",
+		PRState:       model.PullRequestStateOpen,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert run pull request fixture: %v", err)
+	}
+
+	result, err := svc.SyncReviewFeedback(t.Context(), ReviewFeedbackSyncOptions{RunID: runID, DryRun: true})
+	if err != nil {
+		t.Fatalf("sync review feedback dry-run: %v", err)
+	}
+	if result.Added != 1 {
+		t.Fatalf("expected 1 added feedback item in dry-run result, got %d", result.Added)
+	}
+	rows, err := svc.ListRunReviewFeedback(runID)
+	if err != nil {
+		t.Fatalf("list run review feedback: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected no persisted rows in dry-run, got %d", len(rows))
+	}
+}
+
+func TestSyncReviewFeedbackRejectsWhenPolicyDisabled(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	svc := newTestService(t)
+	runID := "run-review-sync-disabled"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-review-sync-disabled"
+	createRunWithTicketFixtureWithReposAndPolicy(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"}, `{"version":2}`)
+
+	_, err := svc.SyncReviewFeedback(t.Context(), ReviewFeedbackSyncOptions{RunID: runID})
+	if err == nil {
+		t.Fatalf("expected review feedback policy disabled error")
+	}
+	if !strings.Contains(err.Error(), "review_feedback.enabled is false") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestIterateDryRunIncludesFeedbackAndRestartActions(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")
