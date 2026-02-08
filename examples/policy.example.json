@@ -44,6 +44,19 @@
   "close": {
     "require_clean_git": true
   },
+  "operator": {
+    "unhealthy_confirmations": 2,
+    "restart_budget": 3,
+    "restart_cooldown_seconds": 60,
+    "stale_run_age_seconds": 3600,
+    "llm": {
+      "mode": "assist",
+      "command": "codex",
+      "model": "",
+      "timeout_seconds": 30,
+      "max_tokens": 400
+    }
+  },
   "agent_profiles": [
     {
       "name": "codex-default",

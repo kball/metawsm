@@ -44,6 +44,19 @@ type Config struct {
 	Close struct {
 		RequireCleanGit bool `json:"require_clean_git"`
 	} `json:"close"`
+	Operator struct {
+		UnhealthyConfirmations int `json:"unhealthy_confirmations"`
+		RestartBudget          int `json:"restart_budget"`
+		RestartCooldownSeconds int `json:"restart_cooldown_seconds"`
+		StaleRunAgeSeconds     int `json:"stale_run_age_seconds"`
+		LLM                    struct {
+			Mode           string `json:"mode"`
+			Command        string `json:"command"`
+			Model          string `json:"model"`
+			TimeoutSeconds int    `json:"timeout_seconds"`
+			MaxTokens      int    `json:"max_tokens"`
+		} `json:"llm"`
+	} `json:"operator"`
 	AgentProfiles []AgentProfile `json:"agent_profiles"`
 	Agents        []Agent        `json:"agents"`
 }
@@ -91,6 +104,15 @@ func Default() Config {
 	cfg.Health.ActivityStalledSeconds = 900
 	cfg.Health.ProgressStalledSeconds = 1200
 	cfg.Close.RequireCleanGit = true
+	cfg.Operator.UnhealthyConfirmations = 2
+	cfg.Operator.RestartBudget = 3
+	cfg.Operator.RestartCooldownSeconds = 60
+	cfg.Operator.StaleRunAgeSeconds = 3600
+	cfg.Operator.LLM.Mode = "assist"
+	cfg.Operator.LLM.Command = "codex"
+	cfg.Operator.LLM.Model = ""
+	cfg.Operator.LLM.TimeoutSeconds = 30
+	cfg.Operator.LLM.MaxTokens = 400
 	cfg.AgentProfiles = []AgentProfile{
 		{
 			Name:       "default-shell",
@@ -200,6 +222,32 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Health.ActivityStalledSeconds < cfg.Health.IdleSeconds {
 		return fmt.Errorf("activity_stalled_seconds must be >= idle_seconds")
+	}
+	if cfg.Operator.UnhealthyConfirmations <= 0 {
+		return fmt.Errorf("operator.unhealthy_confirmations must be > 0")
+	}
+	if cfg.Operator.RestartBudget <= 0 {
+		return fmt.Errorf("operator.restart_budget must be > 0")
+	}
+	if cfg.Operator.RestartCooldownSeconds <= 0 {
+		return fmt.Errorf("operator.restart_cooldown_seconds must be > 0")
+	}
+	if cfg.Operator.StaleRunAgeSeconds <= 0 {
+		return fmt.Errorf("operator.stale_run_age_seconds must be > 0")
+	}
+	switch strings.TrimSpace(strings.ToLower(cfg.Operator.LLM.Mode)) {
+	case "off", "assist", "auto":
+	default:
+		return fmt.Errorf("operator.llm.mode must be off|assist|auto")
+	}
+	if strings.TrimSpace(cfg.Operator.LLM.Command) == "" {
+		return fmt.Errorf("operator.llm.command cannot be empty")
+	}
+	if cfg.Operator.LLM.TimeoutSeconds <= 0 {
+		return fmt.Errorf("operator.llm.timeout_seconds must be > 0")
+	}
+	if cfg.Operator.LLM.MaxTokens <= 0 {
+		return fmt.Errorf("operator.llm.max_tokens must be > 0")
 	}
 	if cfg.Execution.StepRetries < 0 {
 		return fmt.Errorf("execution.step_retries must be >= 0")

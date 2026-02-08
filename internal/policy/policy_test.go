@@ -15,6 +15,12 @@ func TestDefaultPolicyIsValid(t *testing.T) {
 	if cfg.Workspace.BaseBranch != "main" {
 		t.Fatalf("expected default base branch main, got %q", cfg.Workspace.BaseBranch)
 	}
+	if cfg.Operator.LLM.Command != "codex" {
+		t.Fatalf("expected default operator llm command codex, got %q", cfg.Operator.LLM.Command)
+	}
+	if cfg.Operator.LLM.Mode != "assist" {
+		t.Fatalf("expected default operator llm mode assist, got %q", cfg.Operator.LLM.Mode)
+	}
 }
 
 func TestLoadPolicyFromFile(t *testing.T) {
@@ -196,6 +202,45 @@ func TestValidateRejectsInvalidDocAPIEndpoint(t *testing.T) {
 		t.Fatalf("expected validation error for invalid docs API endpoint")
 	}
 	if !strings.Contains(err.Error(), "invalid base_url") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidOperatorLLMMode(t *testing.T) {
+	cfg := Default()
+	cfg.Operator.LLM.Mode = "maybe"
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected operator llm mode validation error")
+	}
+	if !strings.Contains(err.Error(), "operator.llm.mode") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsMissingOperatorCommand(t *testing.T) {
+	cfg := Default()
+	cfg.Operator.LLM.Command = ""
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected operator llm command validation error")
+	}
+	if !strings.Contains(err.Error(), "operator.llm.command") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidOperatorBudgets(t *testing.T) {
+	cfg := Default()
+	cfg.Operator.RestartBudget = 0
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected restart budget validation error")
+	}
+	if !strings.Contains(err.Error(), "operator.restart_budget") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
