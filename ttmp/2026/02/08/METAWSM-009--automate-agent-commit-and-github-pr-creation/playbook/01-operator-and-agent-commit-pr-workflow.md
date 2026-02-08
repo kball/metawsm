@@ -117,6 +117,9 @@ To enable commit/PR auto execution, set policy:
 - `git_pr.mode=assist` surfaces `commit_ready`/`pr_ready` signals but does not auto-execute.
 - `git_pr.mode=off` blocks commit/PR workflows by design.
 - Merge remains human-controlled; `metawsm` does not auto-merge.
+- `metawsm commit` now natively handles stale-base dirty workspaces by snapshotting dirty changes, resetting to base, and reapplying snapshot changes.
+- Commit/PR commands use a run-scoped mutation lock; overlapping non-dry-run `commit`/`pr` calls on the same run are rejected with an explicit "operation in progress" error.
+- When `--actor` is omitted, actor attribution falls back to GitHub auth actor first, then git identity.
 
 ### Troubleshooting
 
@@ -127,3 +130,9 @@ To enable commit/PR auto execution, set policy:
   - Update policy `git_pr.mode` to `assist` or `auto`.
 - `no prepared commit metadata found ... run commit first`
   - Run `metawsm commit` before `metawsm pr`.
+- `run <id> commit operation is already in progress`
+  - Wait for the active commit/pr command to finish, then retry.
+  - Avoid launching concurrent non-dry-run commit/pr commands for the same run.
+- `failed to reapply workspace snapshot ... snapshot retained at stash@{...}`
+  - Inspect conflicts in the workspace repo and resolve normally.
+  - The stash reference is preserved; after resolving, continue from the workspace and rerun commit.

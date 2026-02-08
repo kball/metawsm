@@ -1285,3 +1285,96 @@ This step adds run-scoped mutation locking for non-dry-run `commit` and `pr` ope
 
 ### What should be done next
 - Implement native branch-prep handling for stale-base dirty trees and add regression tests (Phase 2A.*).
+
+## Step 17: Native Stale-Base Branch Prep, Actor Fallback, and Preflight Diagnostics
+
+This step removes the manual stash/rebase workaround by teaching `commit` to snapshot dirty trees, reset to base, and reapply safely. It also adds actor fallback resolution and richer commit/pr diagnostics so operators can see drift and attribution directly in command output.
+
+### What I did
+- Updated `internal/orchestrator/service.go`:
+  - Added commit preflight diagnostics (`current_branch`, `current_head`, `base_ref`, `base_head`, `base_drift`).
+  - Replaced direct `checkout -B` flow with native snapshot-reset-reapply:
+    - `captureWorkspaceSnapshot`
+    - `prepareCommitBranch`
+    - conflict-safe error if stash reapply fails (snapshot retained for manual recovery).
+  - Added `commitActionsPreview` to reflect the snapshot flow in dry-run output.
+  - Added PR preflight diagnostics with best-effort resolution that never blocks validation behavior.
+  - Added actor resolution chain (`flag -> gh -> git -> unknown`) via:
+    - `resolveOperationActor`
+    - `resolveGitHubActor`
+    - `resolveGitIdentity`
+  - Persisted resolved actor for commit and PR metadata/events.
+- Updated `cmd/metawsm/main.go`:
+  - Added lock-aware remediation text for typed mutation lock errors.
+  - Printed actor source and preflight diagnostics in both `commit` and `pr` output.
+- Added/updated tests in `internal/orchestrator/service_test.go`:
+  - `TestCommitHandlesStaleBaseDirtyTreeWithoutManualRebase`
+  - `TestCommitSnapshotReapplyConflictReturnsHelpfulError`
+  - `TestCommitPersistsActorFallbackFromGitIdentity`
+  - `TestOpenPullRequestsPersistsActorFallbackFromGitIdentity`
+  - `TestResolveOperationActorPrefersGitHubWhenAvailable`
+  - Updated `TestCommitDryRunPreviewsActionsForDirtyRepo` for new snapshot preview actions.
+- Ran validation:
+  - `go test ./internal/orchestrator -count=1`
+  - `go test ./cmd/metawsm -count=1`
+
+### Why
+- Operators should not need manual git stash/rebase choreography just to prepare commits from stale workspace bases.
+- Actor fields should be meaningful without requiring explicit `--actor`.
+- Diagnostics should make drift and lock-related remediation obvious at the command surface.
+
+### What worked
+- Stale-base dirty-tree commit now succeeds in test without manual intervention.
+- Snapshot conflict path now returns actionable error text and preserves recovery snapshot.
+- Actor fallback persists meaningful identity in commit/pr rows when `--actor` is omitted.
+- CLI output now exposes preflight/actor metadata for both commit and PR workflows.
+
+### What didn't work
+- Initial orchestrator run surfaced legacy expectations in existing tests:
+  - dry-run action count changed from 3 to 6 due snapshot flow,
+  - PR preflight initially failed hard when synthetic head refs were absent in validation tests.
+- Fixes:
+  - updated dry-run action assertions,
+  - made PR preflight diagnostics best-effort so they no longer block validation/error-path tests.
+
+### What should be done next
+- Finish Phase 2D documentation and e2e scenario updates for native handling behavior.
+
+## Step 18: Finalize Phase 2D Playbook and Stale-Base End-to-End Coverage
+
+This step closes the remaining Phase 2 backlog by documenting native behavior in the operator playbook and adding a full end-to-end stale-base workflow test (`commit -> push -> PR`) that succeeds without manual git intervention.
+
+### What I did
+- Added stale-base end-to-end coverage in `internal/orchestrator/service_test.go`:
+  - `TestCommitAndOpenPullRequestsEndToEndHandlesStaleBaseWorkspace`
+  - test verifies:
+    - base drift is detected in preflight,
+    - commit succeeds from stale dirty workspace,
+    - branch is pushed to origin,
+    - PR URL/number are captured from `gh pr create`.
+- Updated playbook:
+  - `ttmp/.../playbook/01-operator-and-agent-commit-pr-workflow.md`
+  - documented native stale-base snapshot handling,
+  - documented run mutation lock behavior and retry guidance,
+  - documented conflict recovery path when snapshot reapply requires manual conflict resolution.
+- Ran validation:
+  - `go test ./internal/orchestrator -count=1`
+  - `go test ./cmd/metawsm -count=1`
+  - `go test ./internal/store -count=1`
+- Checked remaining Phase 2 tasks complete:
+  - `docmgr task check --ticket METAWSM-009 --id 35,36`
+  - Ticket task list now has no open items.
+
+### Why
+- Phase 2 is only complete if both implementation and operator guidance reflect the native behavior.
+- The stale-base e2e test protects against regression to manual stash/rebase workflows.
+
+### What worked
+- All targeted package tests passed after additions.
+- Task tracker now reports all METAWSM-009 tasks complete.
+
+### What didn't work
+- N/A in this final slice.
+
+### Outcome
+- Phase 2 native handling implementation is complete and documented.

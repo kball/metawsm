@@ -124,8 +124,11 @@ type CommitRepoResult struct {
 	Branch        string
 	CommitMessage string
 	CommitSHA     string
+	Actor         string
+	ActorSource   string
 	Dirty         bool
 	SkippedReason string
+	Preflight     []string
 	Actions       []string
 }
 
@@ -152,10 +155,13 @@ type PullRequestRepoResult struct {
 	BaseBranch    string
 	Title         string
 	Body          string
+	Actor         string
+	ActorSource   string
 	PRNumber      int
 	PRURL         string
 	PRState       model.PullRequestState
 	SkippedReason string
+	Preflight     []string
 	Actions       []string
 }
 
@@ -737,10 +743,6 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 	if credentialMode == "" {
 		credentialMode = "local_user_auth"
 	}
-	actor := strings.TrimSpace(options.Actor)
-	if actor == "" {
-		actor = "unknown"
-	}
 	requestedMessage := strings.TrimSpace(options.Message)
 
 	existingPRs, err := s.store.ListRunPullRequests(runID)
@@ -781,6 +783,7 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 			return CommitResult{}, err
 		}
 		for _, target := range targets {
+			resolvedActor, actorSource := resolveOperationActor(ctx, options.Actor, target.RepoPath)
 			result := CommitRepoResult{
 				Ticket:        workspaceTicket,
 				WorkspaceName: workspaceName,
@@ -788,6 +791,8 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 				RepoPath:      target.RepoPath,
 				BaseBranch:    baseBranch,
 				CommitMessage: commitMessage,
+				Actor:         resolvedActor,
+				ActorSource:   actorSource,
 			}
 			dirty, err := hasDirtyGitState(ctx, target.RepoPath)
 			if err != nil {
@@ -820,17 +825,18 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 			branchName := policy.RenderGitBranch(cfg.GitPR.BranchTemplate, workspaceTicket, target.Repo, runID)
 			result.BaseRef = baseRef
 			result.Branch = branchName
-			result.Actions = []string{
-				fmt.Sprintf("git -C %s checkout -B %s %s", shellQuote(target.RepoPath), shellQuote(branchName), shellQuote(baseRef)),
-				fmt.Sprintf("git -C %s add -A", shellQuote(target.RepoPath)),
-				fmt.Sprintf("git -C %s commit -m %s", shellQuote(target.RepoPath), shellQuote(commitMessage)),
+			preflight, err := collectCommitPreflight(ctx, target.RepoPath, baseRef)
+			if err != nil {
+				return CommitResult{}, err
 			}
+			result.Preflight = preflight
+			result.Actions = commitActionsPreview(target.RepoPath, branchName, baseRef, commitMessage, true)
 			if options.DryRun {
 				results = append(results, result)
 				continue
 			}
 
-			if _, err := runGitCommand(ctx, target.RepoPath, "checkout", "-B", branchName, baseRef); err != nil {
+			if err := prepareCommitBranch(ctx, target.RepoPath, branchName, baseRef, true); err != nil {
 				return CommitResult{}, err
 			}
 			if _, err := runGitCommand(ctx, target.RepoPath, "add", "-A"); err != nil {
@@ -859,7 +865,7 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 			row.BaseBranch = baseBranch
 			row.CommitSHA = sha
 			row.CredentialMode = credentialMode
-			row.Actor = actor
+			row.Actor = resolvedActor
 			row.ValidationJSON = validationJSON
 			if row.PRState == "" {
 				row.PRState = model.PullRequestStateDraft
@@ -871,8 +877,8 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 			}
 			existingByKey[key] = row
 
-			message := fmt.Sprintf("ticket=%s workspace=%s repo=%s branch=%s commit=%s credential_mode=%s actor=%s",
-				workspaceTicket, workspaceName, target.Repo, branchName, sha, credentialMode, actor)
+			message := fmt.Sprintf("ticket=%s workspace=%s repo=%s branch=%s commit=%s credential_mode=%s actor=%s actor_source=%s",
+				workspaceTicket, workspaceName, target.Repo, branchName, sha, credentialMode, resolvedActor, actorSource)
 			_ = s.store.AddEvent(runID, "repo", target.Repo, "commit_created", "", sha, message)
 		}
 	}
@@ -934,10 +940,6 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 	credentialMode := strings.TrimSpace(cfg.GitPR.CredentialMode)
 	if credentialMode == "" {
 		credentialMode = "local_user_auth"
-	}
-	actor := strings.TrimSpace(options.Actor)
-	if actor == "" {
-		actor = "unknown"
 	}
 
 	brief, _ := s.store.GetRunBrief(runID)
@@ -1038,6 +1040,8 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 		}
 		pushPreview := commandPreview("git", "-C", repoPath, "push", "--set-upstream", "origin", headBranch)
 		preview := fmt.Sprintf("cd %s && %s", shellQuote(repoPath), commandPreview("gh", args...))
+		resolvedActor, actorSource := resolveOperationActor(ctx, options.Actor, repoPath)
+		preflight := collectPullRequestPreflight(ctx, repoPath, headBranch, baseBranch)
 
 		repoResult := PullRequestRepoResult{
 			Ticket:        rowTicket,
@@ -1048,6 +1052,9 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 			BaseBranch:    baseBranch,
 			Title:         title,
 			Body:          body,
+			Actor:         resolvedActor,
+			ActorSource:   actorSource,
+			Preflight:     preflight,
 			Actions:       []string{pushPreview, preview},
 		}
 		if strings.TrimSpace(row.PRURL) != "" {
@@ -1095,7 +1102,7 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 		row.PRNumber = prNumber
 		row.PRState = model.PullRequestStateOpen
 		row.CredentialMode = credentialMode
-		row.Actor = actor
+		row.Actor = resolvedActor
 		row.ValidationJSON = validationJSON
 		row.ErrorText = ""
 		if row.CreatedAt.IsZero() {
@@ -1106,8 +1113,8 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 			return PullRequestResult{}, err
 		}
 
-		message := fmt.Sprintf("ticket=%s workspace=%s repo=%s pr=%s credential_mode=%s actor=%s",
-			rowTicket, workspaceName, repo, prURL, credentialMode, actor)
+		message := fmt.Sprintf("ticket=%s workspace=%s repo=%s pr=%s credential_mode=%s actor=%s actor_source=%s",
+			rowTicket, workspaceName, repo, prURL, credentialMode, resolvedActor, actorSource)
 		_ = s.store.AddEvent(runID, "repo", repo, "pr_created", "", strconv.Itoa(prNumber), message)
 
 		repoResult.PRURL = prURL
@@ -2388,6 +2395,203 @@ func resolveCommitBaseRef(ctx context.Context, repoPath string, baseBranch strin
 	default:
 		return "", fmt.Errorf("base branch %q not found for repo %s", baseBranch, repoPath)
 	}
+}
+
+func collectCommitPreflight(ctx context.Context, repoPath string, baseRef string) ([]string, error) {
+	currentBranch, err := runGitCommand(ctx, repoPath, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	currentHead, err := runGitCommand(ctx, repoPath, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	baseHead, err := runGitCommand(ctx, repoPath, "rev-parse", baseRef)
+	if err != nil {
+		return nil, err
+	}
+	drift := strings.TrimSpace(currentHead) != strings.TrimSpace(baseHead)
+	return []string{
+		fmt.Sprintf("current_branch=%s", strings.TrimSpace(currentBranch)),
+		fmt.Sprintf("current_head=%s", strings.TrimSpace(currentHead)),
+		fmt.Sprintf("base_ref=%s", strings.TrimSpace(baseRef)),
+		fmt.Sprintf("base_head=%s", strings.TrimSpace(baseHead)),
+		fmt.Sprintf("base_drift=%t", drift),
+	}, nil
+}
+
+func collectPullRequestPreflight(ctx context.Context, repoPath string, headBranch string, baseBranch string) []string {
+	headRef := strings.TrimSpace(headBranch)
+	if headRef == "" {
+		headRef = "HEAD"
+	}
+	lines := []string{
+		fmt.Sprintf("head_branch=%s", strings.TrimSpace(headBranch)),
+	}
+	headSHA, err := runGitCommand(ctx, repoPath, "rev-parse", headRef)
+	if err != nil {
+		lines = append(lines, fmt.Sprintf("head_resolve_error=%s", compactErrorText(err)))
+		return lines
+	}
+	lines = append(lines, fmt.Sprintf("head_sha=%s", strings.TrimSpace(headSHA)))
+	baseRef, err := resolveCommitBaseRef(ctx, repoPath, baseBranch)
+	if err != nil {
+		lines = append(lines, fmt.Sprintf("base_resolve_error=%s", compactErrorText(err)))
+		return lines
+	}
+	lines = append(lines, fmt.Sprintf("base_ref=%s", strings.TrimSpace(baseRef)))
+	baseSHA, err := runGitCommand(ctx, repoPath, "rev-parse", baseRef)
+	if err != nil {
+		lines = append(lines, fmt.Sprintf("base_sha_error=%s", compactErrorText(err)))
+		return lines
+	}
+	drift := strings.TrimSpace(headSHA) != strings.TrimSpace(baseSHA)
+	lines = append(lines,
+		fmt.Sprintf("base_sha=%s", strings.TrimSpace(baseSHA)),
+		fmt.Sprintf("base_drift=%t", drift),
+	)
+	return lines
+}
+
+func commitActionsPreview(repoPath string, branchName string, baseRef string, commitMessage string, dirty bool) []string {
+	actions := []string{}
+	if dirty {
+		actions = append(actions,
+			fmt.Sprintf("git -C %s stash push -u -m %s", shellQuote(repoPath), shellQuote("metawsm-commit-snapshot")),
+		)
+	}
+	actions = append(actions,
+		fmt.Sprintf("git -C %s checkout -B %s %s", shellQuote(repoPath), shellQuote(branchName), shellQuote(baseRef)),
+	)
+	if dirty {
+		actions = append(actions,
+			fmt.Sprintf("git -C %s stash apply --index %s", shellQuote(repoPath), shellQuote("stash@{0}")),
+			fmt.Sprintf("git -C %s stash drop %s", shellQuote(repoPath), shellQuote("stash@{0}")),
+		)
+	}
+	actions = append(actions,
+		fmt.Sprintf("git -C %s add -A", shellQuote(repoPath)),
+		fmt.Sprintf("git -C %s commit -m %s", shellQuote(repoPath), shellQuote(commitMessage)),
+	)
+	return actions
+}
+
+func prepareCommitBranch(ctx context.Context, repoPath string, branchName string, baseRef string, dirty bool) error {
+	if !dirty {
+		_, err := runGitCommand(ctx, repoPath, "checkout", "-B", branchName, baseRef)
+		return err
+	}
+
+	snapshotName := fmt.Sprintf("metawsm-commit-snapshot-%d", time.Now().UnixNano())
+	snapshotRef, err := captureWorkspaceSnapshot(ctx, repoPath, snapshotName)
+	if err != nil {
+		return err
+	}
+	if _, err := runGitCommand(ctx, repoPath, "checkout", "-B", branchName, baseRef); err != nil {
+		return err
+	}
+	if strings.TrimSpace(snapshotRef) == "" {
+		return nil
+	}
+	if _, err := runGitCommand(ctx, repoPath, "stash", "apply", "--index", snapshotRef); err != nil {
+		return fmt.Errorf("failed to reapply workspace snapshot after checkout to %s in %s; resolve conflicts and continue manually (snapshot retained at %s): %w",
+			baseRef, repoPath, snapshotRef, err)
+	}
+	if _, err := runGitCommand(ctx, repoPath, "stash", "drop", snapshotRef); err != nil {
+		return fmt.Errorf("failed to drop temporary workspace snapshot %s in %s: %w", snapshotRef, repoPath, err)
+	}
+	return nil
+}
+
+func captureWorkspaceSnapshot(ctx context.Context, repoPath string, snapshotName string) (string, error) {
+	out, err := runGitCommand(ctx, repoPath, "stash", "push", "-u", "-m", snapshotName)
+	if err != nil {
+		return "", err
+	}
+	if strings.Contains(out, "No local changes to save") {
+		return "", nil
+	}
+	top, err := runGitCommand(ctx, repoPath, "stash", "list", "-n", "1", "--format=%gd|%gs")
+	if err != nil {
+		return "", err
+	}
+	parts := strings.SplitN(strings.TrimSpace(top), "|", 2)
+	if len(parts) != 2 {
+		return "", fmt.Errorf("unable to identify snapshot ref after stash push in %s: %s", repoPath, top)
+	}
+	ref := strings.TrimSpace(parts[0])
+	summary := strings.TrimSpace(parts[1])
+	if ref == "" {
+		return "", fmt.Errorf("stash snapshot ref is empty after stash push in %s", repoPath)
+	}
+	if !strings.Contains(summary, snapshotName) {
+		return "", fmt.Errorf("unexpected stash entry after snapshot in %s: %s", repoPath, summary)
+	}
+	return ref, nil
+}
+
+func resolveOperationActor(ctx context.Context, explicit string, repoPath string) (string, string) {
+	explicit = strings.TrimSpace(explicit)
+	if explicit != "" {
+		return explicit, "flag"
+	}
+	if actor, ok := resolveGitHubActor(ctx); ok {
+		return actor, "gh"
+	}
+	if identity, ok := resolveGitIdentity(ctx, repoPath); ok {
+		return identity, "git"
+	}
+	return "unknown", "none"
+}
+
+func resolveGitHubActor(ctx context.Context) (string, bool) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return "", false
+	}
+	out, err := runCommandInDir(ctx, "", "gh", "api", "user", "--jq", ".login")
+	if err != nil {
+		return "", false
+	}
+	actor := strings.TrimSpace(out)
+	if actor == "" {
+		return "", false
+	}
+	return actor, true
+}
+
+func resolveGitIdentity(ctx context.Context, repoPath string) (string, bool) {
+	name, err := runGitCommand(ctx, repoPath, "config", "--get", "user.name")
+	if err != nil {
+		return "", false
+	}
+	email, err := runGitCommand(ctx, repoPath, "config", "--get", "user.email")
+	if err != nil {
+		if strings.TrimSpace(name) == "" {
+			return "", false
+		}
+		return strings.TrimSpace(name), true
+	}
+	name = strings.TrimSpace(name)
+	email = strings.TrimSpace(email)
+	switch {
+	case name != "" && email != "":
+		return fmt.Sprintf("%s <%s>", name, email), true
+	case name != "":
+		return name, true
+	case email != "":
+		return email, true
+	default:
+		return "", false
+	}
+}
+
+func compactErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.TrimSpace(err.Error())
+	text = strings.ReplaceAll(text, "\n", " | ")
+	return text
 }
 
 func runGitCommand(ctx context.Context, repoPath string, args ...string) (string, error) {

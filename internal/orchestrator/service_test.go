@@ -1360,8 +1360,14 @@ func TestCommitDryRunPreviewsActionsForDirtyRepo(t *testing.T) {
 	if !repoResult.Dirty {
 		t.Fatalf("expected dirty repo result")
 	}
-	if len(repoResult.Actions) != 3 {
-		t.Fatalf("expected 3 dry-run actions, got %d", len(repoResult.Actions))
+	if len(repoResult.Actions) != 6 {
+		t.Fatalf("expected 6 dry-run actions with snapshot+checkout flow, got %d", len(repoResult.Actions))
+	}
+	if !strings.Contains(repoResult.Actions[0], "stash push -u") {
+		t.Fatalf("expected first dry-run action to snapshot workspace, got %q", repoResult.Actions[0])
+	}
+	if !strings.Contains(repoResult.Actions[2], "stash apply --index") {
+		t.Fatalf("expected dry-run action to reapply snapshot, got %q", repoResult.Actions[2])
 	}
 	expectedBranch := policy.RenderGitBranch(policy.Default().GitPR.BranchTemplate, ticket, "metawsm", runID)
 	if repoResult.Branch != expectedBranch {
@@ -1726,6 +1732,138 @@ func TestCommitRejectsWhenRunMutationLockExists(t *testing.T) {
 	}
 }
 
+func TestCommitHandlesStaleBaseDirtyTreeWithoutManualRebase(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-commit-stale-base"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-commit-stale-base"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+
+	originPath := filepath.Join(homeDir, "remotes", "metawsm-stale-origin.git")
+	runGit(t, repoPath, "init", "--bare", originPath)
+	runGit(t, repoPath, "remote", "add", "origin", originPath)
+	runGit(t, repoPath, "push", "-u", "origin", "main")
+
+	runGit(t, repoPath, "checkout", "-B", "stale-work", "main")
+	runGit(t, repoPath, "checkout", "-B", "main")
+	if err := os.WriteFile(filepath.Join(repoPath, "upstream.txt"), []byte("upstream base move\n"), 0o644); err != nil {
+		t.Fatalf("write upstream file: %v", err)
+	}
+	runGit(t, repoPath, "add", ".")
+	runGit(t, repoPath, "commit", "-m", "advance base")
+	runGit(t, repoPath, "push", "origin", "main")
+
+	runGit(t, repoPath, "checkout", "stale-work")
+	if err := os.WriteFile(filepath.Join(repoPath, "local.txt"), []byte("workspace local change\n"), 0o644); err != nil {
+		t.Fatalf("write local file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+
+	result, err := svc.Commit(t.Context(), CommitOptions{
+		RunID:   runID,
+		Message: "METAWSM-009: stale base commit",
+	})
+	if err != nil {
+		t.Fatalf("commit stale-base dirty tree: %v", err)
+	}
+	if len(result.Repos) != 1 {
+		t.Fatalf("expected one commit repo result, got %d", len(result.Repos))
+	}
+	repoResult := result.Repos[0]
+	if strings.TrimSpace(repoResult.CommitSHA) == "" {
+		t.Fatalf("expected commit sha for stale-base commit")
+	}
+	if !strings.Contains(strings.Join(repoResult.Preflight, "\n"), "base_drift=true") {
+		t.Fatalf("expected base drift preflight signal, got %+v", repoResult.Preflight)
+	}
+	if stashList := strings.TrimSpace(runGit(t, repoPath, "stash", "list")); stashList != "" {
+		t.Fatalf("expected temporary commit snapshot stash to be dropped, got %q", stashList)
+	}
+	if show := strings.TrimSpace(runGit(t, repoPath, "show", "--name-only", "--pretty=format:", "HEAD")); !strings.Contains(show, "local.txt") {
+		t.Fatalf("expected local.txt in commit, got:\n%s", show)
+	}
+}
+
+func TestCommitSnapshotReapplyConflictReturnsHelpfulError(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-commit-stash-conflict"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-commit-stash-conflict"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	if err := os.WriteFile(filepath.Join(repoPath, "conflict.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base conflict file: %v", err)
+	}
+	runGit(t, repoPath, "add", ".")
+	runGit(t, repoPath, "commit", "-m", "seed conflict file")
+
+	originPath := filepath.Join(homeDir, "remotes", "metawsm-conflict-origin.git")
+	runGit(t, repoPath, "init", "--bare", originPath)
+	runGit(t, repoPath, "remote", "add", "origin", originPath)
+	runGit(t, repoPath, "push", "-u", "origin", "main")
+
+	runGit(t, repoPath, "checkout", "-B", "stale-work", "main")
+	runGit(t, repoPath, "checkout", "-B", "main")
+	if err := os.WriteFile(filepath.Join(repoPath, "conflict.txt"), []byte("upstream-change\n"), 0o644); err != nil {
+		t.Fatalf("write upstream conflict file: %v", err)
+	}
+	runGit(t, repoPath, "add", "conflict.txt")
+	runGit(t, repoPath, "commit", "-m", "upstream conflict change")
+	runGit(t, repoPath, "push", "origin", "main")
+
+	runGit(t, repoPath, "checkout", "stale-work")
+	if err := os.WriteFile(filepath.Join(repoPath, "conflict.txt"), []byte("workspace-change\n"), 0o644); err != nil {
+		t.Fatalf("write workspace conflict file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+
+	_, err := svc.Commit(t.Context(), CommitOptions{
+		RunID:   runID,
+		Message: "METAWSM-009: conflict commit",
+	})
+	if err == nil {
+		t.Fatalf("expected conflict error from snapshot reapply")
+	}
+	if !strings.Contains(err.Error(), "failed to reapply workspace snapshot") {
+		t.Fatalf("unexpected conflict error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "snapshot retained at") {
+		t.Fatalf("expected snapshot retention guidance in error: %v", err)
+	}
+	if stashList := strings.TrimSpace(runGit(t, repoPath, "stash", "list")); stashList == "" {
+		t.Fatalf("expected stash snapshot to remain for manual recovery")
+	}
+}
+
 func TestCommitRejectsWhenRequiredTestCommandFails(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")
@@ -1926,6 +2064,168 @@ func TestOpenPullRequestsRejectsWhenRunMutationLockExists(t *testing.T) {
 	}
 	if lockErr.LockPath != lockPath {
 		t.Fatalf("expected lock path %q, got %q", lockPath, lockErr.LockPath)
+	}
+}
+
+func TestCommitPersistsActorFallbackFromGitIdentity(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	if err := os.WriteFile(ghPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-commit-actor-git"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-commit-actor-git"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("actor fallback test\n"), 0o644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+
+	result, err := svc.Commit(t.Context(), CommitOptions{
+		RunID:   runID,
+		Message: "METAWSM-009: actor fallback",
+	})
+	if err != nil {
+		t.Fatalf("commit with git actor fallback: %v", err)
+	}
+	if len(result.Repos) != 1 {
+		t.Fatalf("expected one commit result, got %d", len(result.Repos))
+	}
+	if result.Repos[0].ActorSource != "git" {
+		t.Fatalf("expected git actor source, got %q", result.Repos[0].ActorSource)
+	}
+	if !strings.Contains(result.Repos[0].Actor, "metawsm test") {
+		t.Fatalf("expected git identity actor, got %q", result.Repos[0].Actor)
+	}
+
+	rows, err := svc.ListRunPullRequests(runID)
+	if err != nil {
+		t.Fatalf("list run pull request rows: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one persisted row, got %d", len(rows))
+	}
+	if rows[0].Actor != result.Repos[0].Actor {
+		t.Fatalf("expected persisted actor %q, got %q", result.Repos[0].Actor, rows[0].Actor)
+	}
+}
+
+func TestOpenPullRequestsPersistsActorFallbackFromGitIdentity(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	ghScript := "#!/bin/sh\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"user\" ]; then\n  exit 1\nfi\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"create\" ]; then\n  echo \"https://github.com/example/metawsm/pull/52\"\n  exit 0\nfi\necho \"unexpected gh invocation: $@\" >&2\nexit 1\n"
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatalf("write fake gh script: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-pr-actor-git"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-pr-actor-git"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	originPath := filepath.Join(homeDir, "remotes", "metawsm-pr-actor-origin.git")
+	if err := os.MkdirAll(filepath.Dir(originPath), 0o755); err != nil {
+		t.Fatalf("mkdir origin parent: %v", err)
+	}
+	runGit(t, repoPath, "init", "--bare", originPath)
+	runGit(t, repoPath, "remote", "add", "origin", originPath)
+	headBranch := "metawsm-009/metawsm/run-pr-actor-git"
+	runGit(t, repoPath, "checkout", "-B", headBranch)
+	commitSHA := strings.TrimSpace(runGit(t, repoPath, "rev-parse", "HEAD"))
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+	if err := svc.UpsertRunPullRequest(model.RunPullRequest{
+		RunID:         runID,
+		Ticket:        ticket,
+		Repo:          "metawsm",
+		WorkspaceName: workspaceName,
+		HeadBranch:    headBranch,
+		BaseBranch:    "main",
+		CommitSHA:     commitSHA,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert run pull request fixture: %v", err)
+	}
+
+	result, err := svc.OpenPullRequests(t.Context(), PullRequestOptions{RunID: runID})
+	if err != nil {
+		t.Fatalf("open pull requests with git actor fallback: %v", err)
+	}
+	if len(result.Repos) != 1 {
+		t.Fatalf("expected one PR result repo, got %d", len(result.Repos))
+	}
+	if result.Repos[0].ActorSource != "git" {
+		t.Fatalf("expected actor source git, got %q", result.Repos[0].ActorSource)
+	}
+	if !strings.Contains(result.Repos[0].Actor, "metawsm test") {
+		t.Fatalf("expected git actor identity, got %q", result.Repos[0].Actor)
+	}
+
+	rows, err := svc.ListRunPullRequests(runID)
+	if err != nil {
+		t.Fatalf("list run pull requests: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one persisted row, got %d", len(rows))
+	}
+	if rows[0].Actor != result.Repos[0].Actor {
+		t.Fatalf("expected persisted actor %q, got %q", result.Repos[0].Actor, rows[0].Actor)
+	}
+}
+
+func TestResolveOperationActorPrefersGitHubWhenAvailable(t *testing.T) {
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	ghScript := "#!/bin/sh\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"user\" ]; then\n  echo \"gh-actor\"\n  exit 0\nfi\nexit 1\n"
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatalf("write fake gh script: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	repoPath := t.TempDir()
+	initGitRepo(t, repoPath)
+
+	actor, source := resolveOperationActor(t.Context(), "", repoPath)
+	if actor != "gh-actor" {
+		t.Fatalf("expected gh actor, got %q", actor)
+	}
+	if source != "gh" {
+		t.Fatalf("expected actor source gh, got %q", source)
 	}
 }
 
@@ -2297,6 +2597,95 @@ func TestCommitAndOpenPullRequestsEndToEndPushesBranchAndPersistsMetadata(t *tes
 	}
 	if row.Actor != "kball" {
 		t.Fatalf("expected actor kball, got %q", row.Actor)
+	}
+}
+
+func TestCommitAndOpenPullRequestsEndToEndHandlesStaleBaseWorkspace(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	ghScript := "#!/bin/sh\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"create\" ]; then\n  echo \"https://github.com/example/metawsm/pull/101\"\n  exit 0\nfi\necho \"unexpected gh invocation: $@\" >&2\nexit 1\n"
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatalf("write fake gh script: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-pr-e2e-stale-base"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-pr-e2e-stale-base"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+
+	originPath := filepath.Join(homeDir, "remotes", "metawsm-e2e-stale-origin.git")
+	if err := os.MkdirAll(filepath.Dir(originPath), 0o755); err != nil {
+		t.Fatalf("mkdir origin parent: %v", err)
+	}
+	runGit(t, repoPath, "init", "--bare", originPath)
+	runGit(t, repoPath, "remote", "add", "origin", originPath)
+	runGit(t, repoPath, "push", "-u", "origin", "main")
+
+	runGit(t, repoPath, "checkout", "-B", "workspace-stale", "main")
+	runGit(t, repoPath, "checkout", "-B", "main")
+	if err := os.WriteFile(filepath.Join(repoPath, "upstream.txt"), []byte("base moved ahead\n"), 0o644); err != nil {
+		t.Fatalf("write upstream base move: %v", err)
+	}
+	runGit(t, repoPath, "add", "upstream.txt")
+	runGit(t, repoPath, "commit", "-m", "advance base")
+	runGit(t, repoPath, "push", "origin", "main")
+	runGit(t, repoPath, "checkout", "workspace-stale")
+
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("stale-base local feature change\n"), 0o644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+
+	commitResult, err := svc.Commit(t.Context(), CommitOptions{
+		RunID:   runID,
+		Message: "METAWSM-009: stale-base e2e commit",
+	})
+	if err != nil {
+		t.Fatalf("commit stale-base e2e: %v", err)
+	}
+	if len(commitResult.Repos) != 1 {
+		t.Fatalf("expected one commit result repo, got %d", len(commitResult.Repos))
+	}
+	headBranch := strings.TrimSpace(commitResult.Repos[0].Branch)
+	if headBranch == "" {
+		t.Fatalf("expected head branch from commit result")
+	}
+	if !strings.Contains(strings.Join(commitResult.Repos[0].Preflight, "\n"), "base_drift=true") {
+		t.Fatalf("expected stale-base preflight signal, got %+v", commitResult.Repos[0].Preflight)
+	}
+
+	prResult, err := svc.OpenPullRequests(t.Context(), PullRequestOptions{
+		RunID: runID,
+	})
+	if err != nil {
+		t.Fatalf("open pull requests stale-base e2e: %v", err)
+	}
+	if len(prResult.Repos) != 1 {
+		t.Fatalf("expected one PR result repo, got %d", len(prResult.Repos))
+	}
+	if prResult.Repos[0].PRURL != "https://github.com/example/metawsm/pull/101" {
+		t.Fatalf("unexpected PR URL %q", prResult.Repos[0].PRURL)
+	}
+	if remoteHeads := strings.TrimSpace(runGit(t, repoPath, "ls-remote", "--heads", "origin", headBranch)); remoteHeads == "" {
+		t.Fatalf("expected pushed head branch %q on origin", headBranch)
 	}
 }
 

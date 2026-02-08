@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -2029,6 +2030,10 @@ func commitCommand(args []string) error {
 		DryRun:  dryRun,
 	})
 	if err != nil {
+		var inProgress *orchestrator.RunMutationInProgressError
+		if errors.As(err, &inProgress) {
+			return fmt.Errorf("%w; retry after the active %s operation completes", err, inProgress.Operation)
+		}
 		return err
 	}
 
@@ -2049,6 +2054,10 @@ func commitCommand(args []string) error {
 		}
 		fmt.Printf("    branch=%s base=%s (%s)\n", repo.Branch, repo.BaseBranch, repo.BaseRef)
 		fmt.Printf("    message=%s\n", repo.CommitMessage)
+		fmt.Printf("    actor=%s source=%s\n", emptyValue(repo.Actor, "unknown"), emptyValue(repo.ActorSource, "unknown"))
+		for _, line := range repo.Preflight {
+			fmt.Printf("    preflight: %s\n", line)
+		}
 		if dryRun {
 			for _, action := range repo.Actions {
 				fmt.Printf("    dry-run: %s\n", action)
@@ -2098,6 +2107,10 @@ func prCommand(args []string) error {
 		DryRun: dryRun,
 	})
 	if err != nil {
+		var inProgress *orchestrator.RunMutationInProgressError
+		if errors.As(err, &inProgress) {
+			return fmt.Errorf("%w; retry after the active %s operation completes", err, inProgress.Operation)
+		}
 		return err
 	}
 
@@ -2118,6 +2131,10 @@ func prCommand(args []string) error {
 		}
 		fmt.Printf("    head=%s base=%s\n", repo.HeadBranch, repo.BaseBranch)
 		fmt.Printf("    title=%s\n", repo.Title)
+		fmt.Printf("    actor=%s source=%s\n", emptyValue(repo.Actor, "unknown"), emptyValue(repo.ActorSource, "unknown"))
+		for _, line := range repo.Preflight {
+			fmt.Printf("    preflight: %s\n", line)
+		}
 		if dryRun {
 			for _, action := range repo.Actions {
 				fmt.Printf("    dry-run: %s\n", action)

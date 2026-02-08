@@ -22,19 +22,19 @@
 - [x] Enforce human-only merge policy in operator and CLI surfaces (no auto-merge path)
 - [x] Add playbook section for Proposal A setup (gh login, git identity, troubleshooting)
 - [x] Add end-to-end test for successful local-auth commit push and PR creation
-- [ ] Phase 2A.1: add commit preflight capture of current branch/head and base ref/head for diagnostics
-- [ ] Phase 2A.2: implement dirty-tree snapshot via git stash push -u before checkout-to-base
-- [ ] Phase 2A.3: implement checkout-to-base plus stash reapply flow with conflict-safe error reporting
-- [ ] Phase 2A.4: add regression tests for stale-base dirty-tree commit success path
-- [ ] Phase 2A.5: add regression tests for stash reapply conflict reporting path
+- [x] Phase 2A.1: add commit preflight capture of current branch/head and base ref/head for diagnostics
+- [x] Phase 2A.2: implement dirty-tree snapshot via git stash push -u before checkout-to-base
+- [x] Phase 2A.3: implement checkout-to-base plus stash reapply flow with conflict-safe error reporting
+- [x] Phase 2A.4: add regression tests for stale-base dirty-tree commit success path
+- [x] Phase 2A.5: add regression tests for stash reapply conflict reporting path
 - [x] Phase 2B.1: add sqlite3 busy-timeout configuration to all store query/exec invocations
 - [x] Phase 2B.2: add bounded retry/backoff for transient sqlite lock/busy failures
 - [x] Phase 2B.3: add store tests that hold write locks and verify retry-based eventual success
 - [x] Phase 2B.4: add run-level commit/pr mutation lock and typed operation-in-progress error
 - [x] Phase 2B.5: add orchestrator tests covering concurrent commit/pr lock rejection behavior
-- [ ] Phase 2C.1: implement actor resolution chain (flag -> gh auth actor -> git identity)
-- [ ] Phase 2C.2: persist resolved actor identity in run pull request rows for commit and PR operations
-- [ ] Phase 2C.3: add tests for actor fallback behavior across flag/gh/git scenarios
-- [ ] Phase 2C.4: expand commit/pr CLI output with preflight diagnostics and remediation hints
-- [ ] Phase 2D.1: update operator playbook for native stale-base handling and lock contention behavior
-- [ ] Phase 2D.2: add e2e test for stale-base workspace commit->push->PR without manual git intervention
+- [x] Phase 2C.1: implement actor resolution chain (flag -> gh auth actor -> git identity)
+- [x] Phase 2C.2: persist resolved actor identity in run pull request rows for commit and PR operations
+- [x] Phase 2C.3: add tests for actor fallback behavior across flag/gh/git scenarios
+- [x] Phase 2C.4: expand commit/pr CLI output with preflight diagnostics and remediation hints
+- [x] Phase 2D.1: update operator playbook for native stale-base handling and lock contention behavior
+- [x] Phase 2D.2: add e2e test for stale-base workspace commit->push->PR without manual git intervention
