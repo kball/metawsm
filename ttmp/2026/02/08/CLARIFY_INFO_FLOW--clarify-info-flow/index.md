@@ -1,7 +1,7 @@
 ---
 Title: Clarify info flow
 Ticket: CLARIFY_INFO_FLOW
-Status: active
+Status: complete
 Topics:
     - core
     - cli
@@ -11,10 +11,11 @@ Owners: []
 RelatedFiles: []
 ExternalSources: []
 Summary: ""
-LastUpdated: 2026-02-08T06:20:28.247545-08:00
+LastUpdated: 2026-02-08T07:21:40.184304-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 # Clarify info flow
 
