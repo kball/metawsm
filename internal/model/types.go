@@ -231,3 +231,11 @@ type CompletionSignalPayload struct {
 	Agent   string `json:"agent,omitempty"`
 	Summary string `json:"summary,omitempty"`
 }
+
+type OperatorRunState struct {
+	RunID           string     `json:"run_id"`
+	RestartAttempts int        `json:"restart_attempts"`
+	LastRestartAt   *time.Time `json:"last_restart_at,omitempty"`
+	CooldownUntil   *time.Time `json:"cooldown_until,omitempty"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}

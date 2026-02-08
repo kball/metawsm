@@ -128,6 +128,13 @@ CREATE TABLE IF NOT EXISTS doc_sync_states (
   error_text TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL,
   PRIMARY KEY (run_id, ticket, workspace_name)
+);
+CREATE TABLE IF NOT EXISTS operator_run_states (
+  run_id TEXT PRIMARY KEY,
+  restart_attempts INTEGER NOT NULL DEFAULT 0,
+  last_restart_at TEXT NOT NULL DEFAULT '',
+  cooldown_until TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
 );`
 
 	return s.execSQL(schema)
@@ -451,6 +458,54 @@ VALUES
 		quote(runID), quote(entityType), quote(entityID), quote(eventType), quote(fromState), quote(toState), quote(message), quote(time.Now().Format(time.RFC3339)),
 	)
 	return s.execSQL(sql)
+}
+
+func (s *SQLiteStore) UpsertOperatorRunState(state model.OperatorRunState) error {
+	updatedAt := state.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+	sql := fmt.Sprintf(
+		`INSERT OR REPLACE INTO operator_run_states
+  (run_id, restart_attempts, last_restart_at, cooldown_until, updated_at)
+VALUES
+  (%s, %d, %s, %s, %s);`,
+		quote(state.RunID),
+		state.RestartAttempts,
+		quote(formatTime(state.LastRestartAt)),
+		quote(formatTime(state.CooldownUntil)),
+		quote(updatedAt.Format(time.RFC3339)),
+	)
+	return s.execSQL(sql)
+}
+
+func (s *SQLiteStore) GetOperatorRunState(runID string) (*model.OperatorRunState, error) {
+	sql := fmt.Sprintf(
+		`SELECT run_id, restart_attempts, last_restart_at, cooldown_until, updated_at
+FROM operator_run_states
+WHERE run_id=%s;`,
+		quote(runID),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	row := rows[0]
+	updatedAt, err := time.Parse(time.RFC3339, asString(row["updated_at"]))
+	if err != nil {
+		return nil, fmt.Errorf("parse operator_run_states updated_at: %w", err)
+	}
+	state := &model.OperatorRunState{
+		RunID:           asString(row["run_id"]),
+		RestartAttempts: asInt(row["restart_attempts"]),
+		LastRestartAt:   parseTimePtr(asString(row["last_restart_at"])),
+		CooldownUntil:   parseTimePtr(asString(row["cooldown_until"])),
+		UpdatedAt:       updatedAt,
+	}
+	return state, nil
 }
 
 func (s *SQLiteStore) UpsertDocSyncState(state model.DocSyncState) error {

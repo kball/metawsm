@@ -232,3 +232,49 @@ func TestSQLiteStoreRoundTrip(t *testing.T) {
 		t.Fatalf("expected latest run id %s, got %s", spec.RunID, latestRunID)
 	}
 }
+
+func TestOperatorRunStatePersistsAcrossStoreReopen(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	s := NewSQLiteStore(dbPath)
+	if err := s.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	lastRestart := time.Now().Add(-2 * time.Minute).Truncate(time.Second)
+	cooldownUntil := time.Now().Add(30 * time.Second).Truncate(time.Second)
+	if err := s.UpsertOperatorRunState(model.OperatorRunState{
+		RunID:           "run-operator-state",
+		RestartAttempts: 2,
+		LastRestartAt:   &lastRestart,
+		CooldownUntil:   &cooldownUntil,
+		UpdatedAt:       time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert operator run state: %v", err)
+	}
+
+	reopened := NewSQLiteStore(dbPath)
+	if err := reopened.Init(); err != nil {
+		t.Fatalf("re-init reopened store: %v", err)
+	}
+
+	state, err := reopened.GetOperatorRunState("run-operator-state")
+	if err != nil {
+		t.Fatalf("get operator run state: %v", err)
+	}
+	if state == nil {
+		t.Fatalf("expected operator run state to persist")
+	}
+	if state.RestartAttempts != 2 {
+		t.Fatalf("expected restart attempts 2, got %d", state.RestartAttempts)
+	}
+	if state.LastRestartAt == nil || !state.LastRestartAt.Equal(lastRestart) {
+		t.Fatalf("expected last restart at %s, got %v", lastRestart.Format(time.RFC3339), state.LastRestartAt)
+	}
+	if state.CooldownUntil == nil || !state.CooldownUntil.Equal(cooldownUntil) {
+		t.Fatalf("expected cooldown until %s, got %v", cooldownUntil.Format(time.RFC3339), state.CooldownUntil)
+	}
+}
