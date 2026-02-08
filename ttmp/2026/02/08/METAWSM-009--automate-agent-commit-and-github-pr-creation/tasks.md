@@ -43,7 +43,7 @@
 - [x] Review feedback V1: add store persistence and dedupe tests across reopen
 - [x] Review feedback policy: add git_pr.review_feedback config defaults and validation (review comments only, empty ignore_authors, auto cap)
 - [x] Orchestrator: implement gh api sync primitive for PR review comments into queued feedback records
-- [ ] Orchestrator: implement queued feedback dispatch via Iterate flow and lifecycle handling for queued->addressed
+- [x] Orchestrator: implement queued feedback dispatch via Iterate flow and lifecycle handling for queued->addressed
 - [ ] CLI: add metawsm review sync command with dry-run previews
 - [ ] Status/watch/operator: surface review feedback counts and add review_feedback_ready intent with per-interval cap
 - [ ] Validation: add fake-gh orchestrator tests for sync/dispatch and operator decision coverage

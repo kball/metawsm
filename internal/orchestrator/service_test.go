@@ -2823,6 +2823,167 @@ func TestSyncReviewFeedbackRejectsWhenPolicyDisabled(t *testing.T) {
 	}
 }
 
+func TestDispatchQueuedReviewFeedbackDryRunUsesIterateFlow(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-review-dispatch-dry"
+	ticket := "METAWSM-010"
+	workspaceName := "ws-review-dispatch-dry"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	if err := os.MkdirAll(filepath.Join(workspacePath, ".metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	ticketDir := filepath.Join(workspacePath, "metawsm", "ttmp", "2026", "02", "07", strings.ToLower(ticket)+"--dispatch-test", "reference")
+	if err := os.MkdirAll(ticketDir, 0o755); err != nil {
+		t.Fatalf("mkdir ticket reference dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspacePath, "metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir doc repo dir: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+	if err := svc.UpsertRunReviewFeedback(model.RunReviewFeedback{
+		RunID:         runID,
+		Ticket:        ticket,
+		Repo:          "metawsm",
+		WorkspaceName: workspaceName,
+		PRNumber:      77,
+		PRURL:         "https://github.com/example/metawsm/pull/77",
+		SourceType:    model.ReviewFeedbackSourceTypePRReviewComment,
+		SourceID:      "7001",
+		SourceURL:     "https://github.com/example/metawsm/pull/77#discussion_r7001",
+		Author:        "reviewer-d",
+		Body:          "Please add a test covering this edge case.",
+		FilePath:      "internal/orchestrator/service.go",
+		Line:          1300,
+		Status:        model.ReviewFeedbackStatusQueued,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+		LastSeenAt:    time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert run review feedback: %v", err)
+	}
+
+	result, err := svc.DispatchQueuedReviewFeedback(t.Context(), ReviewFeedbackDispatchOptions{
+		RunID:  runID,
+		DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("dispatch queued review feedback dry-run: %v", err)
+	}
+	if result.QueuedCount != 1 {
+		t.Fatalf("expected queued count 1, got %d", result.QueuedCount)
+	}
+	if !strings.Contains(result.Feedback, "GitHub PR review feedback to address") {
+		t.Fatalf("expected rendered feedback header, got:\n%s", result.Feedback)
+	}
+	joined := strings.Join(result.Actions, "\n")
+	if !strings.Contains(joined, ".metawsm/operator-feedback.md") {
+		t.Fatalf("expected operator feedback append action, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "tmux new-session") {
+		t.Fatalf("expected tmux restart action via iterate flow, got:\n%s", joined)
+	}
+}
+
+func TestCommitThenPROpenTransitionsReviewFeedbackToAddressed(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-review-transition-1"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-review-transition-1"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("queued feedback follow-up\n"), 0o644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+	if err := svc.UpsertRunPullRequest(model.RunPullRequest{
+		RunID:         runID,
+		Ticket:        ticket,
+		Repo:          "metawsm",
+		WorkspaceName: workspaceName,
+		HeadBranch:    "metawsm-009/metawsm/run-review-transition-1",
+		BaseBranch:    "main",
+		CommitSHA:     "abc123",
+		PRNumber:      55,
+		PRURL:         "https://github.com/example/metawsm/pull/55",
+		PRState:       model.PullRequestStateOpen,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert run pull request fixture: %v", err)
+	}
+	if err := svc.UpsertRunReviewFeedback(model.RunReviewFeedback{
+		RunID:         runID,
+		Ticket:        ticket,
+		Repo:          "metawsm",
+		WorkspaceName: workspaceName,
+		PRNumber:      55,
+		PRURL:         "https://github.com/example/metawsm/pull/55",
+		SourceType:    model.ReviewFeedbackSourceTypePRReviewComment,
+		SourceID:      "8001",
+		SourceURL:     "https://github.com/example/metawsm/pull/55#discussion_r8001",
+		Author:        "reviewer-e",
+		Body:          "Please tighten validation output.",
+		FilePath:      "cmd/metawsm/main.go",
+		Line:          2100,
+		Status:        model.ReviewFeedbackStatusQueued,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+		LastSeenAt:    time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert queued run review feedback: %v", err)
+	}
+
+	if _, err := svc.Commit(t.Context(), CommitOptions{
+		RunID:   runID,
+		Message: "METAWSM-009: apply reviewer follow-up",
+	}); err != nil {
+		t.Fatalf("commit with queued review feedback: %v", err)
+	}
+	newRows, err := svc.ListRunReviewFeedbackByStatus(runID, model.ReviewFeedbackStatusNew)
+	if err != nil {
+		t.Fatalf("list new review feedback rows: %v", err)
+	}
+	if len(newRows) != 1 {
+		t.Fatalf("expected one new-status feedback row after commit, got %d", len(newRows))
+	}
+
+	if _, err := svc.OpenPullRequests(t.Context(), PullRequestOptions{
+		RunID: runID,
+	}); err != nil {
+		t.Fatalf("open pull requests after commit: %v", err)
+	}
+	addressedRows, err := svc.ListRunReviewFeedbackByStatus(runID, model.ReviewFeedbackStatusAddressed)
+	if err != nil {
+		t.Fatalf("list addressed review feedback rows: %v", err)
+	}
+	if len(addressedRows) != 1 {
+		t.Fatalf("expected one addressed feedback row after pr open/update, got %d", len(addressedRows))
+	}
+	if addressedRows[0].AddressedAt == nil {
+		t.Fatalf("expected addressed_at to be populated after PR update cycle")
+	}
+}
+
 func TestIterateDryRunIncludesFeedbackAndRestartActions(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")

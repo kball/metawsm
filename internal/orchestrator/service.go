@@ -191,6 +191,20 @@ type ReviewFeedbackSyncRepoResult struct {
 	Actions       []string
 }
 
+type ReviewFeedbackDispatchOptions struct {
+	Ticket   string
+	RunID    string
+	MaxItems int
+	DryRun   bool
+}
+
+type ReviewFeedbackDispatchResult struct {
+	RunID       string
+	QueuedCount int
+	Feedback    string
+	Actions     []string
+}
+
 type RunResult struct {
 	RunID string
 	Steps []model.PlanStep
@@ -906,6 +920,9 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 			message := fmt.Sprintf("ticket=%s workspace=%s repo=%s branch=%s commit=%s credential_mode=%s actor=%s actor_source=%s",
 				workspaceTicket, workspaceName, target.Repo, branchName, sha, credentialMode, resolvedActor, actorSource)
 			_ = s.store.AddEvent(runID, "repo", target.Repo, "commit_created", "", sha, message)
+			if err := s.transitionReviewFeedbackStatus(runID, workspaceTicket, target.Repo, model.ReviewFeedbackStatusQueued, model.ReviewFeedbackStatusNew, nil); err != nil {
+				return CommitResult{}, err
+			}
 		}
 	}
 
@@ -1088,6 +1105,12 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 			repoResult.PRURL = strings.TrimSpace(row.PRURL)
 			repoResult.PRNumber = row.PRNumber
 			repoResult.PRState = row.PRState
+			if !options.DryRun {
+				addressedAt := time.Now()
+				if err := s.transitionReviewFeedbackStatus(runID, rowTicket, repo, model.ReviewFeedbackStatusNew, model.ReviewFeedbackStatusAddressed, &addressedAt); err != nil {
+					return PullRequestResult{}, err
+				}
+			}
 			repoResults = append(repoResults, repoResult)
 			continue
 		}
@@ -1142,6 +1165,10 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 		message := fmt.Sprintf("ticket=%s workspace=%s repo=%s pr=%s credential_mode=%s actor=%s actor_source=%s",
 			rowTicket, workspaceName, repo, prURL, credentialMode, resolvedActor, actorSource)
 		_ = s.store.AddEvent(runID, "repo", repo, "pr_created", "", strconv.Itoa(prNumber), message)
+		addressedAt := time.Now()
+		if err := s.transitionReviewFeedbackStatus(runID, rowTicket, repo, model.ReviewFeedbackStatusNew, model.ReviewFeedbackStatusAddressed, &addressedAt); err != nil {
+			return PullRequestResult{}, err
+		}
 
 		repoResult.PRURL = prURL
 		repoResult.PRNumber = prNumber
@@ -1356,6 +1383,63 @@ func (s *Service) SyncReviewFeedback(ctx context.Context, options ReviewFeedback
 	}
 
 	return result, nil
+}
+
+func (s *Service) DispatchQueuedReviewFeedback(ctx context.Context, options ReviewFeedbackDispatchOptions) (ReviewFeedbackDispatchResult, error) {
+	runID, err := s.resolveRunID(options.RunID, options.Ticket)
+	if err != nil {
+		return ReviewFeedbackDispatchResult{}, err
+	}
+	queuedRows, err := s.store.ListRunReviewFeedbackByStatus(runID, model.ReviewFeedbackStatusQueued)
+	if err != nil {
+		return ReviewFeedbackDispatchResult{}, err
+	}
+	filtered := make([]model.RunReviewFeedback, 0, len(queuedRows))
+	selectedTicket := strings.TrimSpace(options.Ticket)
+	for _, row := range queuedRows {
+		if selectedTicket != "" && !strings.EqualFold(strings.TrimSpace(row.Ticket), selectedTicket) {
+			continue
+		}
+		filtered = append(filtered, row)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].Ticket == filtered[j].Ticket {
+			if filtered[i].Repo == filtered[j].Repo {
+				if filtered[i].PRNumber == filtered[j].PRNumber {
+					return filtered[i].SourceID < filtered[j].SourceID
+				}
+				return filtered[i].PRNumber < filtered[j].PRNumber
+			}
+			return filtered[i].Repo < filtered[j].Repo
+		}
+		return filtered[i].Ticket < filtered[j].Ticket
+	})
+	if len(filtered) == 0 {
+		if selectedTicket != "" {
+			return ReviewFeedbackDispatchResult{}, fmt.Errorf("no queued review feedback found for ticket %s", selectedTicket)
+		}
+		return ReviewFeedbackDispatchResult{}, fmt.Errorf("no queued review feedback found for run %s", runID)
+	}
+	maxItems := len(filtered)
+	if options.MaxItems > 0 && options.MaxItems < maxItems {
+		maxItems = options.MaxItems
+	}
+	feedback := renderQueuedReviewFeedback(filtered[:maxItems])
+	iterateResult, err := s.Iterate(ctx, IterateOptions{
+		RunID:    runID,
+		Ticket:   selectedTicket,
+		Feedback: feedback,
+		DryRun:   options.DryRun,
+	})
+	if err != nil {
+		return ReviewFeedbackDispatchResult{}, err
+	}
+	return ReviewFeedbackDispatchResult{
+		RunID:       iterateResult.RunID,
+		QueuedCount: maxItems,
+		Feedback:    feedback,
+		Actions:     iterateResult.Actions,
+	}, nil
 }
 
 func (s *Service) Iterate(ctx context.Context, options IterateOptions) (IterateResult, error) {
@@ -3071,6 +3155,74 @@ func equalTimePtr(a *time.Time, b *time.Time) bool {
 		return false
 	}
 	return a.Equal(*b)
+}
+
+func renderQueuedReviewFeedback(rows []model.RunReviewFeedback) string {
+	var b strings.Builder
+	b.WriteString("GitHub PR review feedback to address:\n\n")
+	for _, row := range rows {
+		b.WriteString("- ")
+		b.WriteString(fmt.Sprintf("[%s/%s PR #%d]", strings.TrimSpace(row.Ticket), strings.TrimSpace(row.Repo), row.PRNumber))
+		if strings.TrimSpace(row.Author) != "" {
+			b.WriteString(" @")
+			b.WriteString(strings.TrimSpace(row.Author))
+		}
+		if strings.TrimSpace(row.FilePath) != "" {
+			b.WriteString(" ")
+			b.WriteString(strings.TrimSpace(row.FilePath))
+			if row.Line > 0 {
+				b.WriteString(fmt.Sprintf(":%d", row.Line))
+			}
+		}
+		if strings.TrimSpace(row.SourceURL) != "" {
+			b.WriteString(" ")
+			b.WriteString(strings.TrimSpace(row.SourceURL))
+		}
+		b.WriteString("\n")
+		body := strings.TrimSpace(row.Body)
+		if body != "" {
+			b.WriteString("  ")
+			b.WriteString(strings.ReplaceAll(body, "\n", "\n  "))
+			b.WriteString("\n")
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func (s *Service) transitionReviewFeedbackStatus(
+	runID string,
+	ticket string,
+	repo string,
+	fromStatus model.ReviewFeedbackStatus,
+	toStatus model.ReviewFeedbackStatus,
+	addressedAt *time.Time,
+) error {
+	rows, err := s.store.ListRunReviewFeedbackByStatus(runID, fromStatus)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if !strings.EqualFold(strings.TrimSpace(row.Ticket), strings.TrimSpace(ticket)) {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(row.Repo), strings.TrimSpace(repo)) {
+			continue
+		}
+		if err := s.store.UpdateRunReviewFeedbackStatus(
+			runID,
+			row.Ticket,
+			row.Repo,
+			row.PRNumber,
+			row.SourceType,
+			row.SourceID,
+			toStatus,
+			"",
+			addressedAt,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) acquireRunMutationLock(runID string, operation string) (func(), error) {
