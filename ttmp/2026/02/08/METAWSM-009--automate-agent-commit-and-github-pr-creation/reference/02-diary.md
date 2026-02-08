@@ -1165,3 +1165,44 @@ I updated PR dry-run previews to include both push and PR commands, wired real e
   1. `git push --set-upstream origin <head-branch>`
   2. `gh pr create --base ... --head ... --title ... --body ...`
 - Dry-run actions now include both commands in order.
+
+## Step 14: Reopen METAWSM-009 for Native Workaround Handling and Break Phase 2 into Executable Tasks
+
+This step reopens active implementation on top of the completed V1 flow. The focus is to remove real-world operator workarounds discovered during end-to-end execution (manual stash/rebase before commit, transient SQLite lock failures, and actor attribution gaps).
+
+I added a dedicated Phase 2 design plan and replaced the coarse backlog items with atomic tasks that map directly to code slices and tests.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Reopen METAWSM-009 -- add a new plan with the list of updates we'd need to make to natively handle the things you had to work around." and "Break those into tasks, then implement them, keeping a diary and committing as you go"
+
+**Assistant interpretation:** Reopen the ticket with a concrete hardening plan, decompose work into executable tasks, then implement incrementally with diary + commits.
+
+**Inferred user intent:** Ship Phase 2 reliability improvements now with clear tracking and reviewable incremental history.
+
+### What I did
+- Added new design doc:
+  - `design-doc/02-phase-2-plan-remove-commit-pr-workflow-workarounds.md`
+- Expanded Phase 2 backlog from 8 coarse items to 16 implementation-ready tasks in `tasks.md` covering:
+  - branch prep robustness,
+  - SQLite lock timeout/retry and mutation locking,
+  - actor fallback resolution,
+  - diagnostics/playbook/e2e coverage.
+- Updated changelog with reopen + task decomposition note.
+
+### Why
+- The reopened Phase 2 must be tracked at the granularity of code-and-test slices to support commit-as-you-go execution and unambiguous review.
+
+### What worked
+- Ticket now shows open Phase 2 tasks with concrete implementation boundaries.
+
+### What didn't work
+- Initial `docmgr task add` sequence mistakenly used `--workdir` as a `docmgr` flag and failed.
+- Fix: reran with shell working directory set via tool invocation, then tasks were added successfully.
+
+### What should be done next
+- Implement and commit each Phase 2 workstream in order:
+  1. branch-prep native handling and regression tests,
+  2. SQLite lock resilience + mutation lock semantics,
+  3. actor fallback and diagnostics improvements,
+  4. playbook/e2e updates.

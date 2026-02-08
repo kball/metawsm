@@ -8,13 +8,17 @@ Topics:
 DocType: index
 Intent: long-term
 Owners: []
-RelatedFiles: []
+RelatedFiles:
+    - Path: ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/design-doc/02-phase-2-plan-remove-commit-pr-workflow-workarounds.md
+      Note: Phase 2 native-handling plan for post-V1 commit/pr robustness
 ExternalSources: []
 Summary: ""
-LastUpdated: 2026-02-08T10:56:41.588444-08:00
+LastUpdated: 2026-02-08T13:07:37.585027-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
+
 
 # Automate agent commit and GitHub PR creation
 

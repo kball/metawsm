@@ -174,3 +174,22 @@ Step 13: added push-before-PR execution plus end-to-end local-auth commit->push-
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — PR workflow now pushes branch before gh pr create
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — End-to-end commit/push/PR test coverage
 
+
+## 2026-02-08
+
+Reopened METAWSM-009 with a Phase 2 hardening plan to remove manual commit/pr workarounds (dirty-tree base drift handling, SQLite lock contention, actor attribution fallback, and stronger preflight diagnostics).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/design-doc/02-phase-2-plan-remove-commit-pr-workflow-workarounds.md — New phase 2 design plan
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/tasks.md — Added phase 2 execution backlog items
+
+
+## 2026-02-08
+
+Expanded reopened Phase 2 backlog into implementation-ready sub-tasks (branch prep, sqlite lock handling, actor fallback, diagnostics, playbook, and e2e coverage).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/tasks.md — Replaced coarse Phase 2 items with atomic executable tasks
+
