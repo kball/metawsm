@@ -2014,11 +2014,14 @@ func TestOpenPullRequestsDryRunPreviewsCreateCommand(t *testing.T) {
 		t.Fatalf("expected one pull request repo result, got %d", len(result.Repos))
 	}
 	repoResult := result.Repos[0]
-	if len(repoResult.Actions) != 1 {
-		t.Fatalf("expected one dry-run action, got %d", len(repoResult.Actions))
+	if len(repoResult.Actions) != 2 {
+		t.Fatalf("expected two dry-run actions (push + pr create), got %d", len(repoResult.Actions))
 	}
-	if !strings.Contains(repoResult.Actions[0], "gh 'pr' 'create'") {
-		t.Fatalf("expected gh pr create preview, got %q", repoResult.Actions[0])
+	if !strings.Contains(repoResult.Actions[0], "git '-C'") || !strings.Contains(repoResult.Actions[0], "push") {
+		t.Fatalf("expected git push preview, got %q", repoResult.Actions[0])
+	}
+	if !strings.Contains(repoResult.Actions[1], "gh 'pr' 'create'") {
+		t.Fatalf("expected gh pr create preview, got %q", repoResult.Actions[1])
 	}
 	if repoResult.PRURL != "" {
 		t.Fatalf("expected empty pr url for dry-run, got %q", repoResult.PRURL)
@@ -2064,6 +2067,15 @@ func TestOpenPullRequestsCreatesAndPersistsMetadata(t *testing.T) {
 	}
 	initGitRepo(t, repoPath)
 	runGit(t, repoPath, "checkout", "-B", "main")
+	originPath := filepath.Join(homeDir, "remotes", "metawsm-origin.git")
+	if err := os.MkdirAll(filepath.Dir(originPath), 0o755); err != nil {
+		t.Fatalf("mkdir origin parent: %v", err)
+	}
+	runGit(t, repoPath, "init", "--bare", originPath)
+	runGit(t, repoPath, "remote", "add", "origin", originPath)
+	headBranch := "metawsm-009/metawsm/run-pr-real"
+	runGit(t, repoPath, "checkout", "-B", headBranch)
+	commitSHA := strings.TrimSpace(runGit(t, repoPath, "rev-parse", "HEAD"))
 	writeWorkspaceConfig(t, workspaceName, workspacePath)
 	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
 	if err := svc.UpsertRunPullRequest(model.RunPullRequest{
@@ -2071,9 +2083,9 @@ func TestOpenPullRequestsCreatesAndPersistsMetadata(t *testing.T) {
 		Ticket:        ticket,
 		Repo:          "metawsm",
 		WorkspaceName: workspaceName,
-		HeadBranch:    "metawsm-009/metawsm/run-pr-real",
+		HeadBranch:    headBranch,
 		BaseBranch:    "main",
-		CommitSHA:     "def456",
+		CommitSHA:     commitSHA,
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 	}); err != nil {
@@ -2100,6 +2112,9 @@ func TestOpenPullRequestsCreatesAndPersistsMetadata(t *testing.T) {
 	if repoResult.PRState != model.PullRequestStateOpen {
 		t.Fatalf("expected PR state open, got %q", repoResult.PRState)
 	}
+	if remoteHeads := strings.TrimSpace(runGit(t, repoPath, "ls-remote", "--heads", "origin", headBranch)); remoteHeads == "" {
+		t.Fatalf("expected pushed branch %q on origin after PR open", headBranch)
+	}
 
 	rows, err := svc.ListRunPullRequests(runID)
 	if err != nil {
@@ -2120,6 +2135,104 @@ func TestOpenPullRequestsCreatesAndPersistsMetadata(t *testing.T) {
 	}
 	if row.CredentialMode != "local_user_auth" {
 		t.Fatalf("expected credential mode local_user_auth, got %q", row.CredentialMode)
+	}
+	if row.Actor != "kball" {
+		t.Fatalf("expected actor kball, got %q", row.Actor)
+	}
+}
+
+func TestCommitAndOpenPullRequestsEndToEndPushesBranchAndPersistsMetadata(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	ghScript := "#!/bin/sh\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"create\" ]; then\n  echo \"https://github.com/example/metawsm/pull/99\"\n  exit 0\nfi\necho \"unexpected gh invocation: $@\" >&2\nexit 1\n"
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatalf("write fake gh script: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-pr-e2e"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-pr-e2e"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	repoPath := filepath.Join(workspacePath, "metawsm")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir repo path: %v", err)
+	}
+	initGitRepo(t, repoPath)
+	runGit(t, repoPath, "checkout", "-B", "main")
+	originPath := filepath.Join(homeDir, "remotes", "metawsm-e2e-origin.git")
+	if err := os.MkdirAll(filepath.Dir(originPath), 0o755); err != nil {
+		t.Fatalf("mkdir origin parent: %v", err)
+	}
+	runGit(t, repoPath, "init", "--bare", originPath)
+	runGit(t, repoPath, "remote", "add", "origin", originPath)
+	if err := os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("end-to-end change\n"), 0o644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+
+	commitResult, err := svc.Commit(t.Context(), CommitOptions{
+		RunID:   runID,
+		Message: "METAWSM-009: end-to-end commit",
+		Actor:   "kball",
+	})
+	if err != nil {
+		t.Fatalf("commit end-to-end: %v", err)
+	}
+	if len(commitResult.Repos) != 1 {
+		t.Fatalf("expected one commit result repo, got %d", len(commitResult.Repos))
+	}
+	headBranch := strings.TrimSpace(commitResult.Repos[0].Branch)
+	if headBranch == "" {
+		t.Fatalf("expected commit branch in result")
+	}
+	if strings.TrimSpace(commitResult.Repos[0].CommitSHA) == "" {
+		t.Fatalf("expected commit sha in result")
+	}
+
+	prResult, err := svc.OpenPullRequests(t.Context(), PullRequestOptions{
+		RunID: runID,
+		Actor: "kball",
+	})
+	if err != nil {
+		t.Fatalf("open pull requests end-to-end: %v", err)
+	}
+	if len(prResult.Repos) != 1 {
+		t.Fatalf("expected one PR result repo, got %d", len(prResult.Repos))
+	}
+	if prResult.Repos[0].PRURL != "https://github.com/example/metawsm/pull/99" {
+		t.Fatalf("unexpected PR URL %q", prResult.Repos[0].PRURL)
+	}
+	if remoteHeads := strings.TrimSpace(runGit(t, repoPath, "ls-remote", "--heads", "origin", headBranch)); remoteHeads == "" {
+		t.Fatalf("expected pushed head branch %q on origin", headBranch)
+	}
+
+	rows, err := svc.ListRunPullRequests(runID)
+	if err != nil {
+		t.Fatalf("list run pull requests: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one persisted PR row, got %d", len(rows))
+	}
+	row := rows[0]
+	if row.PRURL != "https://github.com/example/metawsm/pull/99" {
+		t.Fatalf("expected persisted PR URL, got %q", row.PRURL)
+	}
+	if row.PRState != model.PullRequestStateOpen {
+		t.Fatalf("expected persisted PR state open, got %q", row.PRState)
+	}
+	if row.CredentialMode != "local_user_auth" {
+		t.Fatalf("expected local_user_auth credential mode, got %q", row.CredentialMode)
 	}
 	if row.Actor != "kball" {
 		t.Fatalf("expected actor kball, got %q", row.Actor)

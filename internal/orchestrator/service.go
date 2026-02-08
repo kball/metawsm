@@ -1004,6 +1004,7 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 		for _, reviewer := range normalizeTokens(cfg.GitPR.DefaultReviewers) {
 			args = append(args, "--reviewer", reviewer)
 		}
+		pushPreview := commandPreview("git", "-C", repoPath, "push", "--set-upstream", "origin", headBranch)
 		preview := fmt.Sprintf("cd %s && %s", shellQuote(repoPath), commandPreview("gh", args...))
 
 		repoResult := PullRequestRepoResult{
@@ -1015,7 +1016,7 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 			BaseBranch:    baseBranch,
 			Title:         title,
 			Body:          body,
-			Actions:       []string{preview},
+			Actions:       []string{pushPreview, preview},
 		}
 		if strings.TrimSpace(row.PRURL) != "" {
 			repoResult.SkippedReason = "pull request already exists: " + strings.TrimSpace(row.PRURL)
@@ -1044,6 +1045,9 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 			continue
 		}
 
+		if _, err := runGitCommand(ctx, repoPath, "push", "--set-upstream", "origin", headBranch); err != nil {
+			return PullRequestResult{}, err
+		}
 		output, err := runCommandInDir(ctx, repoPath, "gh", args...)
 		if err != nil {
 			return PullRequestResult{}, err
