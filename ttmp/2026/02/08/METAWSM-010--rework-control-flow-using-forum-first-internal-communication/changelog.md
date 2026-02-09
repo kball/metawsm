@@ -63,3 +63,15 @@ Step 3: Refactored forum command entrypoints to bus-backed dispatch and register
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/forum_dispatcher.go — Dispatcher abstraction and publish/process semantics
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_forum.go — Forum command methods now dispatch to bus topics
 
+
+## 2026-02-09
+
+Step 4: Migrated runtime lifecycle to forum-only control signals, removed metawsm guide CLI, and removed legacy file-signal runtime paths (commit 7d5712a2d4b3edb1934363a82e95d5503e145d4f).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Replaces guide command surface with forum signal command
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/model/types.go — Removes obsolete file-signal payload types
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Guide/syncBootstrapSignals/close checks now forum-first
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_forum_control.go — Introduces control-state derivation from forum control posts
+

@@ -10,6 +10,8 @@ DocType: reference
 Intent: long-term
 Owners: []
 RelatedFiles:
+    - Path: cmd/metawsm/main.go
+      Note: Removed guide command and added forum signal subcommand
     - Path: internal/forumbus/runtime.go
       Note: Implements forum bus runtime lifecycle
     - Path: internal/forumbus/runtime_test.go
@@ -18,12 +20,20 @@ RelatedFiles:
       Note: Defines outbox message and status model
     - Path: internal/model/forum_control.go
       Note: Defines versioned forum control payload schema and validation
+    - Path: internal/model/types.go
+      Note: Removed legacy file-signal payload structs
     - Path: internal/orchestrator/forum_dispatcher.go
       Note: Adds bus-backed dispatcher abstraction for forum command publishing
+    - Path: internal/orchestrator/service.go
+      Note: Forum-first Guide/syncBootstrapSignals/close-check migration
     - Path: internal/orchestrator/service_forum.go
       Note: Adds control signal append flow and one-thread-per-run-agent control thread enforcement
+    - Path: internal/orchestrator/service_forum_control.go
+      Note: Derives per-agent forum control lifecycle state
     - Path: internal/orchestrator/service_test.go
-      Note: Adds service-level test for control thread reuse
+      Note: |-
+        Adds service-level test for control thread reuse
+        Updated tests for forum-first lifecycle behavior
     - Path: internal/store/sqlite.go
       Note: Adds forum_control_threads mapping table for store-level enforcement
     - Path: internal/store/sqlite_forum.go
@@ -32,10 +42,11 @@ RelatedFiles:
       Note: Adds store-level mapping tests
 ExternalSources: []
 Summary: ""
-LastUpdated: 2026-02-09T06:24:19.957975-08:00
+LastUpdated: 2026-02-09T06:47:15-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 
 
@@ -275,3 +286,85 @@ The service now constructs typed forum commands, dispatches to topic handlers, a
 ### Technical details
 - Task status updates:
   - `METAWSM-010` `T5`, `T6` checked complete.
+
+## Step 4: Cut runtime lifecycle over to forum-first control signals and remove guide CLI
+
+I migrated the runtime lifecycle path from mixed filesystem+forum behavior to forum-first control-state derivation. `Guide`, bootstrap signal sync, and bootstrap close checks now consume forum control posts only, and the CLI guidance surface now routes through `metawsm forum signal` instead of a dedicated `metawsm guide` command.
+
+This step also removed remaining runtime file-signal readers/writers and related helper code paths in `service.go`, making control-flow state single-sourced to forum control threads. The behavior change was validated with full test-suite execution.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok yes. follow the task list, implement, keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue executing the task backlog in order, commit each significant slice, and keep diary/changelog/task bookkeeping current.
+
+**Inferred user intent:** Complete a full migration to forum-first control flow without compatibility paths, with auditable incremental progress.
+
+**Commit (code):** 7d5712a2d4b3edb1934363a82e95d5503e145d4f — "Migrate runtime guidance and close checks to forum control signals"
+
+### What I did
+- Added `internal/orchestrator/service_forum_control.go`:
+  - control payload parser (`parseForumControlPayload`)
+  - per-agent control state derivation (`forumControlStatesForRun`)
+- Refactored `Guide` in `internal/orchestrator/service.go`:
+  - reads pending guidance from forum control state
+  - answers by appending `guidance_answer` control signal
+  - removed legacy `.metawsm/guidance-response.json` writing and guidance table flow
+- Refactored `syncBootstrapSignals()` to forum-only control-state derivation.
+- Refactored `ensureBootstrapCloseChecks()` to require forum completion+validation control signals.
+- Updated status output guidance section to render pending forum control guidance requests.
+- Removed legacy file-signal helper code and deletion behavior from runtime:
+  - guidance request/response readers
+  - completion/validation readers
+  - signal file cleanup during iterate feedback recording
+- Removed top-level `metawsm guide` command and usage text in `cmd/metawsm/main.go`.
+- Added `metawsm forum signal` subcommand to post typed control signals.
+- Updated watch direction hints to use forum signal commands.
+- Removed obsolete payload structs from `internal/model/types.go`:
+  - `GuidanceRequestPayload`
+  - `GuidanceResponsePayload`
+  - `CompletionSignalPayload`
+- Updated orchestrator tests to forum-first behavior.
+- Validation command:
+  - `go test ./... -count=1`
+
+### Why
+- `T8`, `T9`, `T10`, `T12`, and `T13` are all part of the same runtime cutover boundary. Landing them together avoids partial dual-path behavior.
+
+### What worked
+- Runtime transitions now follow forum control semantics end-to-end for guidance/completion/validation.
+- CLI guidance surface is consolidated under forum commands.
+- Full repository tests passed after refactor.
+
+### What didn't work
+- Initial command context was wrong when resuming this step:
+  - `git status --short` returned `fatal: not a git repository (or any of the parent directories): .git`
+  - resolved by switching to `/Users/kball/workspaces/2026-02-07/metawsm/metawsm` as working directory.
+
+### What I learned
+- Centralizing lifecycle state in forum control threads simplifies close gating and status rendering because control semantics are explicit and versioned.
+
+### What was tricky to build
+- Preserving run-status transition correctness while replacing synchronous guidance-table checks with derived forum control state.
+
+### What warrants a second pair of eyes
+- `internal/orchestrator/service_forum_control.go` payload parsing and state-reduction logic over ordered posts.
+- `internal/orchestrator/service.go` run-status transition paths in `syncBootstrapSignals` and `Guide`.
+- `cmd/metawsm/main.go` `forum signal` payload validation and actor-type normalization.
+
+### What should be done in the future
+- Implement `T7` projection consumers and `T11` typed snapshot API migration for watch/operator.
+
+### Code review instructions
+- Start here:
+  - `internal/orchestrator/service_forum_control.go`
+  - `internal/orchestrator/service.go`
+  - `cmd/metawsm/main.go`
+  - `internal/orchestrator/service_test.go`
+- Validate with:
+  - `go test ./... -count=1`
+
+### Technical details
+- Task status updates:
+  - `METAWSM-010` `T8`, `T9`, `T10`, `T12`, `T13` checked complete.
