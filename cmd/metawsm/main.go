@@ -2283,10 +2283,17 @@ func buildWatchDirectionHints(snapshot watchSnapshot, event string) []string {
 	}
 	switch event {
 	case "guidance_needed":
+		forumThreadID := ""
 		if len(snapshot.GuidanceItems) > 0 {
 			hints = append(hints, fmt.Sprintf("Pending question: %s", snapshot.GuidanceItems[0]))
+			forumThreadID = parseForumThreadIDFromGuidanceItem(snapshot.GuidanceItems[0])
 		}
-		hints = append(hints, fmt.Sprintf("Answer with: metawsm guide --run-id %s --answer \"<decision>\"", snapshot.RunID))
+		if forumThreadID != "" {
+			hints = append(hints, fmt.Sprintf("Forum escalation detected. Answer with: metawsm forum answer --thread-id %s --body \"<decision>\"", forumThreadID))
+			hints = append(hints, fmt.Sprintf("Or inspect thread first: metawsm forum thread --thread-id %s", forumThreadID))
+		} else {
+			hints = append(hints, fmt.Sprintf("Answer with: metawsm guide --run-id %s --answer \"<decision>\"", snapshot.RunID))
+		}
 		hints = append(hints, fmt.Sprintf("Or inspect first: metawsm status --run-id %s", snapshot.RunID))
 	case "agent_unhealthy":
 		if len(snapshot.UnhealthyAgents) > 0 {
@@ -2316,6 +2323,19 @@ func buildWatchDirectionHints(snapshot watchSnapshot, event string) []string {
 		hints = append(hints, fmt.Sprintf("Sync and dispatch review feedback: metawsm review sync --run-id %s --dispatch", snapshot.RunID))
 	}
 	return hints
+}
+
+func parseForumThreadIDFromGuidanceItem(item string) string {
+	item = strings.TrimSpace(item)
+	if !strings.Contains(item, "forum") {
+		return ""
+	}
+	for _, field := range strings.Fields(item) {
+		if strings.HasPrefix(field, "thread=") {
+			return strings.TrimSpace(strings.TrimPrefix(field, "thread="))
+		}
+	}
+	return ""
 }
 
 func resumeCommand(args []string) error {

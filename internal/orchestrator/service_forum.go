@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"metawsm/internal/model"
+	"metawsm/internal/policy"
 )
 
 type ForumOpenThreadOptions struct {
@@ -252,6 +253,7 @@ func (s *Service) ForumAnswerThread(ctx context.Context, options ForumAddPostOpt
 	if stateChanged == nil {
 		return model.ForumThreadView{}, fmt.Errorf("forum answer returned nil thread")
 	}
+	_ = s.forumEmitDocsSyncRequestedEvent(*stateChanged, actorType, strings.TrimSpace(options.ActorName), correlationID, addEventID, "answered")
 	return *stateChanged, nil
 }
 
@@ -473,6 +475,7 @@ func (s *Service) ForumCloseThread(ctx context.Context, options ForumChangeState
 	if thread == nil {
 		return model.ForumThreadView{}, fmt.Errorf("forum close returned nil thread")
 	}
+	_ = s.forumEmitDocsSyncRequestedEvent(*thread, actorType, strings.TrimSpace(options.ActorName), correlationID, eventID, "closed")
 	return *thread, nil
 }
 
@@ -580,4 +583,45 @@ func generateForumID(prefix string) string {
 		prefix = "forum"
 	}
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+}
+
+func (s *Service) forumEmitDocsSyncRequestedEvent(
+	thread model.ForumThreadView,
+	actorType model.ForumActorType,
+	actorName string,
+	correlationID string,
+	causationID string,
+	trigger string,
+) error {
+	cfg, _, err := policy.Load("")
+	if err != nil {
+		cfg = policy.Default()
+	}
+	if !cfg.Forum.DocsSync.Enabled {
+		return nil
+	}
+	return s.store.ForumAppendIntegrationEvent(model.ForumEnvelope{
+		EventID:       generateForumID("fevt"),
+		EventType:     "forum.integration.docs_sync.requested",
+		EventVersion:  1,
+		OccurredAt:    time.Now(),
+		ThreadID:      thread.ThreadID,
+		RunID:         thread.RunID,
+		Ticket:        thread.Ticket,
+		AgentName:     thread.AgentName,
+		ActorType:     actorType,
+		ActorName:     actorName,
+		CorrelationID: correlationID,
+		CausationID:   causationID,
+	}, map[string]any{
+		"trigger":       trigger,
+		"thread_id":     thread.ThreadID,
+		"title":         thread.Title,
+		"state":         thread.State,
+		"priority":      thread.Priority,
+		"posts_count":   thread.PostsCount,
+		"updated_at":    thread.UpdatedAt.Format(time.RFC3339),
+		"assignee_type": thread.AssigneeType,
+		"assignee_name": thread.AssigneeName,
+	})
 }

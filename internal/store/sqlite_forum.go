@@ -645,6 +645,51 @@ LIMIT %d;`,
 	return out, nil
 }
 
+func (s *SQLiteStore) ForumAppendIntegrationEvent(envelope model.ForumEnvelope, payload map[string]any) error {
+	if strings.TrimSpace(envelope.EventID) == "" {
+		return fmt.Errorf("forum integration event_id is required")
+	}
+	if ok, err := s.forumEventExists(envelope.EventID); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
+	occurredAt := envelope.OccurredAt
+	if occurredAt.IsZero() {
+		occurredAt = time.Now()
+	}
+	if strings.TrimSpace(envelope.EventType) == "" {
+		envelope.EventType = "forum.integration.unknown"
+	}
+	if envelope.EventVersion <= 0 {
+		envelope.EventVersion = 1
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal forum integration payload: %w", err)
+	}
+	sql := fmt.Sprintf(
+		`INSERT INTO forum_events
+  (event_id, event_type, event_version, occurred_at, thread_id, run_id, ticket, agent_name, actor_type, actor_name, correlation_id, causation_id, payload_json)
+VALUES
+  (%s, %s, %d, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);`,
+		quote(envelope.EventID),
+		quote(envelope.EventType),
+		envelope.EventVersion,
+		quote(occurredAt.Format(time.RFC3339)),
+		quote(envelope.ThreadID),
+		quote(envelope.RunID),
+		quote(envelope.Ticket),
+		quote(envelope.AgentName),
+		quote(string(envelope.ActorType)),
+		quote(envelope.ActorName),
+		quote(envelope.CorrelationID),
+		quote(envelope.CausationID),
+		quote(string(payloadJSON)),
+	)
+	return s.execSQL(sql)
+}
+
 func (s *SQLiteStore) refreshForumThreadStats(ticket string) error {
 	now := time.Now().Format(time.RFC3339)
 	sql := fmt.Sprintf(

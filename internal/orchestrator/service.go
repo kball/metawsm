@@ -1902,10 +1902,27 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 		record, _, _, _ = s.store.GetRun(runID)
 	}
 	pendingGuidance, _ := s.store.ListGuidanceRequests(runID, model.GuidanceStatusPending)
+	forumThreads, _ := s.store.ListForumThreads(model.ForumThreadFilter{RunID: runID, Limit: 200})
 	brief, _ := s.store.GetRunBrief(runID)
 	docSyncStates, _ := s.store.ListDocSyncStates(runID)
 	runPullRequests, _ := s.store.ListRunPullRequests(runID)
 	runReviewFeedback, _ := s.store.ListRunReviewFeedback(runID)
+
+	slaMinutes := cfg.Forum.SLA.EscalationMinutes
+	if slaMinutes <= 0 {
+		slaMinutes = 30
+	}
+	slaThreshold := time.Duration(slaMinutes) * time.Minute
+	forumEscalations := []model.ForumThreadView{}
+	for _, thread := range forumThreads {
+		if thread.State != model.ForumThreadStateNew && thread.State != model.ForumThreadStateWaitingHuman {
+			continue
+		}
+		age := now.Sub(thread.UpdatedAt)
+		if thread.Priority == model.ForumPriorityUrgent || thread.Priority == model.ForumPriorityHigh || age >= slaThreshold {
+			forumEscalations = append(forumEscalations, thread)
+		}
+	}
 
 	var doneCount, failedCount, runningCount, pendingCount int
 	for _, step := range steps {
@@ -1971,10 +1988,62 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 		b.WriteString(fmt.Sprintf("  constraints=%s\n", brief.Constraints))
 		b.WriteString(fmt.Sprintf("  merge_intent=%s\n", brief.MergeIntent))
 	}
-	if len(pendingGuidance) > 0 {
+	if len(pendingGuidance) > 0 || len(forumEscalations) > 0 {
 		b.WriteString("Guidance:\n")
 		for _, item := range pendingGuidance {
 			b.WriteString(fmt.Sprintf("  - id=%d %s@%s question=%s\n", item.ID, item.AgentName, item.WorkspaceName, item.Question))
+		}
+		for _, thread := range forumEscalations {
+			b.WriteString(fmt.Sprintf("  - forum thread=%s state=%s priority=%s title=%s\n", thread.ThreadID, thread.State, thread.Priority, thread.Title))
+		}
+	}
+	if len(forumThreads) > 0 {
+		total := len(forumThreads)
+		newCount := 0
+		waitingOperatorCount := 0
+		waitingHumanCount := 0
+		answeredCount := 0
+		closedCount := 0
+		for _, thread := range forumThreads {
+			switch thread.State {
+			case model.ForumThreadStateNew:
+				newCount++
+			case model.ForumThreadStateWaitingOperator:
+				waitingOperatorCount++
+			case model.ForumThreadStateWaitingHuman:
+				waitingHumanCount++
+			case model.ForumThreadStateAnswered:
+				answeredCount++
+			case model.ForumThreadStateClosed:
+				closedCount++
+			}
+		}
+		b.WriteString("Forum:\n")
+		b.WriteString(fmt.Sprintf("  - total=%d new=%d waiting_operator=%d waiting_human=%d answered=%d closed=%d escalations=%d\n",
+			total,
+			newCount,
+			waitingOperatorCount,
+			waitingHumanCount,
+			answeredCount,
+			closedCount,
+			len(forumEscalations),
+		))
+		limit := len(forumThreads)
+		if limit > 5 {
+			limit = 5
+		}
+		for i := 0; i < limit; i++ {
+			item := forumThreads[i]
+			b.WriteString(fmt.Sprintf("  - thread=%s state=%s priority=%s assignee=%s/%s posts=%d updated_at=%s title=%s\n",
+				item.ThreadID,
+				item.State,
+				item.Priority,
+				valueOrDefault(string(item.AssigneeType), "-"),
+				valueOrDefault(item.AssigneeName, "-"),
+				item.PostsCount,
+				item.UpdatedAt.Format(time.RFC3339),
+				item.Title,
+			))
 		}
 	}
 

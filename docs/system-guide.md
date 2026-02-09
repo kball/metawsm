@@ -97,6 +97,9 @@ Freshness behavior is asymmetric by design:
 - stale docmgr index freshness is warning-only
 - missing/unsynced workspace ticket-doc state is enforced at close (hard-fail)
 
+`status` now also includes forum queue summaries and promotes high-priority or SLA-aged `new`/`waiting_human`
+threads into the `Guidance:` section so `watch`/`operator` flows can escalate forum decisions using existing guidance alert handling.
+
 ### 6) Close Gates
 
 Close path requires:

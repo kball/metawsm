@@ -307,6 +307,22 @@ func TestBuildWatchDirectionHintsIncludesLikelyCause(t *testing.T) {
 	}
 }
 
+func TestBuildWatchDirectionHintsForumGuidance(t *testing.T) {
+	snapshot := watchSnapshot{
+		RunID:         "run-forum-1",
+		HasGuidance:   true,
+		GuidanceItems: []string{"forum thread=thread-123 state=waiting_human priority=high title=Need decision"},
+	}
+	hints := buildWatchDirectionHints(snapshot, "guidance_needed")
+	joined := strings.Join(hints, "\n")
+	if !strings.Contains(joined, "metawsm forum answer --thread-id thread-123") {
+		t.Fatalf("expected forum answer hint, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "metawsm forum thread --thread-id thread-123") {
+		t.Fatalf("expected forum thread inspection hint, got:\n%s", joined)
+	}
+}
+
 func TestBuildWatchDirectionHintsCommitReady(t *testing.T) {
 	snapshot := watchSnapshot{RunID: "run-commit-1"}
 	hints := buildWatchDirectionHints(snapshot, "commit_ready")

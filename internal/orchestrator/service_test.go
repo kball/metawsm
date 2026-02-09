@@ -418,6 +418,82 @@ func TestForumServiceLifecycleAndValidation(t *testing.T) {
 	if len(events) < 3 {
 		t.Fatalf("expected at least 3 forum events, got %d", len(events))
 	}
+	foundDocsSync := false
+	for _, event := range events {
+		if event.Envelope.EventType == "forum.integration.docs_sync.requested" {
+			foundDocsSync = true
+			break
+		}
+	}
+	if !foundDocsSync {
+		t.Fatalf("expected docs-sync integration event in forum event stream")
+	}
+}
+
+func TestStatusIncludesForumEscalationGuidance(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	svc, err := NewService(dbPath)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	spec := model.RunSpec{
+		RunID:             "run-forum-status",
+		Mode:              model.RunModeBootstrap,
+		Tickets:           []string{"METAWSM-008"},
+		Repos:             []string{"metawsm"},
+		WorkspaceStrategy: model.WorkspaceStrategyCreate,
+		Agents:            []model.AgentSpec{{Name: "agent", Command: "bash"}},
+		PolicyPath:        ".metawsm/policy.json",
+		CreatedAt:         time.Now().UTC(),
+	}
+	if err := svc.store.CreateRun(spec, `{"version":1}`); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := svc.store.UpdateRunStatus(spec.RunID, model.RunStatusRunning, ""); err != nil {
+		t.Fatalf("set run status running: %v", err)
+	}
+
+	thread, err := svc.ForumOpenThread(t.Context(), ForumOpenThreadOptions{
+		Ticket:    "METAWSM-008",
+		RunID:     spec.RunID,
+		AgentName: "agent",
+		Title:     "Need human decision",
+		Body:      "Should we ship now?",
+		Priority:  model.ForumPriorityHigh,
+		ActorType: model.ForumActorAgent,
+		ActorName: "agent",
+	})
+	if err != nil {
+		t.Fatalf("forum open thread: %v", err)
+	}
+
+	if _, err := svc.ForumChangeState(t.Context(), ForumChangeStateOptions{
+		ThreadID:  thread.ThreadID,
+		ToState:   model.ForumThreadStateWaitingHuman,
+		ActorType: model.ForumActorOperator,
+		ActorName: "operator",
+	}); err != nil {
+		t.Fatalf("forum change state: %v", err)
+	}
+
+	status, err := svc.Status(t.Context(), spec.RunID)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(status, "Guidance:") {
+		t.Fatalf("expected guidance block in status output:\n%s", status)
+	}
+	if !strings.Contains(status, "forum thread=") {
+		t.Fatalf("expected forum escalation guidance line in status output:\n%s", status)
+	}
+	if !strings.Contains(status, "Forum:") {
+		t.Fatalf("expected forum summary block in status output:\n%s", status)
+	}
 }
 
 func TestReadGuidanceRequestFileFromRootsFindsDocHomeRepo(t *testing.T) {
