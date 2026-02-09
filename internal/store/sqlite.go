@@ -230,6 +230,15 @@ CREATE TABLE IF NOT EXISTS forum_projection_events (
   applied_at TEXT NOT NULL,
   PRIMARY KEY (projection_name, event_id)
 );
+CREATE TABLE IF NOT EXISTS forum_control_threads (
+  run_id TEXT NOT NULL,
+  agent_name TEXT NOT NULL,
+  ticket TEXT NOT NULL,
+  thread_id TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, agent_name)
+);
 CREATE TABLE IF NOT EXISTS doc_sync_states (
   run_id TEXT NOT NULL,
   ticket TEXT NOT NULL,

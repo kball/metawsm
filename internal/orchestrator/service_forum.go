@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -65,6 +66,17 @@ type ForumSetPriorityOptions struct {
 type ForumThreadDetail struct {
 	Thread model.ForumThreadView `json:"thread"`
 	Posts  []model.ForumPost     `json:"posts"`
+}
+
+type ForumControlSignalOptions struct {
+	RunID         string
+	Ticket        string
+	AgentName     string
+	ActorType     model.ForumActorType
+	ActorName     string
+	CorrelationID string
+	CausationID   string
+	Payload       model.ForumControlPayloadV1
 }
 
 func (s *Service) ForumOpenThread(ctx context.Context, options ForumOpenThreadOptions) (model.ForumThreadView, error) {
@@ -506,6 +518,61 @@ func (s *Service) ForumWatchEvents(ticket string, cursor int64, limit int) ([]mo
 	return s.store.WatchForumEvents(strings.TrimSpace(ticket), cursor, limit)
 }
 
+func (s *Service) ForumAppendControlSignal(ctx context.Context, options ForumControlSignalOptions) (model.ForumThreadView, error) {
+	_ = ctx
+	actorType, err := normalizeForumActorType(options.ActorType)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	payload := options.Payload
+	if err := payload.Validate(); err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if payload.RunID != strings.TrimSpace(options.RunID) {
+		return model.ForumThreadView{}, fmt.Errorf("forum control payload run_id mismatch")
+	}
+	if payload.AgentName != strings.TrimSpace(options.AgentName) {
+		return model.ForumThreadView{}, fmt.Errorf("forum control payload agent_name mismatch")
+	}
+	thread, err := s.ensureForumControlThread(payload.RunID, payload.AgentName, strings.TrimSpace(options.Ticket))
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return model.ForumThreadView{}, fmt.Errorf("marshal forum control payload: %w", err)
+	}
+	eventID := generateForumID("fevt")
+	correlationID := strings.TrimSpace(options.CorrelationID)
+	if correlationID == "" {
+		correlationID = eventID
+	}
+	next, err := s.store.ForumAddPost(model.ForumAddPostCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:       eventID,
+			EventType:     "forum.control.signal",
+			EventVersion:  1,
+			OccurredAt:    time.Now(),
+			ThreadID:      thread.ThreadID,
+			RunID:         thread.RunID,
+			Ticket:        thread.Ticket,
+			AgentName:     thread.AgentName,
+			ActorType:     actorType,
+			ActorName:     strings.TrimSpace(options.ActorName),
+			CorrelationID: correlationID,
+			CausationID:   strings.TrimSpace(options.CausationID),
+		},
+		Body: string(bodyBytes),
+	})
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if next == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum control append returned nil thread")
+	}
+	return *next, nil
+}
+
 func normalizeForumActorType(actorType model.ForumActorType) (model.ForumActorType, error) {
 	switch strings.TrimSpace(strings.ToLower(string(actorType))) {
 	case string(model.ForumActorAgent):
@@ -583,6 +650,102 @@ func generateForumID(prefix string) string {
 		prefix = "forum"
 	}
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+}
+
+func sanitizeForumIDSegment(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return "unknown"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "unknown"
+	}
+	return out
+}
+
+func forumControlThreadID(runID string, agentName string) string {
+	return fmt.Sprintf("fctrl-%s-%s", sanitizeForumIDSegment(runID), sanitizeForumIDSegment(agentName))
+}
+
+func (s *Service) ensureForumControlThread(runID string, agentName string, ticket string) (model.ForumThreadView, error) {
+	runID = strings.TrimSpace(runID)
+	agentName = strings.TrimSpace(agentName)
+	ticket = strings.TrimSpace(ticket)
+	if runID == "" {
+		return model.ForumThreadView{}, fmt.Errorf("forum control run_id is required")
+	}
+	if agentName == "" {
+		return model.ForumThreadView{}, fmt.Errorf("forum control agent_name is required")
+	}
+	if ticket == "" {
+		return model.ForumThreadView{}, fmt.Errorf("forum control ticket is required")
+	}
+	mapping, err := s.store.GetForumControlThread(runID, agentName)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if mapping != nil {
+		thread, err := s.store.GetForumThread(mapping.ThreadID)
+		if err != nil {
+			return model.ForumThreadView{}, err
+		}
+		if thread != nil {
+			return *thread, nil
+		}
+	}
+	threadID := forumControlThreadID(runID, agentName)
+	existing, err := s.store.GetForumThread(threadID)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if existing == nil {
+		open, err := s.store.ForumOpenThread(model.ForumOpenThreadCommand{
+			Envelope: model.ForumEnvelope{
+				EventID:       generateForumID("fevt"),
+				EventType:     "forum.thread.opened",
+				EventVersion:  1,
+				OccurredAt:    time.Now(),
+				ThreadID:      threadID,
+				RunID:         runID,
+				Ticket:        ticket,
+				AgentName:     agentName,
+				ActorType:     model.ForumActorSystem,
+				ActorName:     "metawsm",
+				CorrelationID: generateForumID("fcorr"),
+			},
+			Title:    fmt.Sprintf("Control thread for %s in %s", agentName, runID),
+			Body:     "System-managed control thread for forum-first run lifecycle signals.",
+			Priority: model.ForumPriorityNormal,
+		})
+		if err != nil {
+			return model.ForumThreadView{}, err
+		}
+		existing = open
+	}
+	if err := s.store.UpsertForumControlThread(model.ForumControlThread{
+		RunID:     runID,
+		AgentName: agentName,
+		Ticket:    ticket,
+		ThreadID:  threadID,
+	}); err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if existing == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum control thread unresolved")
+	}
+	return *existing, nil
 }
 
 func (s *Service) forumEmitDocsSyncRequestedEvent(

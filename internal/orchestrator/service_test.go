@@ -430,6 +430,72 @@ func TestForumServiceLifecycleAndValidation(t *testing.T) {
 	}
 }
 
+func TestForumAppendControlSignalUsesSingleControlThreadPerRunAgent(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	svc, err := NewService(dbPath)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	first, err := svc.ForumAppendControlSignal(t.Context(), ForumControlSignalOptions{
+		RunID:     "run-ctrl-1",
+		Ticket:    "METAWSM-010",
+		AgentName: "agent",
+		ActorType: model.ForumActorAgent,
+		ActorName: "agent",
+		Payload: model.ForumControlPayloadV1{
+			SchemaVersion: model.ForumControlSchemaVersion1,
+			ControlType:   model.ForumControlTypeGuidanceRequest,
+			RunID:         "run-ctrl-1",
+			AgentName:     "agent",
+			Question:      "Need decision",
+		},
+	})
+	if err != nil {
+		t.Fatalf("append first control signal: %v", err)
+	}
+
+	second, err := svc.ForumAppendControlSignal(t.Context(), ForumControlSignalOptions{
+		RunID:     "run-ctrl-1",
+		Ticket:    "METAWSM-010",
+		AgentName: "agent",
+		ActorType: model.ForumActorOperator,
+		ActorName: "operator",
+		Payload: model.ForumControlPayloadV1{
+			SchemaVersion: model.ForumControlSchemaVersion1,
+			ControlType:   model.ForumControlTypeGuidanceAnswer,
+			RunID:         "run-ctrl-1",
+			AgentName:     "agent",
+			Answer:        "Proceed with forum-first flow.",
+		},
+	})
+	if err != nil {
+		t.Fatalf("append second control signal: %v", err)
+	}
+
+	if first.ThreadID == "" || second.ThreadID == "" {
+		t.Fatalf("expected non-empty thread IDs")
+	}
+	if first.ThreadID != second.ThreadID {
+		t.Fatalf("expected control signals to use same thread, got %s and %s", first.ThreadID, second.ThreadID)
+	}
+
+	mapping, err := svc.store.GetForumControlThread("run-ctrl-1", "agent")
+	if err != nil {
+		t.Fatalf("get control mapping: %v", err)
+	}
+	if mapping == nil {
+		t.Fatalf("expected control mapping row")
+	}
+	if mapping.ThreadID != first.ThreadID {
+		t.Fatalf("expected mapping thread id %s, got %s", first.ThreadID, mapping.ThreadID)
+	}
+}
+
 func TestStatusIncludesForumEscalationGuidance(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")

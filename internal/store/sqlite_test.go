@@ -736,3 +736,55 @@ func TestForumThreadLifecycleRoundTrip(t *testing.T) {
 		t.Fatalf("expected monotonic increasing event sequences")
 	}
 }
+
+func TestForumControlThreadMappingUpsertAndLookup(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	s := NewSQLiteStore(dbPath)
+	if err := s.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	if err := s.UpsertForumControlThread(model.ForumControlThread{
+		RunID:     "run-ctrl-1",
+		AgentName: "agent-a",
+		Ticket:    "METAWSM-010",
+		ThreadID:  "fctrl-run-ctrl-1-agent-a",
+	}); err != nil {
+		t.Fatalf("upsert control mapping: %v", err)
+	}
+
+	mapping, err := s.GetForumControlThread("run-ctrl-1", "agent-a")
+	if err != nil {
+		t.Fatalf("get control mapping: %v", err)
+	}
+	if mapping == nil {
+		t.Fatalf("expected control mapping row")
+	}
+	if mapping.ThreadID != "fctrl-run-ctrl-1-agent-a" {
+		t.Fatalf("unexpected thread id %q", mapping.ThreadID)
+	}
+
+	if err := s.UpsertForumControlThread(model.ForumControlThread{
+		RunID:     "run-ctrl-1",
+		AgentName: "agent-a",
+		Ticket:    "METAWSM-010",
+		ThreadID:  "fctrl-run-ctrl-1-agent-a-v2",
+	}); err != nil {
+		t.Fatalf("upsert updated control mapping: %v", err)
+	}
+
+	updated, err := s.GetForumControlThread("run-ctrl-1", "agent-a")
+	if err != nil {
+		t.Fatalf("get updated control mapping: %v", err)
+	}
+	if updated == nil {
+		t.Fatalf("expected updated control mapping row")
+	}
+	if updated.ThreadID != "fctrl-run-ctrl-1-agent-a-v2" {
+		t.Fatalf("expected updated thread id, got %q", updated.ThreadID)
+	}
+}

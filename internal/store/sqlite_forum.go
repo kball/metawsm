@@ -722,6 +722,122 @@ func (s *SQLiteStore) forumEventExists(eventID string) (bool, error) {
 	return len(rows) > 0, nil
 }
 
+func (s *SQLiteStore) UpsertForumControlThread(mapping model.ForumControlThread) error {
+	runID := strings.TrimSpace(mapping.RunID)
+	agentName := strings.TrimSpace(mapping.AgentName)
+	threadID := strings.TrimSpace(mapping.ThreadID)
+	ticket := strings.TrimSpace(mapping.Ticket)
+	if runID == "" {
+		return fmt.Errorf("forum control thread run_id is required")
+	}
+	if agentName == "" {
+		return fmt.Errorf("forum control thread agent_name is required")
+	}
+	if threadID == "" {
+		return fmt.Errorf("forum control thread thread_id is required")
+	}
+	if ticket == "" {
+		return fmt.Errorf("forum control thread ticket is required")
+	}
+	now := time.Now().Format(time.RFC3339)
+	sql := fmt.Sprintf(
+		`INSERT INTO forum_control_threads
+  (run_id, agent_name, ticket, thread_id, created_at, updated_at)
+VALUES
+  (%s, %s, %s, %s, %s, %s)
+ON CONFLICT(run_id, agent_name) DO UPDATE SET
+  ticket=excluded.ticket,
+  thread_id=excluded.thread_id,
+  updated_at=excluded.updated_at;`,
+		quote(runID),
+		quote(agentName),
+		quote(ticket),
+		quote(threadID),
+		quote(now),
+		quote(now),
+	)
+	return s.execSQL(sql)
+}
+
+func (s *SQLiteStore) GetForumControlThread(runID string, agentName string) (*model.ForumControlThread, error) {
+	runID = strings.TrimSpace(runID)
+	agentName = strings.TrimSpace(agentName)
+	if runID == "" || agentName == "" {
+		return nil, nil
+	}
+	sql := fmt.Sprintf(
+		`SELECT run_id, agent_name, ticket, thread_id, created_at, updated_at
+FROM forum_control_threads
+WHERE run_id=%s AND agent_name=%s
+LIMIT 1;`,
+		quote(runID),
+		quote(agentName),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	row := rows[0]
+	createdAt, err := time.Parse(time.RFC3339, asString(row["created_at"]))
+	if err != nil {
+		return nil, fmt.Errorf("parse forum_control_threads created_at: %w", err)
+	}
+	updatedAt, err := time.Parse(time.RFC3339, asString(row["updated_at"]))
+	if err != nil {
+		return nil, fmt.Errorf("parse forum_control_threads updated_at: %w", err)
+	}
+	return &model.ForumControlThread{
+		RunID:     asString(row["run_id"]),
+		AgentName: asString(row["agent_name"]),
+		Ticket:    asString(row["ticket"]),
+		ThreadID:  asString(row["thread_id"]),
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}, nil
+}
+
+func (s *SQLiteStore) ListForumControlThreads(runID string) ([]model.ForumControlThread, error) {
+	runID = strings.TrimSpace(runID)
+	clauses := []string{"1=1"}
+	if runID != "" {
+		clauses = append(clauses, fmt.Sprintf("run_id=%s", quote(runID)))
+	}
+	sql := fmt.Sprintf(
+		`SELECT run_id, agent_name, ticket, thread_id, created_at, updated_at
+FROM forum_control_threads
+WHERE %s
+ORDER BY run_id, agent_name;`,
+		strings.Join(clauses, " AND "),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.ForumControlThread, 0, len(rows))
+	for _, row := range rows {
+		createdAt, err := time.Parse(time.RFC3339, asString(row["created_at"]))
+		if err != nil {
+			return nil, fmt.Errorf("parse forum_control_threads created_at: %w", err)
+		}
+		updatedAt, err := time.Parse(time.RFC3339, asString(row["updated_at"]))
+		if err != nil {
+			return nil, fmt.Errorf("parse forum_control_threads updated_at: %w", err)
+		}
+		out = append(out, model.ForumControlThread{
+			RunID:     asString(row["run_id"]),
+			AgentName: asString(row["agent_name"]),
+			Ticket:    asString(row["ticket"]),
+			ThreadID:  asString(row["thread_id"]),
+			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
+		})
+	}
+	return out, nil
+}
+
 func parseForumThreadView(row map[string]any) (model.ForumThreadView, error) {
 	openedAt, err := time.Parse(time.RFC3339, asString(row["opened_at"]))
 	if err != nil {
