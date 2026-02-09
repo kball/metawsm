@@ -8,5 +8,5 @@
 - [x] Add WebSocket endpoint for live forum events
 - [x] Restore/build web UI using server API and forum workflows
 - [x] Implement embed + dev proxy flow without committing compiled assets
-- [ ] Add tests for server routes, daemon runtime, and failure modes
-- [ ] Update runbooks/docs for mandatory daemon mode and rollout
+- [x] Add tests for server routes, daemon runtime, and failure modes
+- [x] Update runbooks/docs for mandatory daemon mode and rollout

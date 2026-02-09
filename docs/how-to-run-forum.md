@@ -1,24 +1,22 @@
 # Forum Runtime Runbook
 
-This document explains what must be configured and running for `metawsm` forum workflows to work reliably.
+This runbook covers required setup for forum workflows after daemon cutover.
 
 Scope:
 - forum threads/posts (`metawsm forum ...`)
 - forum control signals (`metawsm forum signal ...`)
-- run lifecycle gates that now depend on forum control state
+- daemon API/WebSocket verification and recovery
 
-## Runtime Model (What Is Actually Running)
+## Runtime Model
 
-Forum handling is embedded inside each `metawsm` command process, and transport is backed by Redis Streams.
+Forum handling is daemonized behind `metawsm serve`:
+1. CLI forum commands call daemon HTTP endpoints (`--server`, default `http://127.0.0.1:3001`).
+2. The daemon writes forum commands/events through shared service APIs.
+3. A durable worker loop processes the SQLite outbox and Redis stream transport continuously.
+4. WebSocket clients subscribe to `/api/v1/forum/stream` for live updates.
+5. Projections update `forum_thread_views` and `forum_thread_stats`.
 
-There is currently no separate always-on forum daemon in this repo. Instead:
-1. command handlers enqueue messages into `forum_outbox` (SQLite)
-2. in-process bus workers publish outbox messages to Redis stream topics
-3. resulting forum events are published to `forum.events.*`
-4. in-process subscribers consume Redis stream messages and run topic handlers
-5. projection handlers update `forum_thread_views` and `forum_thread_stats`
-
-This means forum behavior is active whenever a `metawsm` command that constructs the service is running.
+Forum command workflows are now mandatory daemon mode: if `metawsm serve` is not running, forum commands fail fast.
 
 ## Required Prerequisites
 
@@ -27,14 +25,14 @@ Tools/binaries:
 - `sqlite3`
 - `redis-server` (required)
 - `git`
-- `tmux` (required for agent session orchestration)
+- `tmux` (required for run/agent orchestration)
 - `docmgr` and `wsm` (required for full run/bootstrap workflows)
 
 Files/config:
 - `.metawsm/policy.json` must exist or defaults must be acceptable
-- `.metawsm/metawsm.db` will be created automatically by service initialization
+- `.metawsm/metawsm.db` is created automatically
 
-Policy fields that must be valid for forum startup:
+Policy fields required for forum runtime:
 - `forum.enabled`
 - `forum.topics.command_prefix`
 - `forum.topics.event_prefix`
@@ -44,30 +42,22 @@ Policy fields that must be valid for forum startup:
 - `forum.redis.group`
 - `forum.redis.consumer`
 
-Important current behavior:
-- `forum.redis.*` is validated and used by runtime transport.
-- Redis Streams are required for command/event delivery.
-- SQLite remains the durable outbox staging store.
-
 ## What Must Be Running
 
 Always required:
-- a `metawsm` command process (for whichever action you are performing)
-- reachable Redis server matching `forum.redis.url`
+- reachable Redis matching `forum.redis.url`
+- one `metawsm serve` process for the target DB
 
 Required for active run execution:
-- per-agent `tmux` sessions (started by `run`/`bootstrap`/`resume`)
+- per-agent `tmux` sessions started by `run`/`bootstrap`/`resume`
 
 Optional but common:
-- `metawsm operator --all` (continuous supervision/escalation)
-- `metawsm watch ...` (alert-focused monitoring)
-
-Not required as a separate process right now:
-- dedicated forum worker daemon (workers run in-process in `metawsm` commands)
+- `metawsm operator --all` for continuous supervision
+- Vite dev server for UI work (`make dev-frontend`)
 
 ## Bring-Up Checklist
 
-1. Start Redis (local default):
+1. Start Redis:
 
 ```bash
 redis-server --port 6379
@@ -79,30 +69,33 @@ redis-server --port 6379
 go run ./cmd/metawsm policy-init
 ```
 
-3. Confirm forum config is present and non-empty:
+3. Start daemon:
 
 ```bash
-rg -n '"forum"|"command_prefix"|"event_prefix"|"integration_prefix"|"url"|"stream"|"group"|"consumer"' .metawsm/policy.json
+go run ./cmd/metawsm serve --addr :3001 --db .metawsm/metawsm.db
 ```
 
-4. Start a run or bootstrap flow:
+4. Verify health/API:
+
+```bash
+curl -s http://127.0.0.1:3001/api/v1/health | jq
+curl -s http://127.0.0.1:3001/api/v1/forum/stats | jq
+```
+
+5. Start run/bootstrap and generate forum traffic:
 
 ```bash
 go run ./cmd/metawsm bootstrap \
   --ticket METAWSM-002 \
   --repos metawsm \
   --doc-home-repo metawsm
-```
 
-5. Create/read forum traffic:
-
-```bash
 go run ./cmd/metawsm forum ask --run-id RUN_ID --ticket METAWSM-002 --title "Question" --body "Need guidance"
 go run ./cmd/metawsm forum list --run-id RUN_ID
 go run ./cmd/metawsm forum thread --thread-id THREAD_ID
 ```
 
-6. Post control signals (forum-first lifecycle path):
+6. Post control signals:
 
 ```bash
 go run ./cmd/metawsm forum signal --run-id RUN_ID --ticket METAWSM-002 --agent-name agent --type guidance_request --question "Need decision"
@@ -111,26 +104,32 @@ go run ./cmd/metawsm forum signal --run-id RUN_ID --ticket METAWSM-002 --agent-n
 go run ./cmd/metawsm forum signal --run-id RUN_ID --ticket METAWSM-002 --agent-name agent --type validation --status passed --done-criteria "tests pass"
 ```
 
-7. Verify run state reflects forum control state:
+7. Optional live stream check:
 
 ```bash
-go run ./cmd/metawsm status --run-id RUN_ID
+websocat ws://127.0.0.1:3001/api/v1/forum/stream
 ```
 
 ## Operational Verification
 
-Use these checks when diagnosing forum issues:
+Use these checks for diagnosis:
 
-- app-level check:
+- daemon health + worker lag:
+
+```bash
+curl -s http://127.0.0.1:3001/api/v1/health | jq
+```
+
+- run status:
 
 ```bash
 go run ./cmd/metawsm status --run-id RUN_ID
 ```
 
-- focused test suites:
+- focused tests:
 
 ```bash
-go test ./internal/forumbus ./internal/store ./internal/orchestrator -count=1
+go test ./internal/server ./internal/serviceapi ./internal/orchestrator ./internal/store -count=1
 ```
 
 - Redis stream inspection:
@@ -140,7 +139,7 @@ redis-cli XINFO STREAM forum.commands.open_thread
 redis-cli XINFO GROUPS metawsm-forum
 ```
 
-- inspect outbox and events directly:
+- SQLite outbox/events:
 
 ```bash
 sqlite3 .metawsm/metawsm.db "select status,count(*) from forum_outbox group by status;"
@@ -150,32 +149,38 @@ sqlite3 .metawsm/metawsm.db "select projection_name,count(*) from forum_projecti
 
 ## Failure Modes and Recovery
 
+`connection refused` for forum commands
+- Cause: `metawsm serve` is not running or wrong `--server`.
+- Fix: start daemon, confirm address, retry command with `--server http://127.0.0.1:3001`.
+
 `forum redis url is empty`
 - Cause: `forum.redis.url` is blank in policy.
-- Fix: set non-empty `forum.redis.url` (and other required `forum.redis.*` fields), then rerun command.
+- Fix: set required `forum.redis.*` fields and restart daemon.
 
 `forum redis ping failed`
-- Cause: Redis is not running or unreachable at configured URL.
-- Fix: start Redis, verify host/port/db in `forum.redis.url`, and retry.
+- Cause: Redis is unavailable at configured URL.
+- Fix: start Redis, verify URL/port/db, then restart daemon.
 
-`no handler for topic ...` in outbox failures
-- Cause: topic prefixes/config mismatch or handler registration regression.
-- Fix: verify `forum.topics.*` values and code defaults; run tests above; re-run a forum command to drive outbox processing again.
-
-SQLite lock/contention (`database is locked`)
-- Cause: many concurrent writers/readers against `.metawsm/metawsm.db`.
-- Fix: reduce concurrent command loops; retry command; avoid multiple heavy loops on same DB.
+`database is locked`
+- Cause: heavy concurrent SQLite access.
+- Fix: reduce competing processes on one DB, retry operation.
 
 Run stuck in `awaiting_guidance`
-- Cause: pending `guidance_request` without matching `guidance_answer` in the control thread.
-- Fix: post a `guidance_answer` with `metawsm forum signal ... --type guidance_answer ...`.
+- Cause: pending `guidance_request` lacks `guidance_answer`.
+- Fix: post `guidance_answer` with `metawsm forum signal`.
 
 Close blocked for bootstrap runs
-- Cause: missing `completion` or `validation` control signals, or validation criteria mismatch.
-- Fix: post `completion` and `validation` signals for each agent; ensure validation `done_criteria` matches run brief expectation.
+- Cause: missing `completion`/`validation` control signals, or mismatched done criteria.
+- Fix: post both signals per agent and ensure done criteria match bootstrap brief.
 
-## Durable Operator Guidance
+## Logging Guidance
 
-- Use forum commands and control signals as the only lifecycle signaling path.
-- Do not rely on legacy `.metawsm/*.json` file signaling.
-- Treat `status` output as human-readable; automation paths should prefer typed service APIs in code (`RunSnapshot`).
+- Default logging is stdout from `metawsm serve`.
+- For optional file retention, redirect stdout/stderr to a log file in your supervisor/service wrapper.
+- Structured sync state remains queryable from SQLite (`doc_sync_states`) and status/API outputs.
+
+## Operator Guidance
+
+- Forum/control signals are the only lifecycle signaling path.
+- Do not rely on legacy `.metawsm/*.json` signal files.
+- For automation, prefer typed service/API payloads over parsing CLI text output.

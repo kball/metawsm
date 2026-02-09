@@ -11,6 +11,7 @@ It composes three external systems:
 
 Operator command surface:
 - `run`, `bootstrap`
+- `serve`
 - `status`, `tui`
 - `resume`, `stop`, `restart`, `iterate`
 - `forum` (`ask`, `answer`, `assign`, `state`, `priority`, `close`, `list`, `thread`, `watch`, `signal`)
@@ -20,7 +21,25 @@ Operator command surface:
 
 ## Core Architecture
 
-### 1) Policy-Driven Control Plane
+### 1) Durable Daemon + Shared Service API
+
+`metawsm serve` is the long-running local server process for forum and web/API workflows.
+
+Runtime responsibilities:
+- starts HTTP API handlers and WebSocket stream endpoint
+- runs durable forum worker loop (`ProcessForumBusOnce`) with health/lag snapshots
+- serves web UI when embedded or generated assets are available
+
+Service boundary:
+- `internal/serviceapi.Core` defines shared operations for run/forum flows
+- HTTP handlers and CLI forum commands consume the same service API contract
+- CLI forum commands use daemon HTTP transport (`--server`, default `http://127.0.0.1:3001`)
+
+Forum workflow invariant:
+- forum command handling is daemon-backed and mandatory in V1
+- non-forum commands still execute directly through orchestrator service paths
+
+### 2) Policy-Driven Control Plane
 
 Runtime behavior is configured by `.metawsm/policy.json` (or defaults).
 
@@ -43,7 +62,7 @@ Key policy areas:
 - `forum.sla.escalation_minutes`
 - `forum.docs_sync.enabled`
 
-### 2) Run-Level Documentation Topology
+### 3) Run-Level Documentation Topology
 
 Each run carries explicit docs topology in persisted `RunSpec`:
 - `doc_home_repo`
@@ -59,7 +78,7 @@ Backward compatibility:
 - `--doc-home-repo` is canonical
 - `--doc-repo` is retained as a legacy alias
 
-### 3) Durable State in SQLite
+### 4) Durable State in SQLite
 
 `metawsm` persists orchestration state in `.metawsm/metawsm.db`.
 
@@ -74,7 +93,7 @@ Primary entities:
 
 This enables deterministic status rendering, restart/resume behavior, and close-time safety checks.
 
-### 4) Plan Compilation and Execution
+### 5) Plan Compilation and Execution
 
 For each ticket, planning emits ordered steps:
 - verify ticket in `docmgr`
@@ -84,7 +103,20 @@ For each ticket, planning emits ordered steps:
 
 Important: seeding is mode-independent now (available in both `run` and `bootstrap`), controlled by seed mode.
 
-### 5) Status and Freshness Visibility
+### 6) HTTP API and Live Forum Updates
+
+Daemon API surface under `/api/v1` includes:
+- health and run snapshots (`/health`, `/runs`, `/runs/{run_id}`)
+- forum read/write endpoints (`/forum/threads`, thread action routes, `/forum/control/signal`)
+- event polling + stats (`/forum/events`, `/forum/stats`)
+- live stream WebSocket (`/forum/stream`)
+
+Web serving model:
+- development: Vite dev server proxies `/api` to `metawsm serve`
+- production: `go generate ./internal/web` + `go build -tags embed` embeds UI assets in binary
+- missing assets do not block API startup; root returns actionable availability message
+
+### 7) Status and Freshness Visibility
 
 `status` includes a dedicated Docs section:
 - `home_repo`
@@ -100,7 +132,7 @@ Freshness behavior is asymmetric by design:
 `status` now also includes forum queue summaries and promotes high-priority or SLA-aged `new`/`waiting_human`
 threads into the `Guidance:` section so `watch`/`operator` flows can escalate forum decisions using existing guidance alert handling.
 
-### 6) Close Gates
+### 8) Close Gates
 
 Close path requires:
 - clean workspace git state
@@ -111,7 +143,7 @@ Close path requires:
 
 If these invariants fail, close is blocked with actionable errors.
 
-### 7) Federation and Global Docs View
+### 9) Federation and Global Docs View
 
 `metawsm docs` queries multiple `docmgr` API endpoints (`/api/v1/workspace/status`, `/api/v1/workspace/tickets`) and supports refresh (`POST /api/v1/index/refresh`).
 
@@ -138,17 +170,21 @@ Contract:
 ## Operator Workflow (Current)
 
 1. Configure policy (`policy-init` + docs endpoint config).
-2. Start run with explicit docs topology (`--doc-home-repo`, optional seed mode override).
-3. Monitor with `status` / `tui`.
-4. Use `docs` for federated docs visibility and optional endpoint refresh.
-5. Iterate/restart as needed after review.
-6. Merge completed workspace work.
-7. Close run (close gates enforce doc-sync correctness).
-8. Cleanup sessions/workspaces.
+2. Start Redis and `metawsm serve` for daemon-backed forum/API workflows.
+3. Start run with explicit docs topology (`--doc-home-repo`, optional seed mode override).
+4. Monitor with `status` / `tui`.
+5. Use `docs` for federated docs visibility and optional endpoint refresh.
+6. Iterate/restart as needed after review.
+7. Merge completed workspace work.
+8. Close run (close gates enforce doc-sync correctness).
+9. Cleanup sessions/workspaces.
 
 ## Key Code Areas
 
 - CLI commands: `cmd/metawsm/main.go`
+- Daemon runtime and handlers: `internal/server/runtime.go`, `internal/server/api.go`, `internal/server/websocket.go`, `internal/server/worker.go`
+- Shared service API and transports: `internal/serviceapi/core.go`, `internal/serviceapi/remote.go`
+- Web embedding/serving: `internal/web/spa.go`, `internal/web/generate_build.go`
 - Orchestration runtime/planner/close gates: `internal/orchestrator/service.go`
 - Models (`RunSpec`, doc sync types): `internal/model/types.go`
 - Policy schema/validation: `internal/policy/policy.go`

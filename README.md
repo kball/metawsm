@@ -28,6 +28,7 @@ Implemented command surface:
 - `metawsm policy-init`
 - `metawsm tui`
 - `metawsm docs`
+- `metawsm serve`
 
 Key implementation decisions:
 - HSM-driven lifecycle transitions for run/step/agent states.
@@ -42,6 +43,12 @@ Initialize policy:
 
 ```bash
 go run ./cmd/metawsm policy-init
+```
+
+Start the durable daemon (forum worker + HTTP/WebSocket API + optional UI):
+
+```bash
+go run ./cmd/metawsm serve --addr :3001
 ```
 
 Plan a run (no side effects):
@@ -209,6 +216,7 @@ Kickoff doc-home selection:
 ## Forum Control Signals
 
 Run lifecycle signaling is forum-first (no file-signal compatibility path).
+Forum commands are daemon-backed and call `metawsm serve` (`--server` defaults to `http://127.0.0.1:3001`).
 
 Control flow conventions:
 - Exactly one control thread per `(run_id, agent_name)`.
@@ -256,11 +264,44 @@ When `metawsm operator` escalates in environments using `docs.authority_mode=wor
 
 Entries include run id, escalation intent, summary/evidence, and requested operator decision.
 
+## Daemon API + UI (V1)
+
+`metawsm serve` hosts:
+- HTTP API under `/api/v1/...`
+- WebSocket stream at `/api/v1/forum/stream`
+- Web UI at `/` (if UI assets are available)
+
+Core API routes:
+- `GET /api/v1/health`
+- `GET /api/v1/runs`, `GET /api/v1/runs/{run_id}`
+- `GET/POST /api/v1/forum/threads`
+- `POST /api/v1/forum/threads/{thread_id}/posts|assign|state|priority|close`
+- `POST /api/v1/forum/control/signal`
+- `GET /api/v1/forum/events`, `GET /api/v1/forum/stats`
+
+Development loop:
+
+```bash
+# terminal 1
+make dev-backend
+
+# terminal 2
+npm --prefix ui install
+make dev-frontend
+```
+
+Production-style build:
+
+```bash
+go generate ./internal/web
+go build -tags embed ./...
+```
+
 ## Build & Test
 
 ```bash
 go test ./...
-go build ./...
+go build -tags embed ./...
 ```
 
 ## Additional Runbook
