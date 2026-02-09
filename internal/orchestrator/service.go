@@ -1267,6 +1267,7 @@ func (s *Service) SyncReviewFeedback(ctx context.Context, options ReviewFeedback
 		return ReviewFeedbackSyncResult{}, fmt.Errorf("review feedback max items must be > 0")
 	}
 	remaining := maxItems
+	ignoredAuthors := normalizeIgnoreAuthorSet(cfg.GitPR.ReviewFeedback.IgnoreAuthors)
 
 	existingRows, err := s.store.ListRunReviewFeedback(runID)
 	if err != nil {
@@ -1303,10 +1304,14 @@ func (s *Service) SyncReviewFeedback(ctx context.Context, options ReviewFeedback
 			result.Repos = append(result.Repos, repoResult)
 			continue
 		}
-		endpoint := fmt.Sprintf("repos/%s/pulls/%d/comments", ownerRepo, prNumber)
-		repoResult.Actions = []string{commandPreview("gh", "api", endpoint, "--paginate")}
+		commentsEndpoint := fmt.Sprintf("repos/%s/pulls/%d/comments", ownerRepo, prNumber)
+		reviewsEndpoint := fmt.Sprintf("repos/%s/pulls/%d/reviews", ownerRepo, prNumber)
+		repoResult.Actions = []string{
+			commandPreview("gh", "api", commentsEndpoint, "--paginate"),
+			commandPreview("gh", "api", reviewsEndpoint, "--paginate"),
+		}
 
-		output, err := runCommandInDir(ctx, "", "gh", "api", endpoint, "--paginate")
+		output, err := runCommandInDir(ctx, "", "gh", "api", commentsEndpoint, "--paginate")
 		if err != nil {
 			return ReviewFeedbackSyncResult{}, err
 		}
@@ -1314,12 +1319,23 @@ func (s *Service) SyncReviewFeedback(ctx context.Context, options ReviewFeedback
 		if err != nil {
 			return ReviewFeedbackSyncResult{}, fmt.Errorf("parse review comments for %s: %w", row.PRURL, err)
 		}
-		repoResult.Fetched = len(comments)
-		if len(comments) > remaining {
-			comments = comments[:remaining]
+		output, err = runCommandInDir(ctx, "", "gh", "api", reviewsEndpoint, "--paginate")
+		if err != nil {
+			return ReviewFeedbackSyncResult{}, err
 		}
+		reviews, err := parsePRTopLevelReviews(output)
+		if err != nil {
+			return ReviewFeedbackSyncResult{}, fmt.Errorf("parse pull request reviews for %s: %w", row.PRURL, err)
+		}
+		repoResult.Fetched = len(comments) + len(reviews)
 
 		for _, comment := range comments {
+			if reviewFeedbackAuthorIgnored(ignoredAuthors, comment.User.Login) {
+				continue
+			}
+			if remaining <= 0 {
+				break
+			}
 			sourceID := strconv.FormatInt(comment.ID, 10)
 			key := runReviewFeedbackKey(row.Ticket, row.Repo, row.PRNumber, model.ReviewFeedbackSourceTypePRReviewComment, sourceID)
 			existing, exists := existingByKey[key]
@@ -1346,6 +1362,69 @@ func (s *Service) SyncReviewFeedback(ctx context.Context, options ReviewFeedback
 				Body:          strings.TrimSpace(comment.Body),
 				FilePath:      strings.TrimSpace(comment.Path),
 				Line:          comment.EffectiveLine(),
+				Status:        status,
+				ErrorText:     "",
+				CreatedAt:     createdAt,
+				UpdatedAt:     now,
+				LastSeenAt:    now,
+				AddressedAt:   existing.AddressedAt,
+			}
+			if !options.DryRun {
+				if err := s.store.UpsertRunReviewFeedback(record); err != nil {
+					return ReviewFeedbackSyncResult{}, err
+				}
+			}
+			if exists {
+				if runReviewFeedbackChanged(existing, record) {
+					repoResult.Updated++
+					result.Updated++
+				}
+			} else {
+				repoResult.Added++
+				result.Added++
+			}
+			existingByKey[key] = record
+			remaining--
+			if remaining <= 0 {
+				break
+			}
+		}
+		for _, review := range reviews {
+			if reviewFeedbackAuthorIgnored(ignoredAuthors, review.User.Login) {
+				continue
+			}
+			if remaining <= 0 {
+				break
+			}
+			sourceID := strconv.FormatInt(review.ID, 10)
+			key := runReviewFeedbackKey(row.Ticket, row.Repo, row.PRNumber, model.ReviewFeedbackSourceTypePRReview, sourceID)
+			existing, exists := existingByKey[key]
+
+			status := model.ReviewFeedbackStatusQueued
+			if exists && strings.TrimSpace(string(existing.Status)) != "" {
+				status = existing.Status
+			}
+			createdAt := review.SubmittedAt
+			if createdAt.IsZero() {
+				createdAt = now
+			}
+			if exists && !existing.CreatedAt.IsZero() {
+				createdAt = existing.CreatedAt
+			}
+			record := model.RunReviewFeedback{
+				RunID:         runID,
+				Ticket:        row.Ticket,
+				Repo:          row.Repo,
+				WorkspaceName: row.WorkspaceName,
+				PRNumber:      row.PRNumber,
+				PRURL:         row.PRURL,
+				SourceType:    model.ReviewFeedbackSourceTypePRReview,
+				SourceID:      sourceID,
+				SourceURL:     strings.TrimSpace(review.HTMLURL),
+				Author:        strings.TrimSpace(review.User.Login),
+				Body:          formatTopLevelReviewBody(review),
+				FilePath:      "",
+				Line:          0,
 				Status:        status,
 				ErrorText:     "",
 				CreatedAt:     createdAt,
@@ -3113,6 +3192,107 @@ func parsePRReviewComments(output string) ([]ghPRReviewComment, error) {
 		return nil, err
 	}
 	return comments, nil
+}
+
+type ghPRReview struct {
+	ID          int64  `json:"id"`
+	HTMLURL     string `json:"html_url"`
+	Body        string `json:"body"`
+	State       string `json:"state"`
+	SubmittedAt string `json:"submitted_at"`
+	User        struct {
+		Login string `json:"login"`
+	} `json:"user"`
+}
+
+type normalizedPRReview struct {
+	ID          int64
+	HTMLURL     string
+	Body        string
+	State       string
+	SubmittedAt time.Time
+	User        struct {
+		Login string
+	}
+}
+
+func parsePRTopLevelReviews(output string) ([]normalizedPRReview, error) {
+	text := strings.TrimSpace(output)
+	if text == "" {
+		return nil, nil
+	}
+	reviews := []ghPRReview{}
+	if err := json.Unmarshal([]byte(text), &reviews); err != nil {
+		return nil, err
+	}
+	out := make([]normalizedPRReview, 0, len(reviews))
+	for _, review := range reviews {
+		state := strings.ToUpper(strings.TrimSpace(review.State))
+		body := strings.TrimSpace(review.Body)
+		if body == "" || state == "" || state == "PENDING" {
+			continue
+		}
+		submittedAt := time.Time{}
+		if ts := strings.TrimSpace(review.SubmittedAt); ts != "" {
+			parsed, err := time.Parse(time.RFC3339, ts)
+			if err != nil {
+				return nil, fmt.Errorf("parse review submitted_at for review id %d: %w", review.ID, err)
+			}
+			submittedAt = parsed
+		}
+		normalized := normalizedPRReview{
+			ID:          review.ID,
+			HTMLURL:     strings.TrimSpace(review.HTMLURL),
+			Body:        body,
+			State:       state,
+			SubmittedAt: submittedAt,
+		}
+		normalized.User.Login = strings.TrimSpace(review.User.Login)
+		out = append(out, normalized)
+	}
+	return out, nil
+}
+
+func formatTopLevelReviewBody(review normalizedPRReview) string {
+	body := strings.TrimSpace(review.Body)
+	if body == "" {
+		return body
+	}
+	metadata := []string{}
+	if state := strings.TrimSpace(strings.ToLower(review.State)); state != "" {
+		metadata = append(metadata, "state="+state)
+	}
+	if !review.SubmittedAt.IsZero() {
+		metadata = append(metadata, "submitted_at="+review.SubmittedAt.Format(time.RFC3339))
+	}
+	if len(metadata) == 0 {
+		return body
+	}
+	return fmt.Sprintf("[%s]\n%s", strings.Join(metadata, " "), body)
+}
+
+func normalizeIgnoreAuthorSet(authors []string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, author := range authors {
+		normalized := strings.ToLower(strings.TrimSpace(author))
+		if normalized == "" {
+			continue
+		}
+		out[normalized] = struct{}{}
+	}
+	return out
+}
+
+func reviewFeedbackAuthorIgnored(ignoreAuthors map[string]struct{}, author string) bool {
+	if len(ignoreAuthors) == 0 {
+		return false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(author))
+	if normalized == "" {
+		return false
+	}
+	_, ignored := ignoreAuthors[normalized]
+	return ignored
 }
 
 func parseGitHubPullURL(prURL string) (string, int, error) {

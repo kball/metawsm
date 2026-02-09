@@ -2696,7 +2696,7 @@ func TestSyncReviewFeedbackPersistsQueuedReviewComments(t *testing.T) {
 
 	binDir := t.TempDir()
 	ghPath := filepath.Join(binDir, "gh")
-	ghScript := "#!/bin/sh\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"repos/example/metawsm/pulls/42/comments\" ]; then\n  echo '[{\"id\":9001,\"html_url\":\"https://github.com/example/metawsm/pull/42#discussion_r9001\",\"body\":\"Please add a regression test.\",\"path\":\"internal/orchestrator/service.go\",\"line\":1044,\"user\":{\"login\":\"reviewer-a\"}},{\"id\":9002,\"html_url\":\"https://github.com/example/metawsm/pull/42#discussion_r9002\",\"body\":\"Can you tighten the error message?\",\"path\":\"internal/store/sqlite.go\",\"line\":631,\"user\":{\"login\":\"reviewer-b\"}}]'\n  exit 0\nfi\necho \"unexpected gh invocation: $@\" >&2\nexit 1\n"
+	ghScript := "#!/bin/sh\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"repos/example/metawsm/pulls/42/comments\" ]; then\n  echo '[{\"id\":9001,\"html_url\":\"https://github.com/example/metawsm/pull/42#discussion_r9001\",\"body\":\"Please add a regression test.\",\"path\":\"internal/orchestrator/service.go\",\"line\":1044,\"user\":{\"login\":\"reviewer-a\"}},{\"id\":9002,\"html_url\":\"https://github.com/example/metawsm/pull/42#discussion_r9002\",\"body\":\"Can you tighten the error message?\",\"path\":\"internal/store/sqlite.go\",\"line\":631,\"user\":{\"login\":\"reviewer-b\"}}]'\n  exit 0\nfi\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"repos/example/metawsm/pulls/42/reviews\" ]; then\n  echo '[]'\n  exit 0\nfi\necho \"unexpected gh invocation: $@\" >&2\nexit 1\n"
 	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
 		t.Fatalf("write fake gh script: %v", err)
 	}
@@ -2762,7 +2762,7 @@ func TestSyncReviewFeedbackDryRunDoesNotPersistRows(t *testing.T) {
 
 	binDir := t.TempDir()
 	ghPath := filepath.Join(binDir, "gh")
-	ghScript := "#!/bin/sh\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"repos/example/metawsm/pulls/43/comments\" ]; then\n  echo '[{\"id\":9010,\"html_url\":\"https://github.com/example/metawsm/pull/43#discussion_r9010\",\"body\":\"Nit: rename this var.\",\"path\":\"cmd/metawsm/main.go\",\"line\":2200,\"user\":{\"login\":\"reviewer-c\"}}]'\n  exit 0\nfi\necho \"unexpected gh invocation: $@\" >&2\nexit 1\n"
+	ghScript := "#!/bin/sh\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"repos/example/metawsm/pulls/43/comments\" ]; then\n  echo '[{\"id\":9010,\"html_url\":\"https://github.com/example/metawsm/pull/43#discussion_r9010\",\"body\":\"Nit: rename this var.\",\"path\":\"cmd/metawsm/main.go\",\"line\":2200,\"user\":{\"login\":\"reviewer-c\"}}]'\n  exit 0\nfi\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"repos/example/metawsm/pulls/43/reviews\" ]; then\n  echo '[]'\n  exit 0\nfi\necho \"unexpected gh invocation: $@\" >&2\nexit 1\n"
 	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
 		t.Fatalf("write fake gh script: %v", err)
 	}
@@ -2800,6 +2800,167 @@ func TestSyncReviewFeedbackDryRunDoesNotPersistRows(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Fatalf("expected no persisted rows in dry-run, got %d", len(rows))
+	}
+}
+
+func TestSyncReviewFeedbackIngestsTopLevelReviewsAndAppliesFilters(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	ghScript := "#!/bin/sh\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"repos/example/metawsm/pulls/44/comments\" ]; then\n  echo '[]'\n  exit 0\nfi\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"repos/example/metawsm/pulls/44/reviews\" ]; then\n  echo '[{\"id\":9201,\"html_url\":\"https://github.com/example/metawsm/pull/44#pullrequestreview-9201\",\"body\":\"Please do not commit compiled assets.\",\"state\":\"COMMENTED\",\"submitted_at\":\"2026-02-09T00:00:00Z\",\"user\":{\"login\":\"reviewer-keep\"}},{\"id\":9202,\"html_url\":\"https://github.com/example/metawsm/pull/44#pullrequestreview-9202\",\"body\":\"ignore this author\",\"state\":\"COMMENTED\",\"submitted_at\":\"2026-02-09T00:01:00Z\",\"user\":{\"login\":\"reviewer-skip\"}},{\"id\":9203,\"html_url\":\"https://github.com/example/metawsm/pull/44#pullrequestreview-9203\",\"body\":\"\",\"state\":\"COMMENTED\",\"submitted_at\":\"2026-02-09T00:02:00Z\",\"user\":{\"login\":\"reviewer-empty-body\"}},{\"id\":9204,\"html_url\":\"https://github.com/example/metawsm/pull/44#pullrequestreview-9204\",\"body\":\"pending review body\",\"state\":\"PENDING\",\"submitted_at\":\"2026-02-09T00:03:00Z\",\"user\":{\"login\":\"reviewer-pending\"}},{\"id\":9205,\"html_url\":\"https://github.com/example/metawsm/pull/44#pullrequestreview-9205\",\"body\":\"missing state\",\"state\":\"\",\"submitted_at\":\"2026-02-09T00:04:00Z\",\"user\":{\"login\":\"reviewer-empty-state\"}}]'\n  exit 0\nfi\necho \"unexpected gh invocation: $@\" >&2\nexit 1\n"
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatalf("write fake gh script: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	svc := newTestService(t)
+	runID := "run-review-sync-top-level-1"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-review-sync-top-level-1"
+	createRunWithTicketFixtureWithReposAndPolicy(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"}, `{"version":2,"git_pr":{"review_feedback":{"enabled":true,"ignore_authors":["reviewer-skip"]}}}`)
+	if err := svc.UpsertRunPullRequest(model.RunPullRequest{
+		RunID:         runID,
+		Ticket:        ticket,
+		Repo:          "metawsm",
+		WorkspaceName: workspaceName,
+		PRNumber:      44,
+		PRURL:         "https://github.com/example/metawsm/pull/44",
+		PRState:       model.PullRequestStateOpen,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert run pull request fixture: %v", err)
+	}
+
+	result, err := svc.SyncReviewFeedback(t.Context(), ReviewFeedbackSyncOptions{RunID: runID})
+	if err != nil {
+		t.Fatalf("sync review feedback top-level reviews: %v", err)
+	}
+	if result.Added != 1 {
+		t.Fatalf("expected 1 added top-level review item, got %d", result.Added)
+	}
+	if result.Updated != 0 {
+		t.Fatalf("expected 0 updated top-level review items, got %d", result.Updated)
+	}
+	if len(result.Repos) != 1 {
+		t.Fatalf("expected one repo result, got %d", len(result.Repos))
+	}
+	if result.Repos[0].Fetched != 2 {
+		t.Fatalf("expected fetched=2 actionable top-level reviews after state/body filtering, got %d", result.Repos[0].Fetched)
+	}
+
+	rows, err := svc.ListRunReviewFeedback(runID)
+	if err != nil {
+		t.Fatalf("list run review feedback: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected exactly one persisted row after filtering, got %d", len(rows))
+	}
+	row := rows[0]
+	if row.SourceType != model.ReviewFeedbackSourceTypePRReview {
+		t.Fatalf("expected PR review source type, got %q", row.SourceType)
+	}
+	if row.Author != "reviewer-keep" {
+		t.Fatalf("expected author reviewer-keep, got %q", row.Author)
+	}
+	if !strings.Contains(row.Body, "Please do not commit compiled assets.") {
+		t.Fatalf("expected top-level review body content, got %q", row.Body)
+	}
+	if !strings.Contains(row.Body, "state=commented") {
+		t.Fatalf("expected normalized state metadata in body, got %q", row.Body)
+	}
+	if row.FilePath != "" || row.Line != 0 {
+		t.Fatalf("expected top-level review to have empty file/line, got file=%q line=%d", row.FilePath, row.Line)
+	}
+	expectedCreatedAt := time.Date(2026, 2, 9, 0, 0, 0, 0, time.UTC)
+	if !row.CreatedAt.Equal(expectedCreatedAt) {
+		t.Fatalf("expected created_at from submitted_at %s, got %s", expectedCreatedAt.Format(time.RFC3339), row.CreatedAt.Format(time.RFC3339))
+	}
+}
+
+func TestSyncReviewFeedbackTopLevelReviewDedupeUpdatesExistingRow(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	ghScript := "#!/bin/sh\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"repos/example/metawsm/pulls/45/comments\" ]; then\n  echo '[]'\n  exit 0\nfi\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"repos/example/metawsm/pulls/45/reviews\" ]; then\n  echo '[{\"id\":9301,\"html_url\":\"https://github.com/example/metawsm/pull/45#pullrequestreview-9301\",\"body\":\"Updated top-level review guidance.\",\"state\":\"CHANGES_REQUESTED\",\"submitted_at\":\"2026-02-09T00:10:00Z\",\"user\":{\"login\":\"reviewer-top\"}}]'\n  exit 0\nfi\necho \"unexpected gh invocation: $@\" >&2\nexit 1\n"
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatalf("write fake gh script: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	svc := newTestService(t)
+	runID := "run-review-sync-top-level-2"
+	ticket := "METAWSM-009"
+	workspaceName := "ws-review-sync-top-level-2"
+	createRunWithTicketFixtureWithReposAndPolicy(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"}, `{"version":2,"git_pr":{"review_feedback":{"enabled":true}}}`)
+	if err := svc.UpsertRunPullRequest(model.RunPullRequest{
+		RunID:         runID,
+		Ticket:        ticket,
+		Repo:          "metawsm",
+		WorkspaceName: workspaceName,
+		PRNumber:      45,
+		PRURL:         "https://github.com/example/metawsm/pull/45",
+		PRState:       model.PullRequestStateOpen,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert run pull request fixture: %v", err)
+	}
+
+	createdAt := time.Date(2026, 2, 8, 23, 59, 0, 0, time.UTC)
+	if err := svc.UpsertRunReviewFeedback(model.RunReviewFeedback{
+		RunID:         runID,
+		Ticket:        ticket,
+		Repo:          "metawsm",
+		WorkspaceName: workspaceName,
+		PRNumber:      45,
+		PRURL:         "https://github.com/example/metawsm/pull/45",
+		SourceType:    model.ReviewFeedbackSourceTypePRReview,
+		SourceID:      "9301",
+		SourceURL:     "https://github.com/example/metawsm/pull/45#pullrequestreview-9301",
+		Author:        "reviewer-top",
+		Body:          "[state=commented]\nOld review guidance.",
+		Status:        model.ReviewFeedbackStatusQueued,
+		CreatedAt:     createdAt,
+		UpdatedAt:     createdAt,
+		LastSeenAt:    createdAt,
+	}); err != nil {
+		t.Fatalf("upsert existing top-level review feedback row: %v", err)
+	}
+
+	result, err := svc.SyncReviewFeedback(t.Context(), ReviewFeedbackSyncOptions{RunID: runID})
+	if err != nil {
+		t.Fatalf("sync review feedback with existing top-level row: %v", err)
+	}
+	if result.Added != 0 {
+		t.Fatalf("expected no added rows for dedupe update, got %d", result.Added)
+	}
+	if result.Updated != 1 {
+		t.Fatalf("expected one updated row for dedupe update, got %d", result.Updated)
+	}
+
+	rows, err := svc.ListRunReviewFeedback(runID)
+	if err != nil {
+		t.Fatalf("list run review feedback rows: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one persisted row, got %d", len(rows))
+	}
+	row := rows[0]
+	if !strings.Contains(row.Body, "Updated top-level review guidance.") {
+		t.Fatalf("expected updated review body text, got %q", row.Body)
+	}
+	if !strings.Contains(row.Body, "state=changes_requested") {
+		t.Fatalf("expected updated state metadata, got %q", row.Body)
+	}
+	if !row.CreatedAt.Equal(createdAt) {
+		t.Fatalf("expected created_at to remain unchanged, want %s got %s", createdAt.Format(time.RFC3339), row.CreatedAt.Format(time.RFC3339))
 	}
 }
 
@@ -2880,6 +3041,71 @@ func TestDispatchQueuedReviewFeedbackDryRunUsesIterateFlow(t *testing.T) {
 	}
 	if !strings.Contains(result.Feedback, "GitHub PR review feedback to address") {
 		t.Fatalf("expected rendered feedback header, got:\n%s", result.Feedback)
+	}
+	joined := strings.Join(result.Actions, "\n")
+	if !strings.Contains(joined, ".metawsm/operator-feedback.md") {
+		t.Fatalf("expected operator feedback append action, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "tmux new-session") {
+		t.Fatalf("expected tmux restart action via iterate flow, got:\n%s", joined)
+	}
+}
+
+func TestDispatchQueuedReviewFeedbackDryRunHandlesTopLevelReviewSource(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+	runID := "run-review-dispatch-top-level"
+	ticket := "METAWSM-010"
+	workspaceName := "ws-review-dispatch-top-level"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	if err := os.MkdirAll(filepath.Join(workspacePath, ".metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	ticketDir := filepath.Join(workspacePath, "metawsm", "ttmp", "2026", "02", "07", strings.ToLower(ticket)+"--dispatch-test", "reference")
+	if err := os.MkdirAll(ticketDir, 0o755); err != nil {
+		t.Fatalf("mkdir ticket reference dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspacePath, "metawsm"), 0o755); err != nil {
+		t.Fatalf("mkdir doc repo dir: %v", err)
+	}
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+	createRunWithTicketFixtureWithRepos(t, svc, runID, ticket, workspaceName, model.RunStatusComplete, false, []string{"metawsm"})
+	if err := svc.UpsertRunReviewFeedback(model.RunReviewFeedback{
+		RunID:         runID,
+		Ticket:        ticket,
+		Repo:          "metawsm",
+		WorkspaceName: workspaceName,
+		PRNumber:      78,
+		PRURL:         "https://github.com/example/metawsm/pull/78",
+		SourceType:    model.ReviewFeedbackSourceTypePRReview,
+		SourceID:      "7801",
+		SourceURL:     "https://github.com/example/metawsm/pull/78#pullrequestreview-7801",
+		Author:        "reviewer-top",
+		Body:          "[state=commented submitted_at=2026-02-09T00:15:00Z]\nPlease remove generated dist assets from the PR.",
+		Status:        model.ReviewFeedbackStatusQueued,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+		LastSeenAt:    time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert top-level run review feedback: %v", err)
+	}
+
+	result, err := svc.DispatchQueuedReviewFeedback(t.Context(), ReviewFeedbackDispatchOptions{
+		RunID:  runID,
+		DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("dispatch queued top-level review feedback dry-run: %v", err)
+	}
+	if result.QueuedCount != 1 {
+		t.Fatalf("expected queued count 1, got %d", result.QueuedCount)
+	}
+	if !strings.Contains(result.Feedback, "Please remove generated dist assets from the PR.") {
+		t.Fatalf("expected top-level review body in iterate feedback, got:\n%s", result.Feedback)
 	}
 	joined := strings.Join(result.Actions, "\n")
 	if !strings.Contains(joined, ".metawsm/operator-feedback.md") {

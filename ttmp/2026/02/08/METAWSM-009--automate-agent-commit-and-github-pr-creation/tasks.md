@@ -48,3 +48,11 @@
 - [x] Status/watch/operator: surface review feedback counts and add review_feedback_ready intent with per-interval cap
 - [x] Validation: add fake-gh orchestrator tests for sync/dispatch and operator decision coverage
 - [x] Docs: update playbook/README and diary for review-feedback loop workflow
+- [x] Review feedback V1.1: extend sync to ingest top-level PR reviews via gh api repos/{owner}/{repo}/pulls/{number}/reviews
+- [x] Review feedback V1.1: map top-level review rows (state/body/submitted_at/user/review_id) into run_review_feedback records with stable dedupe keys
+- [x] Review feedback V1.1: apply existing ignore_authors filter to top-level reviews (keep defaults empty, configuration-ready)
+- [x] Review feedback V1.1: keep dispatch/lifecycle semantics unchanged for new source type (queued -> new -> addressed after commit + pr)
+- [x] Validation V1.1: add orchestrator fake-gh tests for top-level review ingestion, dedupe updates, and empty-body/state filtering
+- [x] Validation V1.1: add CLI integration test coverage proving review sync --dispatch handles top-level reviews and queues iterate feedback
+- [ ] Docs V1.1: update design doc/playbook to state that top-level review bodies are ingested in addition to inline PR review comments
+- [ ] Operator follow-up: re-run review sync for METAWSM-006 and dispatch top-level review feedback to an agent once ingestion support lands

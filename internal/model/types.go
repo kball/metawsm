@@ -282,6 +282,7 @@ type ReviewFeedbackSourceType string
 
 const (
 	ReviewFeedbackSourceTypePRReviewComment ReviewFeedbackSourceType = "pr_review_comment"
+	ReviewFeedbackSourceTypePRReview        ReviewFeedbackSourceType = "pr_review"
 )
 
 type RunReviewFeedback struct {
