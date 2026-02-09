@@ -709,6 +709,40 @@ func (s *Service) ProcessForumBusOnce(ctx context.Context, limit int) (int, erro
 	return s.forumBus.ProcessOnce(ctx, limit)
 }
 
+func (s *Service) ForumOutboxStats() (model.ForumOutboxStats, error) {
+	pendingCount, err := s.store.CountForumOutboxByStatus(model.ForumOutboxStatusPending)
+	if err != nil {
+		return model.ForumOutboxStats{}, err
+	}
+	processingCount, err := s.store.CountForumOutboxByStatus(model.ForumOutboxStatusProcessing)
+	if err != nil {
+		return model.ForumOutboxStats{}, err
+	}
+	failedCount, err := s.store.CountForumOutboxByStatus(model.ForumOutboxStatusFailed)
+	if err != nil {
+		return model.ForumOutboxStats{}, err
+	}
+	oldestPendingAt, err := s.store.OldestForumOutboxCreatedAt(model.ForumOutboxStatusPending)
+	if err != nil {
+		return model.ForumOutboxStats{}, err
+	}
+
+	stats := model.ForumOutboxStats{
+		PendingCount:    pendingCount,
+		ProcessingCount: processingCount,
+		FailedCount:     failedCount,
+		OldestPendingAt: oldestPendingAt,
+	}
+	if oldestPendingAt != nil {
+		age := int64(time.Since(*oldestPendingAt).Seconds())
+		if age < 0 {
+			age = 0
+		}
+		stats.OldestPendingAgeSec = age
+	}
+	return stats, nil
+}
+
 func (s *Service) ForumAppendControlSignal(ctx context.Context, options ForumControlSignalOptions) (model.ForumThreadView, error) {
 	_ = ctx
 	actorType, err := normalizeForumActorType(options.ActorType)

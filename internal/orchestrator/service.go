@@ -81,6 +81,13 @@ func NewService(dbPath string) (*Service, error) {
 	return service, nil
 }
 
+func (s *Service) Shutdown() {
+	if s == nil || s.forumBus == nil {
+		return
+	}
+	s.forumBus.Stop()
+}
+
 type RunOptions struct {
 	RunID             string
 	Tickets           []string

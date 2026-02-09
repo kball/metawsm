@@ -968,4 +968,28 @@ func TestForumOutboxLifecycle(t *testing.T) {
 	if sent[0].SentAt == nil {
 		t.Fatalf("expected sent_at to be set")
 	}
+
+	failedCount, err := s.CountForumOutboxByStatus(model.ForumOutboxStatusFailed)
+	if err != nil {
+		t.Fatalf("count failed outbox: %v", err)
+	}
+	if failedCount != 0 {
+		t.Fatalf("expected no failed rows, got %d", failedCount)
+	}
+
+	pendingCount, err := s.CountForumOutboxByStatus(model.ForumOutboxStatusPending)
+	if err != nil {
+		t.Fatalf("count pending outbox: %v", err)
+	}
+	if pendingCount != 0 {
+		t.Fatalf("expected no pending rows, got %d", pendingCount)
+	}
+
+	oldestPending, err := s.OldestForumOutboxCreatedAt(model.ForumOutboxStatusPending)
+	if err != nil {
+		t.Fatalf("oldest pending outbox: %v", err)
+	}
+	if oldestPending != nil {
+		t.Fatalf("expected nil oldest pending timestamp after send")
+	}
 }

@@ -24,3 +24,11 @@ type ForumOutboxMessage struct {
 	UpdatedAt    time.Time         `json:"updated_at"`
 	SentAt       *time.Time        `json:"sent_at,omitempty"`
 }
+
+type ForumOutboxStats struct {
+	PendingCount        int        `json:"pending_count"`
+	ProcessingCount     int        `json:"processing_count"`
+	FailedCount         int        `json:"failed_count"`
+	OldestPendingAt     *time.Time `json:"oldest_pending_at,omitempty"`
+	OldestPendingAgeSec int64      `json:"oldest_pending_age_seconds"`
+}

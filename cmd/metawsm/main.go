@@ -23,6 +23,7 @@ import (
 	"metawsm/internal/model"
 	"metawsm/internal/orchestrator"
 	"metawsm/internal/policy"
+	"metawsm/internal/server"
 )
 
 type multiValueFlag []string
@@ -87,6 +88,8 @@ func main() {
 		err = tuiCommand(args)
 	case "docs":
 		err = docsCommand(args)
+	case "serve":
+		err = serveCommand(args)
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -3047,6 +3050,42 @@ func docsCommand(args []string) error {
 	return nil
 }
 
+func serveCommand(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	var addr string
+	var dbPath string
+	var workerInterval time.Duration
+	var workerBatchSize int
+	var workerLogPeriod time.Duration
+	var shutdownTimeout time.Duration
+	fs.StringVar(&addr, "addr", ":3001", "HTTP listen address")
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.DurationVar(&workerInterval, "worker-interval", 500*time.Millisecond, "Forum worker loop interval")
+	fs.IntVar(&workerBatchSize, "worker-batch-size", 100, "Forum worker ProcessOnce batch size")
+	fs.DurationVar(&workerLogPeriod, "worker-log-period", 15*time.Second, "Forum worker summary log period")
+	fs.DurationVar(&shutdownTimeout, "shutdown-timeout", 5*time.Second, "Graceful shutdown timeout")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	runtime, err := server.NewRuntime(server.Options{
+		Addr:            addr,
+		DBPath:          dbPath,
+		WorkerInterval:  workerInterval,
+		WorkerBatchSize: workerBatchSize,
+		WorkerLogPeriod: workerLogPeriod,
+		ShutdownTimeout: shutdownTimeout,
+	})
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	fmt.Printf("metawsm serve listening on %s\n", addr)
+	return runtime.Run(ctx)
+}
+
 func printTUIFrameHeader(runID string, intervalSeconds int) {
 	fmt.Print("\033[H\033[2J")
 	fmt.Printf("metawsm tui monitor  now=%s  interval=%ds\n", time.Now().Format(time.RFC3339), intervalSeconds)
@@ -3306,6 +3345,7 @@ func printUsage() {
 	fmt.Println("  metawsm policy-init")
 	fmt.Println("  metawsm tui [--run-id RUN_ID | --ticket T1] [--interval 2]")
 	fmt.Println("  metawsm docs [--policy PATH] [--refresh] [--endpoint NAME] [--ticket T1]")
+	fmt.Println("  metawsm serve [--addr :3001] [--db .metawsm/metawsm.db] [--worker-interval 500ms]")
 }
 
 func federationEndpointsFromPolicy(cfg policy.Config) []docfederation.Endpoint {

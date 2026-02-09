@@ -1164,6 +1164,50 @@ LIMIT %d;`,
 	return out, nil
 }
 
+func (s *SQLiteStore) CountForumOutboxByStatus(status model.ForumOutboxStatus) (int, error) {
+	sql := fmt.Sprintf(
+		`SELECT count(*) AS count
+FROM forum_outbox
+WHERE status=%s;`,
+		quote(string(status)),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return asInt(rows[0]["count"]), nil
+}
+
+func (s *SQLiteStore) OldestForumOutboxCreatedAt(status model.ForumOutboxStatus) (*time.Time, error) {
+	sql := fmt.Sprintf(
+		`SELECT created_at
+FROM forum_outbox
+WHERE status=%s
+ORDER BY created_at, id
+LIMIT 1;`,
+		quote(string(status)),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	value := strings.TrimSpace(asString(rows[0]["created_at"]))
+	if value == "" {
+		return nil, nil
+	}
+	createdAt, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, fmt.Errorf("parse oldest forum_outbox created_at: %w", err)
+	}
+	return &createdAt, nil
+}
+
 func (s *SQLiteStore) listForumOutboxByStatusAndUpdatedAt(status model.ForumOutboxStatus, updatedAt string) ([]model.ForumOutboxMessage, error) {
 	sql := fmt.Sprintf(
 		`SELECT id, message_id, topic, message_key, payload_json, status, attempt_count, last_error, created_at, updated_at, sent_at
