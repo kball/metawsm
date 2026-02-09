@@ -124,6 +124,112 @@ CREATE TABLE IF NOT EXISTS guidance_requests (
   created_at TEXT NOT NULL,
   answered_at TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS forum_threads (
+  thread_id TEXT PRIMARY KEY,
+  ticket TEXT NOT NULL,
+  run_id TEXT NOT NULL DEFAULT '',
+  agent_name TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL,
+  state TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  assignee_type TEXT NOT NULL DEFAULT '',
+  assignee_name TEXT NOT NULL DEFAULT '',
+  opened_by_type TEXT NOT NULL,
+  opened_by_name TEXT NOT NULL DEFAULT '',
+  opened_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  closed_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_forum_threads_ticket_state_priority
+  ON forum_threads (ticket, state, priority);
+CREATE TABLE IF NOT EXISTS forum_posts (
+  post_id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL,
+  event_id TEXT NOT NULL UNIQUE,
+  author_type TEXT NOT NULL,
+  author_name TEXT NOT NULL DEFAULT '',
+  body_text TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_forum_posts_thread_created
+  ON forum_posts (thread_id, created_at);
+CREATE TABLE IF NOT EXISTS forum_assignments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread_id TEXT NOT NULL,
+  event_id TEXT NOT NULL UNIQUE,
+  from_assignee_type TEXT NOT NULL DEFAULT '',
+  from_assignee_name TEXT NOT NULL DEFAULT '',
+  to_assignee_type TEXT NOT NULL DEFAULT '',
+  to_assignee_name TEXT NOT NULL DEFAULT '',
+  changed_by_type TEXT NOT NULL,
+  changed_by_name TEXT NOT NULL DEFAULT '',
+  changed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS forum_state_transitions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread_id TEXT NOT NULL,
+  event_id TEXT NOT NULL UNIQUE,
+  from_state TEXT NOT NULL DEFAULT '',
+  to_state TEXT NOT NULL,
+  changed_by_type TEXT NOT NULL,
+  changed_by_name TEXT NOT NULL DEFAULT '',
+  changed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS forum_events (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT NOT NULL UNIQUE,
+  event_type TEXT NOT NULL,
+  event_version INTEGER NOT NULL,
+  occurred_at TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  run_id TEXT NOT NULL DEFAULT '',
+  ticket TEXT NOT NULL,
+  agent_name TEXT NOT NULL DEFAULT '',
+  actor_type TEXT NOT NULL,
+  actor_name TEXT NOT NULL DEFAULT '',
+  correlation_id TEXT NOT NULL DEFAULT '',
+  causation_id TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_forum_events_ticket_sequence
+  ON forum_events (ticket, sequence);
+CREATE TABLE IF NOT EXISTS forum_thread_views (
+  thread_id TEXT PRIMARY KEY,
+  ticket TEXT NOT NULL,
+  run_id TEXT NOT NULL DEFAULT '',
+  agent_name TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL,
+  state TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  assignee_type TEXT NOT NULL DEFAULT '',
+  assignee_name TEXT NOT NULL DEFAULT '',
+  opened_by_type TEXT NOT NULL,
+  opened_by_name TEXT NOT NULL DEFAULT '',
+  posts_count INTEGER NOT NULL DEFAULT 0,
+  last_post_at TEXT NOT NULL DEFAULT '',
+  last_post_by_type TEXT NOT NULL DEFAULT '',
+  last_post_by_name TEXT NOT NULL DEFAULT '',
+  opened_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  closed_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_forum_thread_views_ticket_filters
+  ON forum_thread_views (ticket, state, priority, updated_at);
+CREATE TABLE IF NOT EXISTS forum_thread_stats (
+  ticket TEXT NOT NULL,
+  run_id TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  thread_count INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (ticket, run_id, state, priority)
+);
+CREATE TABLE IF NOT EXISTS forum_projection_events (
+  projection_name TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  applied_at TEXT NOT NULL,
+  PRIMARY KEY (projection_name, event_id)
+);
 CREATE TABLE IF NOT EXISTS doc_sync_states (
   run_id TEXT NOT NULL,
   ticket TEXT NOT NULL,

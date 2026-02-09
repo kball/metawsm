@@ -553,3 +553,186 @@ func TestRunReviewFeedbackUpsertDedupesByCompositeKey(t *testing.T) {
 		t.Fatalf("expected last_seen_at %s, got %s", secondSeen.Format(time.RFC3339), row.LastSeenAt.Format(time.RFC3339))
 	}
 }
+
+func TestForumThreadLifecycleRoundTrip(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	s := NewSQLiteStore(dbPath)
+	if err := s.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	opened, err := s.ForumOpenThread(model.ForumOpenThreadCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:      "evt-open-1",
+			EventType:    "forum.thread.opened",
+			EventVersion: 1,
+			OccurredAt:   time.Now().UTC(),
+			ThreadID:     "thread-1",
+			RunID:        "run-1",
+			Ticket:       "METAWSM-008",
+			AgentName:    "agent-a",
+			ActorType:    model.ForumActorAgent,
+			ActorName:    "agent-a",
+		},
+		Title:    "Need operator API direction",
+		Body:     "Should we keep polling or switch to events?",
+		Priority: model.ForumPriorityNormal,
+	})
+	if err != nil {
+		t.Fatalf("open forum thread: %v", err)
+	}
+	if opened == nil || opened.ThreadID != "thread-1" {
+		t.Fatalf("expected opened thread thread-1, got %#v", opened)
+	}
+	if opened.PostsCount != 1 {
+		t.Fatalf("expected posts_count=1 after open, got %d", opened.PostsCount)
+	}
+
+	added, err := s.ForumAddPost(model.ForumAddPostCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:      "evt-post-1",
+			EventType:    "forum.post.added",
+			EventVersion: 1,
+			OccurredAt:   time.Now().UTC(),
+			ThreadID:     "thread-1",
+			ActorType:    model.ForumActorOperator,
+			ActorName:    "operator-a",
+		},
+		Body: "Move to event stream from day one.",
+	})
+	if err != nil {
+		t.Fatalf("add forum post: %v", err)
+	}
+	if added.PostsCount != 2 {
+		t.Fatalf("expected posts_count=2 after add, got %d", added.PostsCount)
+	}
+
+	duplicatePost, err := s.ForumAddPost(model.ForumAddPostCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:      "evt-post-1",
+			EventType:    "forum.post.added",
+			EventVersion: 1,
+			OccurredAt:   time.Now().UTC(),
+			ThreadID:     "thread-1",
+			ActorType:    model.ForumActorOperator,
+			ActorName:    "operator-a",
+		},
+		Body: "Move to event stream from day one.",
+	})
+	if err != nil {
+		t.Fatalf("duplicate forum post should be idempotent: %v", err)
+	}
+	if duplicatePost.PostsCount != 2 {
+		t.Fatalf("expected posts_count to remain 2 after duplicate event, got %d", duplicatePost.PostsCount)
+	}
+
+	if _, err := s.ForumAssignThread(model.ForumAssignThreadCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:      "evt-assign-1",
+			EventType:    "forum.assigned",
+			EventVersion: 1,
+			OccurredAt:   time.Now().UTC(),
+			ThreadID:     "thread-1",
+			ActorType:    model.ForumActorOperator,
+			ActorName:    "operator-a",
+		},
+		AssigneeType: model.ForumActorHuman,
+		AssigneeName: "kball",
+	}); err != nil {
+		t.Fatalf("assign forum thread: %v", err)
+	}
+
+	if _, err := s.ForumChangeState(model.ForumChangeStateCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:      "evt-state-1",
+			EventType:    "forum.state.changed",
+			EventVersion: 1,
+			OccurredAt:   time.Now().UTC(),
+			ThreadID:     "thread-1",
+			ActorType:    model.ForumActorOperator,
+			ActorName:    "operator-a",
+		},
+		ToState: model.ForumThreadStateWaitingHuman,
+	}); err != nil {
+		t.Fatalf("change forum state: %v", err)
+	}
+
+	if _, err := s.ForumSetPriority(model.ForumSetPriorityCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:      "evt-priority-1",
+			EventType:    "forum.priority.changed",
+			EventVersion: 1,
+			OccurredAt:   time.Now().UTC(),
+			ThreadID:     "thread-1",
+			ActorType:    model.ForumActorOperator,
+			ActorName:    "operator-a",
+		},
+		Priority: model.ForumPriorityHigh,
+	}); err != nil {
+		t.Fatalf("set forum priority: %v", err)
+	}
+
+	closed, err := s.ForumCloseThread(model.ForumCloseThreadCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:      "evt-close-1",
+			EventType:    "forum.thread.closed",
+			EventVersion: 1,
+			OccurredAt:   time.Now().UTC(),
+			ThreadID:     "thread-1",
+			ActorType:    model.ForumActorHuman,
+			ActorName:    "kball",
+		},
+	})
+	if err != nil {
+		t.Fatalf("close forum thread: %v", err)
+	}
+	if closed.State != model.ForumThreadStateClosed {
+		t.Fatalf("expected closed state, got %s", closed.State)
+	}
+	if closed.ClosedAt == nil {
+		t.Fatalf("expected closed_at to be set")
+	}
+
+	threads, err := s.ListForumThreads(model.ForumThreadFilter{Ticket: "METAWSM-008", Limit: 10})
+	if err != nil {
+		t.Fatalf("list forum threads: %v", err)
+	}
+	if len(threads) != 1 {
+		t.Fatalf("expected one forum thread, got %d", len(threads))
+	}
+	if threads[0].Priority != model.ForumPriorityHigh {
+		t.Fatalf("expected high priority thread, got %s", threads[0].Priority)
+	}
+	if threads[0].AssigneeName != "kball" {
+		t.Fatalf("expected assignee kball, got %q", threads[0].AssigneeName)
+	}
+
+	stats, err := s.ListForumThreadStats("METAWSM-008", "")
+	if err != nil {
+		t.Fatalf("list forum stats: %v", err)
+	}
+	if len(stats) == 0 {
+		t.Fatalf("expected forum stats rows")
+	}
+	if stats[0].Ticket != "METAWSM-008" {
+		t.Fatalf("unexpected stats ticket %q", stats[0].Ticket)
+	}
+
+	events, err := s.WatchForumEvents("METAWSM-008", 0, 20)
+	if err != nil {
+		t.Fatalf("watch forum events: %v", err)
+	}
+	if len(events) != 6 {
+		t.Fatalf("expected 6 forum events, got %d", len(events))
+	}
+	if events[0].Sequence <= 0 {
+		t.Fatalf("expected positive event sequence, got %d", events[0].Sequence)
+	}
+	if events[len(events)-1].Sequence <= events[0].Sequence {
+		t.Fatalf("expected monotonic increasing event sequences")
+	}
+}

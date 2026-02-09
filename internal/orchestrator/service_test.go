@@ -345,6 +345,81 @@ func TestReadGuidanceRequestFileSupportsStructuredContext(t *testing.T) {
 	}
 }
 
+func TestForumServiceLifecycleAndValidation(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	svc, err := NewService(dbPath)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	thread, err := svc.ForumOpenThread(t.Context(), ForumOpenThreadOptions{
+		Ticket:    "METAWSM-008",
+		RunID:     "run-forum-1",
+		AgentName: "agent-a",
+		Title:     "Need deployment direction",
+		Body:      "Should we keep direct calls or publish commands?",
+		Priority:  model.ForumPriorityNormal,
+		ActorType: model.ForumActorAgent,
+		ActorName: "agent-a",
+	})
+	if err != nil {
+		t.Fatalf("forum open thread: %v", err)
+	}
+	if thread.ThreadID == "" {
+		t.Fatalf("expected generated thread id")
+	}
+
+	answered, err := svc.ForumAnswerThread(t.Context(), ForumAddPostOptions{
+		ThreadID:  thread.ThreadID,
+		Body:      "Publish commands and project to views.",
+		ActorType: model.ForumActorOperator,
+		ActorName: "operator-a",
+	})
+	if err != nil {
+		t.Fatalf("forum answer thread: %v", err)
+	}
+	if answered.State != model.ForumThreadStateAnswered {
+		t.Fatalf("expected answered state, got %s", answered.State)
+	}
+
+	closed, err := svc.ForumCloseThread(t.Context(), ForumChangeStateOptions{
+		ThreadID:  thread.ThreadID,
+		ActorType: model.ForumActorHuman,
+		ActorName: "kball",
+	})
+	if err != nil {
+		t.Fatalf("forum close thread: %v", err)
+	}
+	if closed.State != model.ForumThreadStateClosed {
+		t.Fatalf("expected closed state, got %s", closed.State)
+	}
+
+	_, err = svc.ForumChangeState(t.Context(), ForumChangeStateOptions{
+		ThreadID:  thread.ThreadID,
+		ToState:   model.ForumThreadStateWaitingHuman,
+		ActorType: model.ForumActorOperator,
+		ActorName: "operator-a",
+	})
+	if err == nil {
+		t.Fatalf("expected invalid transition from closed state")
+	}
+	if !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("unexpected transition error: %v", err)
+	}
+
+	events, err := svc.ForumWatchEvents("METAWSM-008", 0, 50)
+	if err != nil {
+		t.Fatalf("forum watch events: %v", err)
+	}
+	if len(events) < 3 {
+		t.Fatalf("expected at least 3 forum events, got %d", len(events))
+	}
+}
+
 func TestReadGuidanceRequestFileFromRootsFindsDocHomeRepo(t *testing.T) {
 	workspacePath := t.TempDir()
 	repoPath := filepath.Join(workspacePath, "metawsm")

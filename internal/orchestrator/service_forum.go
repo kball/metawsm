@@ -1,0 +1,583 @@
+package orchestrator
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"metawsm/internal/model"
+)
+
+type ForumOpenThreadOptions struct {
+	ThreadID      string
+	Ticket        string
+	RunID         string
+	AgentName     string
+	Title         string
+	Body          string
+	Priority      model.ForumPriority
+	ActorType     model.ForumActorType
+	ActorName     string
+	CorrelationID string
+	CausationID   string
+}
+
+type ForumAddPostOptions struct {
+	ThreadID      string
+	Body          string
+	ActorType     model.ForumActorType
+	ActorName     string
+	CorrelationID string
+	CausationID   string
+}
+
+type ForumAssignThreadOptions struct {
+	ThreadID       string
+	AssigneeType   model.ForumActorType
+	AssigneeName   string
+	AssignmentNote string
+	ActorType      model.ForumActorType
+	ActorName      string
+	CorrelationID  string
+	CausationID    string
+}
+
+type ForumChangeStateOptions struct {
+	ThreadID      string
+	ToState       model.ForumThreadState
+	ActorType     model.ForumActorType
+	ActorName     string
+	CorrelationID string
+	CausationID   string
+}
+
+type ForumSetPriorityOptions struct {
+	ThreadID      string
+	Priority      model.ForumPriority
+	ActorType     model.ForumActorType
+	ActorName     string
+	CorrelationID string
+	CausationID   string
+}
+
+type ForumThreadDetail struct {
+	Thread model.ForumThreadView `json:"thread"`
+	Posts  []model.ForumPost     `json:"posts"`
+}
+
+func (s *Service) ForumOpenThread(ctx context.Context, options ForumOpenThreadOptions) (model.ForumThreadView, error) {
+	_ = ctx
+	ticket := strings.TrimSpace(options.Ticket)
+	if ticket == "" {
+		return model.ForumThreadView{}, fmt.Errorf("forum ticket is required")
+	}
+	title := strings.TrimSpace(options.Title)
+	if title == "" {
+		return model.ForumThreadView{}, fmt.Errorf("forum title is required")
+	}
+	body := strings.TrimSpace(options.Body)
+	if body == "" {
+		return model.ForumThreadView{}, fmt.Errorf("forum body is required")
+	}
+	actorType, err := normalizeForumActorType(options.ActorType)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	priority, err := normalizeForumPriority(options.Priority)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+
+	threadID := strings.TrimSpace(options.ThreadID)
+	if threadID == "" {
+		threadID = generateForumID("fthr")
+	}
+	eventID := generateForumID("fevt")
+	correlationID := strings.TrimSpace(options.CorrelationID)
+	if correlationID == "" {
+		correlationID = eventID
+	}
+
+	thread, err := s.store.ForumOpenThread(model.ForumOpenThreadCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:       eventID,
+			EventType:     "forum.thread.opened",
+			EventVersion:  1,
+			OccurredAt:    time.Now(),
+			ThreadID:      threadID,
+			RunID:         strings.TrimSpace(options.RunID),
+			Ticket:        ticket,
+			AgentName:     strings.TrimSpace(options.AgentName),
+			ActorType:     actorType,
+			ActorName:     strings.TrimSpace(options.ActorName),
+			CorrelationID: correlationID,
+			CausationID:   strings.TrimSpace(options.CausationID),
+		},
+		Title:    title,
+		Body:     body,
+		Priority: priority,
+	})
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if thread == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread open returned nil thread")
+	}
+	return *thread, nil
+}
+
+func (s *Service) ForumAddPost(ctx context.Context, options ForumAddPostOptions) (model.ForumThreadView, error) {
+	_ = ctx
+	threadID := strings.TrimSpace(options.ThreadID)
+	if threadID == "" {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread id is required")
+	}
+	body := strings.TrimSpace(options.Body)
+	if body == "" {
+		return model.ForumThreadView{}, fmt.Errorf("forum body is required")
+	}
+	actorType, err := normalizeForumActorType(options.ActorType)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	current, err := s.store.GetForumThread(threadID)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if current == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread %s not found", threadID)
+	}
+	if current.State == model.ForumThreadStateClosed {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread %s is closed", threadID)
+	}
+
+	eventID := generateForumID("fevt")
+	correlationID := strings.TrimSpace(options.CorrelationID)
+	if correlationID == "" {
+		correlationID = eventID
+	}
+	thread, err := s.store.ForumAddPost(model.ForumAddPostCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:       eventID,
+			EventType:     "forum.post.added",
+			EventVersion:  1,
+			OccurredAt:    time.Now(),
+			ThreadID:      threadID,
+			RunID:         current.RunID,
+			Ticket:        current.Ticket,
+			AgentName:     current.AgentName,
+			ActorType:     actorType,
+			ActorName:     strings.TrimSpace(options.ActorName),
+			CorrelationID: correlationID,
+			CausationID:   strings.TrimSpace(options.CausationID),
+		},
+		Body: body,
+	})
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if thread == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum add-post returned nil thread")
+	}
+	return *thread, nil
+}
+
+func (s *Service) ForumAnswerThread(ctx context.Context, options ForumAddPostOptions) (model.ForumThreadView, error) {
+	_ = ctx
+	threadID := strings.TrimSpace(options.ThreadID)
+	if threadID == "" {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread id is required")
+	}
+	current, err := s.store.GetForumThread(threadID)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if current == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread %s not found", threadID)
+	}
+	if current.State == model.ForumThreadStateClosed {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread %s is closed", threadID)
+	}
+
+	correlationID := strings.TrimSpace(options.CorrelationID)
+	if correlationID == "" {
+		correlationID = generateForumID("fcorr")
+	}
+	addEventID := generateForumID("fevt")
+	actorType, err := normalizeForumActorType(options.ActorType)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if _, err := s.store.ForumAddPost(model.ForumAddPostCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:       addEventID,
+			EventType:     "forum.post.added",
+			EventVersion:  1,
+			OccurredAt:    time.Now(),
+			ThreadID:      threadID,
+			RunID:         current.RunID,
+			Ticket:        current.Ticket,
+			AgentName:     current.AgentName,
+			ActorType:     actorType,
+			ActorName:     strings.TrimSpace(options.ActorName),
+			CorrelationID: correlationID,
+			CausationID:   strings.TrimSpace(options.CausationID),
+		},
+		Body: strings.TrimSpace(options.Body),
+	}); err != nil {
+		return model.ForumThreadView{}, err
+	}
+
+	stateChanged, err := s.store.ForumChangeState(model.ForumChangeStateCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:       generateForumID("fevt"),
+			EventType:     "forum.state.changed",
+			EventVersion:  1,
+			OccurredAt:    time.Now(),
+			ThreadID:      threadID,
+			RunID:         current.RunID,
+			Ticket:        current.Ticket,
+			AgentName:     current.AgentName,
+			ActorType:     actorType,
+			ActorName:     strings.TrimSpace(options.ActorName),
+			CorrelationID: correlationID,
+			CausationID:   addEventID,
+		},
+		ToState: model.ForumThreadStateAnswered,
+	})
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if stateChanged == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum answer returned nil thread")
+	}
+	return *stateChanged, nil
+}
+
+func (s *Service) ForumAssignThread(ctx context.Context, options ForumAssignThreadOptions) (model.ForumThreadView, error) {
+	_ = ctx
+	threadID := strings.TrimSpace(options.ThreadID)
+	if threadID == "" {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread id is required")
+	}
+	assigneeType, err := normalizeForumActorType(options.AssigneeType)
+	if err != nil {
+		return model.ForumThreadView{}, fmt.Errorf("invalid assignee type: %w", err)
+	}
+	if strings.TrimSpace(options.AssigneeName) == "" {
+		return model.ForumThreadView{}, fmt.Errorf("forum assignee name is required")
+	}
+	actorType, err := normalizeForumActorType(options.ActorType)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	current, err := s.store.GetForumThread(threadID)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if current == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread %s not found", threadID)
+	}
+	if current.State == model.ForumThreadStateClosed {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread %s is closed", threadID)
+	}
+
+	eventID := generateForumID("fevt")
+	correlationID := strings.TrimSpace(options.CorrelationID)
+	if correlationID == "" {
+		correlationID = eventID
+	}
+	thread, err := s.store.ForumAssignThread(model.ForumAssignThreadCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:       eventID,
+			EventType:     "forum.assigned",
+			EventVersion:  1,
+			OccurredAt:    time.Now(),
+			ThreadID:      threadID,
+			RunID:         current.RunID,
+			Ticket:        current.Ticket,
+			AgentName:     current.AgentName,
+			ActorType:     actorType,
+			ActorName:     strings.TrimSpace(options.ActorName),
+			CorrelationID: correlationID,
+			CausationID:   strings.TrimSpace(options.CausationID),
+		},
+		AssigneeType:   assigneeType,
+		AssigneeName:   strings.TrimSpace(options.AssigneeName),
+		AssignmentNote: strings.TrimSpace(options.AssignmentNote),
+	})
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if thread == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum assign returned nil thread")
+	}
+	return *thread, nil
+}
+
+func (s *Service) ForumChangeState(ctx context.Context, options ForumChangeStateOptions) (model.ForumThreadView, error) {
+	_ = ctx
+	threadID := strings.TrimSpace(options.ThreadID)
+	if threadID == "" {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread id is required")
+	}
+	toState, err := normalizeForumState(options.ToState)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	actorType, err := normalizeForumActorType(options.ActorType)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	current, err := s.store.GetForumThread(threadID)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if current == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread %s not found", threadID)
+	}
+	if !forumTransitionAllowed(current.State, toState) {
+		return model.ForumThreadView{}, fmt.Errorf("forum state transition %s -> %s is not allowed", current.State, toState)
+	}
+	eventID := generateForumID("fevt")
+	correlationID := strings.TrimSpace(options.CorrelationID)
+	if correlationID == "" {
+		correlationID = eventID
+	}
+	thread, err := s.store.ForumChangeState(model.ForumChangeStateCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:       eventID,
+			EventType:     "forum.state.changed",
+			EventVersion:  1,
+			OccurredAt:    time.Now(),
+			ThreadID:      threadID,
+			RunID:         current.RunID,
+			Ticket:        current.Ticket,
+			AgentName:     current.AgentName,
+			ActorType:     actorType,
+			ActorName:     strings.TrimSpace(options.ActorName),
+			CorrelationID: correlationID,
+			CausationID:   strings.TrimSpace(options.CausationID),
+		},
+		ToState: toState,
+	})
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if thread == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum state change returned nil thread")
+	}
+	return *thread, nil
+}
+
+func (s *Service) ForumSetPriority(ctx context.Context, options ForumSetPriorityOptions) (model.ForumThreadView, error) {
+	_ = ctx
+	threadID := strings.TrimSpace(options.ThreadID)
+	if threadID == "" {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread id is required")
+	}
+	priority, err := normalizeForumPriority(options.Priority)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	actorType, err := normalizeForumActorType(options.ActorType)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	current, err := s.store.GetForumThread(threadID)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if current == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread %s not found", threadID)
+	}
+	if current.State == model.ForumThreadStateClosed {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread %s is closed", threadID)
+	}
+	eventID := generateForumID("fevt")
+	correlationID := strings.TrimSpace(options.CorrelationID)
+	if correlationID == "" {
+		correlationID = eventID
+	}
+	thread, err := s.store.ForumSetPriority(model.ForumSetPriorityCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:       eventID,
+			EventType:     "forum.priority.changed",
+			EventVersion:  1,
+			OccurredAt:    time.Now(),
+			ThreadID:      threadID,
+			RunID:         current.RunID,
+			Ticket:        current.Ticket,
+			AgentName:     current.AgentName,
+			ActorType:     actorType,
+			ActorName:     strings.TrimSpace(options.ActorName),
+			CorrelationID: correlationID,
+			CausationID:   strings.TrimSpace(options.CausationID),
+		},
+		Priority: priority,
+	})
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if thread == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum priority update returned nil thread")
+	}
+	return *thread, nil
+}
+
+func (s *Service) ForumCloseThread(ctx context.Context, options ForumChangeStateOptions) (model.ForumThreadView, error) {
+	_ = ctx
+	threadID := strings.TrimSpace(options.ThreadID)
+	if threadID == "" {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread id is required")
+	}
+	actorType, err := normalizeForumActorType(options.ActorType)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	current, err := s.store.GetForumThread(threadID)
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if current == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum thread %s not found", threadID)
+	}
+	if current.State == model.ForumThreadStateClosed {
+		return *current, nil
+	}
+	eventID := generateForumID("fevt")
+	correlationID := strings.TrimSpace(options.CorrelationID)
+	if correlationID == "" {
+		correlationID = eventID
+	}
+	thread, err := s.store.ForumCloseThread(model.ForumCloseThreadCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:       eventID,
+			EventType:     "forum.thread.closed",
+			EventVersion:  1,
+			OccurredAt:    time.Now(),
+			ThreadID:      threadID,
+			RunID:         current.RunID,
+			Ticket:        current.Ticket,
+			AgentName:     current.AgentName,
+			ActorType:     actorType,
+			ActorName:     strings.TrimSpace(options.ActorName),
+			CorrelationID: correlationID,
+			CausationID:   strings.TrimSpace(options.CausationID),
+		},
+	})
+	if err != nil {
+		return model.ForumThreadView{}, err
+	}
+	if thread == nil {
+		return model.ForumThreadView{}, fmt.Errorf("forum close returned nil thread")
+	}
+	return *thread, nil
+}
+
+func (s *Service) ForumListThreads(filter model.ForumThreadFilter) ([]model.ForumThreadView, error) {
+	return s.store.ListForumThreads(filter)
+}
+
+func (s *Service) ForumGetThread(threadID string) (*ForumThreadDetail, error) {
+	thread, err := s.store.GetForumThread(strings.TrimSpace(threadID))
+	if err != nil {
+		return nil, err
+	}
+	if thread == nil {
+		return nil, nil
+	}
+	posts, err := s.store.ListForumPosts(thread.ThreadID, 200)
+	if err != nil {
+		return nil, err
+	}
+	return &ForumThreadDetail{Thread: *thread, Posts: posts}, nil
+}
+
+func (s *Service) ForumListStats(ticket string, runID string) ([]model.ForumThreadStats, error) {
+	return s.store.ListForumThreadStats(strings.TrimSpace(ticket), strings.TrimSpace(runID))
+}
+
+func (s *Service) ForumWatchEvents(ticket string, cursor int64, limit int) ([]model.ForumEvent, error) {
+	return s.store.WatchForumEvents(strings.TrimSpace(ticket), cursor, limit)
+}
+
+func normalizeForumActorType(actorType model.ForumActorType) (model.ForumActorType, error) {
+	switch strings.TrimSpace(strings.ToLower(string(actorType))) {
+	case string(model.ForumActorAgent):
+		return model.ForumActorAgent, nil
+	case string(model.ForumActorOperator):
+		return model.ForumActorOperator, nil
+	case string(model.ForumActorHuman):
+		return model.ForumActorHuman, nil
+	case string(model.ForumActorSystem):
+		return model.ForumActorSystem, nil
+	default:
+		return "", fmt.Errorf("forum actor_type must be one of agent|operator|human|system")
+	}
+}
+
+func normalizeForumPriority(priority model.ForumPriority) (model.ForumPriority, error) {
+	switch strings.TrimSpace(strings.ToLower(string(priority))) {
+	case string(model.ForumPriorityLow):
+		return model.ForumPriorityLow, nil
+	case string(model.ForumPriorityNormal), "":
+		return model.ForumPriorityNormal, nil
+	case string(model.ForumPriorityHigh):
+		return model.ForumPriorityHigh, nil
+	case string(model.ForumPriorityUrgent):
+		return model.ForumPriorityUrgent, nil
+	default:
+		return "", fmt.Errorf("forum priority must be one of low|normal|high|urgent")
+	}
+}
+
+func normalizeForumState(state model.ForumThreadState) (model.ForumThreadState, error) {
+	switch strings.TrimSpace(strings.ToLower(string(state))) {
+	case string(model.ForumThreadStateNew):
+		return model.ForumThreadStateNew, nil
+	case string(model.ForumThreadStateTriaged):
+		return model.ForumThreadStateTriaged, nil
+	case string(model.ForumThreadStateWaitingOperator):
+		return model.ForumThreadStateWaitingOperator, nil
+	case string(model.ForumThreadStateWaitingHuman):
+		return model.ForumThreadStateWaitingHuman, nil
+	case string(model.ForumThreadStateAnswered):
+		return model.ForumThreadStateAnswered, nil
+	case string(model.ForumThreadStateClosed):
+		return model.ForumThreadStateClosed, nil
+	default:
+		return "", fmt.Errorf("forum state must be one of new|triaged|waiting_operator|waiting_human|answered|closed")
+	}
+}
+
+func forumTransitionAllowed(from model.ForumThreadState, to model.ForumThreadState) bool {
+	if from == to {
+		return true
+	}
+	switch from {
+	case model.ForumThreadStateNew:
+		return to == model.ForumThreadStateTriaged || to == model.ForumThreadStateWaitingOperator || to == model.ForumThreadStateWaitingHuman || to == model.ForumThreadStateAnswered || to == model.ForumThreadStateClosed
+	case model.ForumThreadStateTriaged:
+		return to == model.ForumThreadStateWaitingOperator || to == model.ForumThreadStateWaitingHuman || to == model.ForumThreadStateAnswered || to == model.ForumThreadStateClosed
+	case model.ForumThreadStateWaitingOperator:
+		return to == model.ForumThreadStateWaitingHuman || to == model.ForumThreadStateAnswered || to == model.ForumThreadStateTriaged || to == model.ForumThreadStateClosed
+	case model.ForumThreadStateWaitingHuman:
+		return to == model.ForumThreadStateWaitingOperator || to == model.ForumThreadStateAnswered || to == model.ForumThreadStateTriaged || to == model.ForumThreadStateClosed
+	case model.ForumThreadStateAnswered:
+		return to == model.ForumThreadStateWaitingOperator || to == model.ForumThreadStateWaitingHuman || to == model.ForumThreadStateClosed
+	case model.ForumThreadStateClosed:
+		return false
+	default:
+		return false
+	}
+}
+
+func generateForumID(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = "forum"
+	}
+	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+}

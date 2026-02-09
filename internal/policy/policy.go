@@ -57,6 +57,26 @@ type Config struct {
 			MaxTokens      int    `json:"max_tokens"`
 		} `json:"llm"`
 	} `json:"operator"`
+	Forum struct {
+		Enabled bool `json:"enabled"`
+		Topics  struct {
+			CommandPrefix     string `json:"command_prefix"`
+			EventPrefix       string `json:"event_prefix"`
+			IntegrationPrefix string `json:"integration_prefix"`
+		} `json:"topics"`
+		Redis struct {
+			URL      string `json:"url"`
+			Stream   string `json:"stream"`
+			Group    string `json:"group"`
+			Consumer string `json:"consumer"`
+		} `json:"redis"`
+		SLA struct {
+			EscalationMinutes int `json:"escalation_minutes"`
+		} `json:"sla"`
+		DocsSync struct {
+			Enabled bool `json:"enabled"`
+		} `json:"docs_sync"`
+	} `json:"forum"`
 	GitPR struct {
 		Mode              string   `json:"mode"`
 		CredentialMode    string   `json:"credential_mode"`
@@ -133,6 +153,16 @@ func Default() Config {
 	cfg.Operator.LLM.Model = ""
 	cfg.Operator.LLM.TimeoutSeconds = 30
 	cfg.Operator.LLM.MaxTokens = 400
+	cfg.Forum.Enabled = true
+	cfg.Forum.Topics.CommandPrefix = "forum.commands"
+	cfg.Forum.Topics.EventPrefix = "forum.events"
+	cfg.Forum.Topics.IntegrationPrefix = "forum.integration"
+	cfg.Forum.Redis.URL = "redis://127.0.0.1:6379/0"
+	cfg.Forum.Redis.Stream = "metawsm-forum"
+	cfg.Forum.Redis.Group = "metawsm-forum"
+	cfg.Forum.Redis.Consumer = "operator"
+	cfg.Forum.SLA.EscalationMinutes = 30
+	cfg.Forum.DocsSync.Enabled = true
 	cfg.GitPR.Mode = "assist"
 	cfg.GitPR.CredentialMode = "local_user_auth"
 	cfg.GitPR.BranchTemplate = "{ticket}/{repo}/{run}"
@@ -293,6 +323,30 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Operator.LLM.MaxTokens <= 0 {
 		return fmt.Errorf("operator.llm.max_tokens must be > 0")
+	}
+	if strings.TrimSpace(cfg.Forum.Topics.CommandPrefix) == "" {
+		return fmt.Errorf("forum.topics.command_prefix cannot be empty")
+	}
+	if strings.TrimSpace(cfg.Forum.Topics.EventPrefix) == "" {
+		return fmt.Errorf("forum.topics.event_prefix cannot be empty")
+	}
+	if strings.TrimSpace(cfg.Forum.Topics.IntegrationPrefix) == "" {
+		return fmt.Errorf("forum.topics.integration_prefix cannot be empty")
+	}
+	if strings.TrimSpace(cfg.Forum.Redis.URL) == "" {
+		return fmt.Errorf("forum.redis.url cannot be empty")
+	}
+	if strings.TrimSpace(cfg.Forum.Redis.Stream) == "" {
+		return fmt.Errorf("forum.redis.stream cannot be empty")
+	}
+	if strings.TrimSpace(cfg.Forum.Redis.Group) == "" {
+		return fmt.Errorf("forum.redis.group cannot be empty")
+	}
+	if strings.TrimSpace(cfg.Forum.Redis.Consumer) == "" {
+		return fmt.Errorf("forum.redis.consumer cannot be empty")
+	}
+	if cfg.Forum.SLA.EscalationMinutes <= 0 {
+		return fmt.Errorf("forum.sla.escalation_minutes must be > 0")
 	}
 	switch strings.TrimSpace(strings.ToLower(cfg.GitPR.Mode)) {
 	case "off", "assist", "auto":

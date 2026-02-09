@@ -538,6 +538,26 @@ func TestReviewCommandRequiresSyncSubcommand(t *testing.T) {
 	}
 }
 
+func TestForumCommandRequiresSubcommand(t *testing.T) {
+	err := forumCommand([]string{})
+	if err == nil {
+		t.Fatalf("expected forum usage error")
+	}
+	if !strings.Contains(err.Error(), "usage: metawsm forum") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestForumCommandRejectsUnknownSubcommand(t *testing.T) {
+	err := forumCommand([]string{"bogus"})
+	if err == nil {
+		t.Fatalf("expected unknown forum subcommand error")
+	}
+	if !strings.Contains(err.Error(), "unknown forum subcommand") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestReviewCommandRequiresRunSelector(t *testing.T) {
 	err := reviewCommand([]string{"sync"})
 	if err == nil {

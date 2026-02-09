@@ -21,6 +21,21 @@ func TestDefaultPolicyIsValid(t *testing.T) {
 	if cfg.Operator.LLM.Mode != "assist" {
 		t.Fatalf("expected default operator llm mode assist, got %q", cfg.Operator.LLM.Mode)
 	}
+	if !cfg.Forum.Enabled {
+		t.Fatalf("expected default forum.enabled=true")
+	}
+	if cfg.Forum.Topics.CommandPrefix != "forum.commands" {
+		t.Fatalf("expected default forum command topic prefix, got %q", cfg.Forum.Topics.CommandPrefix)
+	}
+	if cfg.Forum.Topics.EventPrefix != "forum.events" {
+		t.Fatalf("expected default forum event topic prefix, got %q", cfg.Forum.Topics.EventPrefix)
+	}
+	if cfg.Forum.SLA.EscalationMinutes != 30 {
+		t.Fatalf("expected default forum SLA escalation 30 minutes, got %d", cfg.Forum.SLA.EscalationMinutes)
+	}
+	if !cfg.Forum.DocsSync.Enabled {
+		t.Fatalf("expected default forum docs-sync enabled")
+	}
 	if cfg.GitPR.CredentialMode != "local_user_auth" {
 		t.Fatalf("expected default git_pr credential mode local_user_auth, got %q", cfg.GitPR.CredentialMode)
 	}
@@ -277,6 +292,32 @@ func TestValidateRejectsInvalidOperatorBudgets(t *testing.T) {
 		t.Fatalf("expected restart budget validation error")
 	}
 	if !strings.Contains(err.Error(), "operator.restart_budget") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsMissingForumTopicPrefix(t *testing.T) {
+	cfg := Default()
+	cfg.Forum.Topics.CommandPrefix = ""
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected forum command topic validation error")
+	}
+	if !strings.Contains(err.Error(), "forum.topics.command_prefix") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidForumSLA(t *testing.T) {
+	cfg := Default()
+	cfg.Forum.SLA.EscalationMinutes = 0
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected forum SLA validation error")
+	}
+	if !strings.Contains(err.Error(), "forum.sla.escalation_minutes") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

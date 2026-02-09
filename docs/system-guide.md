@@ -13,6 +13,7 @@ Operator command surface:
 - `run`, `bootstrap`
 - `status`, `tui`
 - `guide`, `resume`, `stop`, `restart`, `iterate`
+- `forum` (`ask`, `answer`, `assign`, `state`, `priority`, `close`, `list`, `thread`, `watch`)
 - `merge`, `close`, `cleanup`
 - `docs` (federated docmgr API aggregation + optional refresh)
 - `policy-init`
@@ -36,6 +37,11 @@ Key policy areas:
 - `docs.api.workspace_endpoints[]`
 - `docs.api.repo_endpoints[]`
 - `docs.api.request_timeout_seconds`
+- forum transport and defaults:
+- `forum.topics.command_prefix|event_prefix|integration_prefix`
+- `forum.redis.url|stream|group|consumer`
+- `forum.sla.escalation_minutes`
+- `forum.docs_sync.enabled`
 
 ### 2) Run-Level Documentation Topology
 
@@ -61,6 +67,9 @@ Primary entities:
 - runs, run tickets, steps, agents, events
 - bootstrap run briefs
 - guidance requests
+- forum command-side + projection state:
+- `forum_threads`, `forum_posts`, `forum_assignments`, `forum_state_transitions`
+- `forum_events`, `forum_thread_views`, `forum_thread_stats`
 - doc sync state (`doc_sync_states`) with per-ticket/workspace seed status + revision
 
 This enables deterministic status rendering, restart/resume behavior, and close-time safety checks.

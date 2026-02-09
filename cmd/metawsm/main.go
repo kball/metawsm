@@ -63,6 +63,8 @@ func main() {
 		err = operatorCommand(args)
 	case "guide":
 		err = guideCommand(args)
+	case "forum":
+		err = forumCommand(args)
 	case "resume":
 		err = resumeCommand(args)
 	case "stop":
@@ -314,6 +316,379 @@ func guideCommand(args []string) error {
 	}
 	fmt.Printf("Guidance answered for run %s (id=%d %s@%s).\n", result.RunID, result.GuidanceID, result.AgentName, result.WorkspaceName)
 	return nil
+}
+
+func forumCommand(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch> [...]")
+	}
+	subcommand := strings.TrimSpace(strings.ToLower(args[0]))
+	rest := args[1:]
+	switch subcommand {
+	case "ask":
+		return forumAskCommand(rest)
+	case "answer":
+		return forumAnswerCommand(rest)
+	case "assign":
+		return forumAssignCommand(rest)
+	case "state":
+		return forumStateCommand(rest)
+	case "priority":
+		return forumPriorityCommand(rest)
+	case "close":
+		return forumCloseCommand(rest)
+	case "list":
+		return forumListCommand(rest)
+	case "thread":
+		return forumThreadCommand(rest)
+	case "watch":
+		return forumWatchCommand(rest)
+	default:
+		return fmt.Errorf("unknown forum subcommand %q", subcommand)
+	}
+}
+
+func forumAskCommand(args []string) error {
+	fs := flag.NewFlagSet("forum ask", flag.ContinueOnError)
+	var dbPath string
+	var ticket string
+	var runID string
+	var agentName string
+	var title string
+	var body string
+	var priority string
+	var actorType string
+	var actorName string
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier")
+	fs.StringVar(&runID, "run-id", "", "Run identifier (optional)")
+	fs.StringVar(&agentName, "agent", "", "Agent name associated with the thread")
+	fs.StringVar(&title, "title", "", "Thread title")
+	fs.StringVar(&body, "body", "", "Thread body text")
+	fs.StringVar(&priority, "priority", string(model.ForumPriorityNormal), "Thread priority: low|normal|high|urgent")
+	fs.StringVar(&actorType, "actor-type", string(model.ForumActorAgent), "Actor type: agent|operator|human|system")
+	fs.StringVar(&actorName, "actor-name", "", "Actor display name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	thread, err := service.ForumOpenThread(context.Background(), orchestrator.ForumOpenThreadOptions{
+		Ticket:    strings.TrimSpace(ticket),
+		RunID:     strings.TrimSpace(runID),
+		AgentName: strings.TrimSpace(agentName),
+		Title:     strings.TrimSpace(title),
+		Body:      strings.TrimSpace(body),
+		Priority:  model.ForumPriority(strings.TrimSpace(priority)),
+		ActorType: model.ForumActorType(strings.TrimSpace(actorType)),
+		ActorName: strings.TrimSpace(actorName),
+	})
+	if err != nil {
+		return err
+	}
+	printForumThreadSummary(thread)
+	return nil
+}
+
+func forumAnswerCommand(args []string) error {
+	fs := flag.NewFlagSet("forum answer", flag.ContinueOnError)
+	var dbPath string
+	var threadID string
+	var body string
+	var actorType string
+	var actorName string
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&threadID, "thread-id", "", "Thread identifier")
+	fs.StringVar(&body, "body", "", "Answer text")
+	fs.StringVar(&actorType, "actor-type", string(model.ForumActorOperator), "Actor type: agent|operator|human|system")
+	fs.StringVar(&actorName, "actor-name", "", "Actor display name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	thread, err := service.ForumAnswerThread(context.Background(), orchestrator.ForumAddPostOptions{
+		ThreadID:  strings.TrimSpace(threadID),
+		Body:      strings.TrimSpace(body),
+		ActorType: model.ForumActorType(strings.TrimSpace(actorType)),
+		ActorName: strings.TrimSpace(actorName),
+	})
+	if err != nil {
+		return err
+	}
+	printForumThreadSummary(thread)
+	return nil
+}
+
+func forumAssignCommand(args []string) error {
+	fs := flag.NewFlagSet("forum assign", flag.ContinueOnError)
+	var dbPath string
+	var threadID string
+	var assigneeType string
+	var assigneeName string
+	var note string
+	var actorType string
+	var actorName string
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&threadID, "thread-id", "", "Thread identifier")
+	fs.StringVar(&assigneeType, "assignee-type", string(model.ForumActorOperator), "Assignee type: agent|operator|human|system")
+	fs.StringVar(&assigneeName, "assignee", "", "Assignee name")
+	fs.StringVar(&note, "note", "", "Assignment note")
+	fs.StringVar(&actorType, "actor-type", string(model.ForumActorOperator), "Actor type: agent|operator|human|system")
+	fs.StringVar(&actorName, "actor-name", "", "Actor display name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	thread, err := service.ForumAssignThread(context.Background(), orchestrator.ForumAssignThreadOptions{
+		ThreadID:       strings.TrimSpace(threadID),
+		AssigneeType:   model.ForumActorType(strings.TrimSpace(assigneeType)),
+		AssigneeName:   strings.TrimSpace(assigneeName),
+		AssignmentNote: strings.TrimSpace(note),
+		ActorType:      model.ForumActorType(strings.TrimSpace(actorType)),
+		ActorName:      strings.TrimSpace(actorName),
+	})
+	if err != nil {
+		return err
+	}
+	printForumThreadSummary(thread)
+	return nil
+}
+
+func forumStateCommand(args []string) error {
+	fs := flag.NewFlagSet("forum state", flag.ContinueOnError)
+	var dbPath string
+	var threadID string
+	var state string
+	var actorType string
+	var actorName string
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&threadID, "thread-id", "", "Thread identifier")
+	fs.StringVar(&state, "state", "", "State: new|triaged|waiting_operator|waiting_human|answered|closed")
+	fs.StringVar(&actorType, "actor-type", string(model.ForumActorOperator), "Actor type: agent|operator|human|system")
+	fs.StringVar(&actorName, "actor-name", "", "Actor display name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	thread, err := service.ForumChangeState(context.Background(), orchestrator.ForumChangeStateOptions{
+		ThreadID:  strings.TrimSpace(threadID),
+		ToState:   model.ForumThreadState(strings.TrimSpace(state)),
+		ActorType: model.ForumActorType(strings.TrimSpace(actorType)),
+		ActorName: strings.TrimSpace(actorName),
+	})
+	if err != nil {
+		return err
+	}
+	printForumThreadSummary(thread)
+	return nil
+}
+
+func forumPriorityCommand(args []string) error {
+	fs := flag.NewFlagSet("forum priority", flag.ContinueOnError)
+	var dbPath string
+	var threadID string
+	var priority string
+	var actorType string
+	var actorName string
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&threadID, "thread-id", "", "Thread identifier")
+	fs.StringVar(&priority, "priority", "", "Priority: low|normal|high|urgent")
+	fs.StringVar(&actorType, "actor-type", string(model.ForumActorOperator), "Actor type: agent|operator|human|system")
+	fs.StringVar(&actorName, "actor-name", "", "Actor display name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	thread, err := service.ForumSetPriority(context.Background(), orchestrator.ForumSetPriorityOptions{
+		ThreadID:  strings.TrimSpace(threadID),
+		Priority:  model.ForumPriority(strings.TrimSpace(priority)),
+		ActorType: model.ForumActorType(strings.TrimSpace(actorType)),
+		ActorName: strings.TrimSpace(actorName),
+	})
+	if err != nil {
+		return err
+	}
+	printForumThreadSummary(thread)
+	return nil
+}
+
+func forumCloseCommand(args []string) error {
+	fs := flag.NewFlagSet("forum close", flag.ContinueOnError)
+	var dbPath string
+	var threadID string
+	var actorType string
+	var actorName string
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&threadID, "thread-id", "", "Thread identifier")
+	fs.StringVar(&actorType, "actor-type", string(model.ForumActorOperator), "Actor type: agent|operator|human|system")
+	fs.StringVar(&actorName, "actor-name", "", "Actor display name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	thread, err := service.ForumCloseThread(context.Background(), orchestrator.ForumChangeStateOptions{
+		ThreadID:  strings.TrimSpace(threadID),
+		ActorType: model.ForumActorType(strings.TrimSpace(actorType)),
+		ActorName: strings.TrimSpace(actorName),
+	})
+	if err != nil {
+		return err
+	}
+	printForumThreadSummary(thread)
+	return nil
+}
+
+func forumListCommand(args []string) error {
+	fs := flag.NewFlagSet("forum list", flag.ContinueOnError)
+	var dbPath string
+	var ticket string
+	var runID string
+	var state string
+	var priority string
+	var assignee string
+	var limit int
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&ticket, "ticket", "", "Ticket filter")
+	fs.StringVar(&runID, "run-id", "", "Run ID filter")
+	fs.StringVar(&state, "state", "", "State filter")
+	fs.StringVar(&priority, "priority", "", "Priority filter")
+	fs.StringVar(&assignee, "assignee", "", "Assignee name filter")
+	fs.IntVar(&limit, "limit", 50, "Maximum results")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	threads, err := service.ForumListThreads(model.ForumThreadFilter{
+		Ticket:   strings.TrimSpace(ticket),
+		RunID:    strings.TrimSpace(runID),
+		State:    model.ForumThreadState(strings.TrimSpace(state)),
+		Priority: model.ForumPriority(strings.TrimSpace(priority)),
+		Assignee: strings.TrimSpace(assignee),
+		Limit:    limit,
+	})
+	if err != nil {
+		return err
+	}
+	if len(threads) == 0 {
+		fmt.Println("No forum threads found.")
+		return nil
+	}
+	for _, thread := range threads {
+		printForumThreadSummary(thread)
+	}
+	return nil
+}
+
+func forumThreadCommand(args []string) error {
+	fs := flag.NewFlagSet("forum thread", flag.ContinueOnError)
+	var dbPath string
+	var threadID string
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&threadID, "thread-id", "", "Thread identifier")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	detail, err := service.ForumGetThread(strings.TrimSpace(threadID))
+	if err != nil {
+		return err
+	}
+	if detail == nil {
+		fmt.Printf("Forum thread %s not found.\n", strings.TrimSpace(threadID))
+		return nil
+	}
+	printForumThreadSummary(detail.Thread)
+	if len(detail.Posts) > 0 {
+		fmt.Println("Posts:")
+		for _, post := range detail.Posts {
+			fmt.Printf("  - %s %s %s: %s\n",
+				post.CreatedAt.Format(time.RFC3339),
+				emptyValue(string(post.AuthorType), "-"),
+				emptyValue(post.AuthorName, "-"),
+				post.Body,
+			)
+		}
+	}
+	return nil
+}
+
+func forumWatchCommand(args []string) error {
+	fs := flag.NewFlagSet("forum watch", flag.ContinueOnError)
+	var dbPath string
+	var ticket string
+	var cursor int64
+	var limit int
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&ticket, "ticket", "", "Ticket filter")
+	fs.Int64Var(&cursor, "cursor", 0, "Event sequence cursor")
+	fs.IntVar(&limit, "limit", 50, "Maximum events")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	events, err := service.ForumWatchEvents(strings.TrimSpace(ticket), cursor, limit)
+	if err != nil {
+		return err
+	}
+	if len(events) == 0 {
+		fmt.Println("No forum events found.")
+		return nil
+	}
+	for _, event := range events {
+		fmt.Printf("sequence=%d event_id=%s type=%s thread=%s ticket=%s run_id=%s actor=%s/%s occurred_at=%s\n",
+			event.Sequence,
+			event.Envelope.EventID,
+			event.Envelope.EventType,
+			event.Envelope.ThreadID,
+			event.Envelope.Ticket,
+			emptyValue(event.Envelope.RunID, "-"),
+			event.Envelope.ActorType,
+			emptyValue(event.Envelope.ActorName, "-"),
+			event.Envelope.OccurredAt.Format(time.RFC3339),
+		)
+	}
+	return nil
+}
+
+func printForumThreadSummary(thread model.ForumThreadView) {
+	fmt.Printf("thread=%s ticket=%s run_id=%s state=%s priority=%s assignee=%s/%s posts=%d updated_at=%s title=%s\n",
+		thread.ThreadID,
+		thread.Ticket,
+		emptyValue(thread.RunID, "-"),
+		thread.State,
+		thread.Priority,
+		emptyValue(string(thread.AssigneeType), "-"),
+		emptyValue(thread.AssigneeName, "-"),
+		thread.PostsCount,
+		thread.UpdatedAt.Format(time.RFC3339),
+		thread.Title,
+	)
 }
 
 func statusCommand(args []string) error {
@@ -2838,6 +3213,7 @@ func printUsage() {
 	fmt.Println("  metawsm watch [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--notify-cmd \"...\"] [--bell=true]")
 	fmt.Println("  metawsm operator [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--llm-mode off|assist|auto] [--dry-run]")
 	fmt.Println("  metawsm guide [--run-id RUN_ID | --ticket T1] --answer \"...\"")
+	fmt.Println("  metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch> [...]")
 	fmt.Println("  metawsm resume [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm stop [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm restart [--run-id RUN_ID | --ticket T1] [--dry-run]")
