@@ -10,14 +10,20 @@ DocType: reference
 Intent: long-term
 Owners: []
 RelatedFiles:
+    - Path: README.md
+      Note: Updated public command and control-flow docs to forum-first signaling
     - Path: cmd/metawsm/main.go
       Note: |-
         Removed guide command and added forum signal subcommand
         watch/operator now consume typed snapshot instead of status parsing
+    - Path: docs/system-guide.md
+      Note: Replaced file-signal contract with forum signaling contract
     - Path: internal/forumbus/runtime.go
       Note: Implements forum bus runtime lifecycle
     - Path: internal/forumbus/runtime_test.go
-      Note: Validates runtime publish/process behavior
+      Note: |-
+        Validates runtime publish/process behavior
+        Added redis outage and outbox replay recovery coverage
     - Path: internal/model/forum_bus.go
       Note: Defines outbox message and status model
     - Path: internal/model/forum_control.go
@@ -42,6 +48,7 @@ RelatedFiles:
       Note: |-
         Adds service-level test for control thread reuse
         Updated tests for forum-first lifecycle behavior
+        Added forum-only lifecycle e2e coverage including resume and close
     - Path: internal/store/sqlite.go
       Note: Adds forum_control_threads mapping table for store-level enforcement
     - Path: internal/store/sqlite_forum.go
@@ -52,12 +59,14 @@ RelatedFiles:
       Note: |-
         Adds store-level mapping tests
         Validates projection idempotency markers
+        Added projection replay catch-up coverage
 ExternalSources: []
 Summary: ""
-LastUpdated: 2026-02-09T06:58:55-08:00
+LastUpdated: 2026-02-09T07:05:13-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 
 
@@ -464,3 +473,81 @@ In the same slice, I added a typed run snapshot API and moved watch/operator loa
 ### Technical details
 - Task status updates:
   - `METAWSM-010` `T7`, `T11` checked complete.
+
+## Step 6: Refresh forum-first docs, add resilience/e2e coverage, and execute cutover checklist
+
+I finished the remaining migration tasks by updating the user/system docs to forum-first control flow and adding explicit resilience/e2e tests for outage/replay/idempotency/lifecycle behavior. This closes the implementation backlog with runnable evidence that control signaling and watch/operator flows are no longer tied to file signals or status-text parsing.
+
+I also executed the cutover checklist in-repo: verified no runtime `guide` command path, verified no non-test file-signal readers/writers remain, verified watch/operator runtime path uses typed `RunSnapshot`, and re-ran the full test suite. That completed the final cutover task with code-level evidence.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok yes. follow the task list, implement, keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue implementing the remaining backlog items and keep commit-by-commit documentation updated.
+
+**Inferred user intent:** Fully complete the migration plan, including docs/test hardening and final cutover readiness checks.
+
+**Commit (code):** 99d39da2dc7adf6a8fd64f6db5632fd841985e6e — "Update forum-first docs and add resilience lifecycle tests"
+
+### What I did
+- Updated docs for forum-first-only control flow:
+  - `README.md`: removed `guide` command references and file-signal section; added `forum signal` guidance and control-signal examples
+  - `docs/system-guide.md`: updated command surface and signaling contract to forum-only model
+- Added `T15` resilience tests:
+  - `internal/forumbus/runtime_test.go`:
+    - redis unavailable behavior test (`Healthy`/`ProcessOnce` failure)
+    - outbox replay recovery test (failed message replay after handler registration)
+  - `internal/store/sqlite_test.go`:
+    - projection lag catch-up test by deleting `forum_thread_views` row and replaying event projection
+- Added `T16` e2e lifecycle test:
+  - `internal/orchestrator/service_test.go`:
+    - forum-only lifecycle ask -> answer -> resume -> completion -> validation -> close
+    - verifies one control thread per `(run_id, agent_name)` across lifecycle signals
+- Executed cutover checklist evidence (`T17`):
+  - `rg -n "case \"guide\"|metawsm guide|guideCommand\\(" cmd internal -g "*.go" -g '!**/*_test.go'` (no matches)
+  - `rg -n "guidance-request\\.json|guidance-response\\.json|implementation-complete\\.json|validation-result\\.json" cmd internal -g "*.go" -g '!**/*_test.go'` (no matches)
+  - `rg -n "RunSnapshot\\(|loadWatchSnapshot\\(" cmd/metawsm/main.go internal/orchestrator -g "*.go"` (typed snapshot path confirmed)
+  - `go test ./... -count=1`
+
+### Why
+- `T14` required public/operator docs to match the new no-compat runtime behavior.
+- `T15` and `T16` required proving the transport and lifecycle behavior under replay/outage and full forum-only execution.
+- `T17` required explicit cutover verification and removal of runtime migration ambiguity.
+
+### What worked
+- Docs now consistently describe forum-first control flow and commands.
+- Resilience tests passed for redis-unavailable and outbox replay recovery scenarios.
+- E2E lifecycle test passed for forum-only guidance/completion/validation close flow.
+- Full repository tests passed.
+
+### What didn't work
+- `docmgr task list --ticket METAWSM-010` had stale rendered output immediately after earlier `task check`; direct task file inspection and subsequent checks confirmed expected task state.
+
+### What I learned
+- Explicit replay-oriented tests (projection rebuild + outbox failed->sent recovery) are critical for confidence once command and projection handling are decoupled by bus semantics.
+
+### What was tricky to build
+- Building an e2e lifecycle test that includes `resume` while preserving realistic bootstrap close prerequisites (workspace config, doc sync state, run brief done criteria).
+
+### What warrants a second pair of eyes
+- `internal/forumbus/runtime_test.go` assumptions around simulated redis unavailability (config-level health guard vs live network faults).
+- `internal/orchestrator/service_test.go` e2e lifecycle test setup fidelity for production-like run topologies.
+- `README.md` and `docs/system-guide.md` command examples for operator playbook consistency.
+
+### What should be done in the future
+- N/A
+
+### Code review instructions
+- Start here:
+  - `README.md`
+  - `docs/system-guide.md`
+  - `internal/forumbus/runtime_test.go`
+  - `internal/store/sqlite_test.go`
+  - `internal/orchestrator/service_test.go`
+- Validate with:
+  - `go test ./... -count=1`
+
+### Technical details
+- Task status updates:
+  - `METAWSM-010` `T14`, `T15`, `T16`, `T17` checked complete.

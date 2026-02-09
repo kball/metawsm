@@ -87,3 +87,16 @@ Step 5: Added forum.events projection consumers with idempotent forum_projection
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_snapshot.go — Adds typed run snapshot API consumed by watch/operator
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_forum.go — Adds projection marker idempotency and thread-view rebuild
 
+
+## 2026-02-09
+
+Step 6: Updated README/system-guide to forum-first signaling, added outage/replay/e2e lifecycle tests, and executed cutover checklist verification (commit 99d39da2dc7adf6a8fd64f6db5632fd841985e6e).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/README.md — Forum-first command docs and control-signal examples
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/docs/system-guide.md — System guide updated to forum-only signaling contract
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/forumbus/runtime_test.go — Redis outage and outbox replay recovery tests
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Forum-only lifecycle e2e test
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_test.go — Projection replay catch-up test
+

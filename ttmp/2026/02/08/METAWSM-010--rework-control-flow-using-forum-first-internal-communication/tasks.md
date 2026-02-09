@@ -15,7 +15,7 @@
 - [x] T11: Add typed run snapshot API and migrate `watch`/`operator` off status-text parsing.
 - [x] T12: Remove `metawsm guide` command from CLI surface and replace with forum command guidance in help/hints.
 - [x] T13: Remove all legacy file-signal readers/writers (`guidance-request/response`, `implementation-complete`, `validation-result`) from runtime code.
-- [ ] T14: Update docs (`README.md`, `docs/system-guide.md`, ticket docs/playbooks) to forum-first-only control flow and commands.
-- [ ] T15: Add integration tests for Redis unavailable (startup/mid-run), duplicate delivery idempotency, projection lag catch-up, and outbox replay recovery.
-- [ ] T16: Add end-to-end tests for forum-only lifecycle (ask -> answer -> resume -> completion -> validation -> close) with one-thread-per-agent enforcement.
-- [ ] T17: Execute production cutover checklist: enable forum-first path globally, verify metrics/alerts, and remove any remaining runtime migration toggles.
+- [x] T14: Update docs (`README.md`, `docs/system-guide.md`, ticket docs/playbooks) to forum-first-only control flow and commands.
+- [x] T15: Add integration tests for Redis unavailable (startup/mid-run), duplicate delivery idempotency, projection lag catch-up, and outbox replay recovery.
+- [x] T16: Add end-to-end tests for forum-only lifecycle (ask -> answer -> resume -> completion -> validation -> close) with one-thread-per-agent enforcement.
+- [x] T17: Execute production cutover checklist: enable forum-first path globally, verify metrics/alerts, and remove any remaining runtime migration toggles.
