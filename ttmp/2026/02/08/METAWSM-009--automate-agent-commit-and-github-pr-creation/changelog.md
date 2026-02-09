@@ -305,3 +305,15 @@ Step 24: extended review sync to ingest top-level PR reviews with ignore-author 
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Top-level review ingestion/dedupe/dispatch regression coverage
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 24 implementation details
 
+
+## 2026-02-08
+
+Step 25: documented V1.1 top-level review ingestion scope and completed METAWSM-006 live sync+dispatch follow-up (tasks 53-54).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/design-doc/03-plan-ingest-pr-review-comments-into-ticket-feedback-loop.md — Updated V1.1 scope and endpoint details
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/playbook/01-operator-and-agent-commit-pr-workflow.md — Updated operator workflow notes for top-level review ingestion
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 25 docs and live follow-up execution
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/tasks.md — Checked tasks 53 and 54 complete
+

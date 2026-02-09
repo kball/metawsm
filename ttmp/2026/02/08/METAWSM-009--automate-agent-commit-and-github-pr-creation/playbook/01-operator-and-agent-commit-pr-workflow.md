@@ -23,7 +23,7 @@ RelatedFiles:
         Commit/PR/review feedback lifecycle behavior used by workflow
 ExternalSources: []
 Summary: ""
-LastUpdated: 2026-02-08T15:08:30-08:00
+LastUpdated: 2026-02-08T17:24:00-08:00
 WhatFor: Repeatable operator workflow for commit/PR automation plus PR review-feedback ingestion and dispatch.
 WhenToUse: Use after a METAWSM run reaches completed state and you want to run commit/PR and review-feedback automation in assist or auto mode.
 ---
@@ -38,7 +38,7 @@ Provide a repeatable, low-risk workflow for:
 - validating local auth prerequisites (Proposal A),
 - preparing commit branches and commits from run workspaces,
 - creating GitHub pull requests,
-- ingesting PR review comments into queued iteration feedback,
+- ingesting PR review feedback (inline comments + top-level review bodies) into queued iteration feedback,
 - using operator assist/auto behavior for readiness signals.
 
 ## Environment Assumptions
@@ -140,6 +140,9 @@ To enable commit/PR auto execution, set policy:
 - Commit/PR commands use a run-scoped mutation lock; overlapping non-dry-run `commit`/`pr` calls on the same run are rejected with an explicit "operation in progress" error.
 - When `--actor` is omitted, actor attribution falls back to GitHub auth actor first, then git identity.
 - Review feedback lifecycle is tracked as `queued -> new -> addressed` (addressed after commit + PR update path).
+- Sync currently includes GitHub PR review endpoints:
+  - `pulls/{number}/comments` (inline diff review comments)
+  - `pulls/{number}/reviews` (top-level review bodies)
 
 ### Troubleshooting
 

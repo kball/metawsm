@@ -16,17 +16,22 @@ RelatedFiles:
     - Path: internal/model/types.go
       Note: Add normalized review feedback model and statuses
     - Path: internal/orchestrator/service.go
-      Note: Add review sync
+      Note: |-
+        Add review sync
+        Implements inline+top-level review ingestion behavior documented in V1.1
     - Path: internal/policy/policy.go
       Note: Add and validate review-feedback policy controls under git_pr
     - Path: internal/store/sqlite.go
       Note: Persist and query PR review feedback items with status transitions
+    - Path: ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/playbook/01-operator-and-agent-commit-pr-workflow.md
+      Note: Operational workflow companion for this design
 ExternalSources: []
-Summary: Plan for syncing GitHub PR review feedback into ticket iteration so agents can address reviewer comments with minimal operator copy/paste.
-LastUpdated: 2026-02-08T14:38:02-08:00
+Summary: Plan for syncing GitHub PR review feedback (inline comments + top-level review bodies) into ticket iteration so agents can address reviewer comments with minimal operator copy/paste.
+LastUpdated: 2026-02-08T17:24:00-08:00
 WhatFor: Add a first-class workflow for detecting GitHub PR review feedback and routing it into ticket iteration for agent follow-up.
 WhenToUse: Use when implementing or operating automated review-feedback ingestion for METAWSM commit/PR runs.
 ---
+
 
 
 # Plan: ingest PR review comments into ticket feedback loop
@@ -72,7 +77,9 @@ Add:
 
 Behavior:
 1. Resolves run context and open PRs.
-2. Calls GitHub via `gh api` for PR review comments (V1).
+2. Calls GitHub via `gh api` for:
+- inline PR review comments (`pulls/{number}/comments`),
+- top-level PR reviews with body text (`pulls/{number}/reviews`).
 3. Prints sync summary in dry-run mode.
 4. Persists and optionally dispatches feedback in execute mode.
 
@@ -108,8 +115,8 @@ Reason: reduces surprise/risk while validating quality of extracted review conte
 5. Keep feedback filtering policy-driven.
 Reason: allows teams to tune which comments are actionable (bot authors, resolved threads, etc).
 
-6. V1 ingests only PR review comments.
-Reason: narrower scope reduces ambiguity and avoids mixing general conversation with actionable code review items.
+6. V1 ingests PR review feedback from both inline comments and top-level review bodies (not issue conversation comments).
+Reason: this captures actionable code-review feedback while still avoiding general PR discussion noise.
 
 7. Mark feedback `addressed` only after a successful commit+PR update cycle.
 Reason: dispatching feedback to an agent is not proof the requested change has been delivered for reviewer verification.
@@ -145,8 +152,9 @@ Rejected: does not reduce operator toil and prevents deterministic operator inte
 
 1. Add orchestrator service method to sync review feedback for run PRs.
 2. Use `gh api` endpoints for:
-- PR review comments only (V1 scope).
-Issue-comment ingestion can be added in a later phase.
+- PR review comments (`pulls/{number}/comments`),
+- top-level reviews with body text (`pulls/{number}/reviews`).
+Issue-comment ingestion (`issues/{number}/comments`) can be added in a later phase.
 3. Normalize payloads and upsert only unseen/changed items.
 4. Capture sync events in run events table for observability.
 
@@ -191,7 +199,7 @@ Issue-comment ingestion can be added in a later phase.
 
 ## Open Questions
 
-1. Resolved: V1 includes PR review comments only.
+1. Resolved: V1 includes inline PR review comments plus top-level PR review bodies.
 2. Resolved: mark feedback `addressed` after successful commit and PR update cycle.
 3. Resolved: default author filters remain empty; filtering is policy-configurable.
 4. Resolved: auto mode includes a dispatch cap per operator interval.

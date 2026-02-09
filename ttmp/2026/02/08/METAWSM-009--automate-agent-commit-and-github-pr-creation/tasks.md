@@ -54,5 +54,5 @@
 - [x] Review feedback V1.1: keep dispatch/lifecycle semantics unchanged for new source type (queued -> new -> addressed after commit + pr)
 - [x] Validation V1.1: add orchestrator fake-gh tests for top-level review ingestion, dedupe updates, and empty-body/state filtering
 - [x] Validation V1.1: add CLI integration test coverage proving review sync --dispatch handles top-level reviews and queues iterate feedback
-- [ ] Docs V1.1: update design doc/playbook to state that top-level review bodies are ingested in addition to inline PR review comments
-- [ ] Operator follow-up: re-run review sync for METAWSM-006 and dispatch top-level review feedback to an agent once ingestion support lands
+- [x] Docs V1.1: update design doc/playbook to state that top-level review bodies are ingested in addition to inline PR review comments
+- [x] Operator follow-up: re-run review sync for METAWSM-006 and dispatch top-level review feedback to an agent once ingestion support lands

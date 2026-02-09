@@ -97,10 +97,13 @@ RelatedFiles:
         Added persistence test for run pull request metadata across reopen (commit d3f13f6)
         Added run_pull_requests persistence test (commit d3f13f6)
         Added reopen/state-transition/dedupe coverage for review feedback persistence (commit 967c146)
+    - Path: ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/design-doc/03-plan-ingest-pr-review-comments-into-ticket-feedback-loop.md
+      Note: Step 25 doc updates for inline+top-level review scope
     - Path: ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/playbook/01-operator-and-agent-commit-pr-workflow.md
       Note: |-
         Added operator/agent commit-PR workflow and Proposal A setup playbook guidance
         Task 46 workflow updates for review feedback loop
+        Step 25 playbook updates for top-level review ingestion workflow
     - Path: ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/tasks.md
       Note: |-
         Added and checked tasks 37-39 for review feedback model/store slice
@@ -108,12 +111,14 @@ RelatedFiles:
         Checked task 41 complete
         Checked task 42 complete
         Checked tasks 47-52 for top-level review feedback slice
+        Step 25 checked tasks 53 and 54 complete
 ExternalSources: []
 Summary: ""
 LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -1949,3 +1954,74 @@ I implemented dual-endpoint sync (`comments` + `reviews`), added top-level revie
 - Top-level review endpoint: `gh api repos/{owner}/{repo}/pulls/{number}/reviews --paginate`.
 - Actionable filter: keep rows with non-empty `body`, non-empty `state`, and `state != PENDING`.
 - Dedupe key remains: `run|ticket|repo|pr_number|source_type|source_id`.
+
+## Step 25: Update V1.1 Docs and Run METAWSM-006 Sync/Dispatch
+
+This step closed the remaining backlog by documenting that V1.1 now ingests both inline PR review comments and top-level PR review bodies, then executing the live METAWSM-006 review sync/dispatch flow to verify the new behavior in an active run.
+
+I updated the design/playbook docs to match implementation scope and used `metawsm review ... --dispatch` against the existing METAWSM-006 run, which now detected and dispatched the top-level PR review comment from GitHub.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Ok yes implement, keep a diary and commit as you go"
+
+**Assistant interpretation:** Complete remaining documentation and operational follow-up tasks after shipping top-level review ingestion.
+
+**Inferred user intent:** Finish the full task slice end-to-end, including proving the new ingestion path works on the real METAWSM-006 PR.
+
+### What I did
+- Updated design documentation in:
+  - `ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/design-doc/03-plan-ingest-pr-review-comments-into-ticket-feedback-loop.md`
+  - clarified V1.1 scope as inline review comments + top-level review bodies,
+  - documented endpoint split (`pulls/{number}/comments` + `pulls/{number}/reviews`).
+- Updated operator playbook in:
+  - `ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/playbook/01-operator-and-agent-commit-pr-workflow.md`
+  - clarified review-feedback scope and endpoint behavior.
+- Verified METAWSM-006 run policy state included review feedback enablement from stored run policy.
+- Executed live workflow:
+  - `go run ./cmd/metawsm review --ticket METAWSM-006 --dry-run sync`
+  - `go run ./cmd/metawsm review --ticket METAWSM-006 --dispatch sync`
+- Observed runtime results:
+  - sync fetched `1` item and added `1` item,
+  - dispatch queued `1` feedback bundle and restarted the run agent session.
+- Checked remaining tasks:
+  - `docmgr task check --ticket METAWSM-009 --id 53`
+  - `docmgr task check --ticket METAWSM-009 --id 54`
+
+### Why
+- The docs needed to reflect the actual shipped behavior so operators understand why top-level reviews now appear in queued feedback.
+- Task 54 required proving the pipeline works on the real PR case that originally exposed the gap.
+
+### What worked
+- Dry-run sync on METAWSM-006 reported both endpoints and detected one actionable review item.
+- Real sync+dispatch successfully wrote iterate feedback and restarted the target agent session.
+
+### What didn't work
+- Earlier in the session, sync initially returned no actionable items because top-level review ingestion had not been implemented yet.
+- After V1.1 implementation, rerun succeeded without additional code changes.
+
+### What I learned
+- Stored run policy controls review sync behavior; older runs may need policy migration or explicit refresh when feature flags are introduced post-run-creation.
+
+### What was tricky to build
+- Coordinating live execution requirements: GitHub API network access plus workspace write access for iterate dispatch in a path outside the local writable root.
+
+### What warrants a second pair of eyes
+- Whether run-policy refresh/migration should be formalized to avoid manual intervention when enabling newly added policy-gated features on historical runs.
+
+### What should be done in the future
+- Optional: add explicit tooling for in-place run policy migration to avoid ad-hoc DB updates for older runs.
+
+### Code review instructions
+- Review doc changes in:
+  - `ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/design-doc/03-plan-ingest-pr-review-comments-into-ticket-feedback-loop.md`
+  - `ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/playbook/01-operator-and-agent-commit-pr-workflow.md`
+- Confirm task completion in:
+  - `ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/tasks.md`
+- Operational validation used:
+  - `go run ./cmd/metawsm review --ticket METAWSM-006 --dry-run sync`
+  - `go run ./cmd/metawsm review --ticket METAWSM-006 --dispatch sync`
+
+### Technical details
+- Live METAWSM-006 sync result: `fetched=1 added=1 updated=0`.
+- Live METAWSM-006 dispatch result: `queued=1` and iterate actions applied to workspace and agent restart.
