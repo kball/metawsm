@@ -21,8 +21,8 @@ func (r *Runtime) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/forum/threads/", r.handleForumThreadAction)
 	mux.HandleFunc("/api/v1/forum/control/signal", r.handleForumControlSignal)
 	mux.HandleFunc("/api/v1/forum/events", r.handleForumEvents)
+	mux.HandleFunc("/api/v1/forum/stats", r.handleForumStats)
 	mux.HandleFunc("/api/v1/forum/stream", r.handleForumStream)
-	mux.HandleFunc("/", r.handleNotFound)
 }
 
 func (r *Runtime) handleRuns(w http.ResponseWriter, req *http.Request) {
@@ -294,6 +294,23 @@ func (r *Runtime) handleForumEvents(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"events":      events,
 		"next_cursor": nextCursor,
+	})
+}
+
+func (r *Runtime) handleForumStats(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET is supported")
+		return
+	}
+	ticket := strings.TrimSpace(req.URL.Query().Get("ticket"))
+	runID := strings.TrimSpace(req.URL.Query().Get("run_id"))
+	stats, err := r.service.ForumListStats(ticket, runID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "forum_stats_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"stats": stats,
 	})
 }
 

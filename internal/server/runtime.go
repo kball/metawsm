@@ -8,10 +8,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"metawsm/internal/model"
 	"metawsm/internal/serviceapi"
+	"metawsm/internal/web"
 )
 
 type Options struct {
@@ -60,6 +62,13 @@ func NewRuntime(options Options) (*Runtime, error) {
 	}
 	mux := http.NewServeMux()
 	runtime.registerRoutes(mux)
+	spaMounted := web.RegisterSPA(mux, web.PublicFS, web.SPAOptions{
+		APIPrefix: "/api",
+		WSPath:    "/api/v1/forum/stream",
+	})
+	if !spaMounted {
+		mux.HandleFunc("/", runtime.handleSPAFallback)
+	}
 	runtime.server = &http.Server{
 		Addr:    options.Addr,
 		Handler: mux,
@@ -172,6 +181,14 @@ func (r *Runtime) handleNotFound(w http.ResponseWriter, _ *http.Request) {
 			"message": "route not found",
 		},
 	})
+}
+
+func (r *Runtime) handleSPAFallback(w http.ResponseWriter, req *http.Request) {
+	if strings.HasPrefix(req.URL.Path, "/api") {
+		r.handleNotFound(w, req)
+		return
+	}
+	http.Error(w, "web ui assets are unavailable; run `go generate ./internal/web` for dev or build with `-tags embed`", http.StatusServiceUnavailable)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

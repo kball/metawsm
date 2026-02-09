@@ -315,13 +315,17 @@ func forumCommand(args []string) error {
 	}
 }
 
-func newForumCore(dbPath string) (serviceapi.Core, error) {
-	return serviceapi.NewLocalCore(dbPath)
+func newForumCore(serverURL string) (serviceapi.Core, error) {
+	serverURL = strings.TrimSpace(serverURL)
+	if serverURL == "" {
+		serverURL = "http://127.0.0.1:3001"
+	}
+	return serviceapi.NewRemoteCore(serverURL, 15*time.Second), nil
 }
 
 func forumAskCommand(args []string) error {
 	fs := flag.NewFlagSet("forum ask", flag.ContinueOnError)
-	var dbPath string
+	var serverURL string
 	var ticket string
 	var runID string
 	var agentName string
@@ -330,7 +334,7 @@ func forumAskCommand(args []string) error {
 	var priority string
 	var actorType string
 	var actorName string
-	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&serverURL, "server", "http://127.0.0.1:3001", "metawsm serve base URL")
 	fs.StringVar(&ticket, "ticket", "", "Ticket identifier")
 	fs.StringVar(&runID, "run-id", "", "Run identifier (optional)")
 	fs.StringVar(&agentName, "agent", "", "Agent name associated with the thread")
@@ -342,7 +346,7 @@ func forumAskCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	core, err := newForumCore(dbPath)
+	core, err := newForumCore(serverURL)
 	if err != nil {
 		return err
 	}
@@ -366,12 +370,12 @@ func forumAskCommand(args []string) error {
 
 func forumAnswerCommand(args []string) error {
 	fs := flag.NewFlagSet("forum answer", flag.ContinueOnError)
-	var dbPath string
+	var serverURL string
 	var threadID string
 	var body string
 	var actorType string
 	var actorName string
-	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&serverURL, "server", "http://127.0.0.1:3001", "metawsm serve base URL")
 	fs.StringVar(&threadID, "thread-id", "", "Thread identifier")
 	fs.StringVar(&body, "body", "", "Answer text")
 	fs.StringVar(&actorType, "actor-type", string(model.ForumActorOperator), "Actor type: agent|operator|human|system")
@@ -379,7 +383,7 @@ func forumAnswerCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	core, err := newForumCore(dbPath)
+	core, err := newForumCore(serverURL)
 	if err != nil {
 		return err
 	}
@@ -399,14 +403,14 @@ func forumAnswerCommand(args []string) error {
 
 func forumAssignCommand(args []string) error {
 	fs := flag.NewFlagSet("forum assign", flag.ContinueOnError)
-	var dbPath string
+	var serverURL string
 	var threadID string
 	var assigneeType string
 	var assigneeName string
 	var note string
 	var actorType string
 	var actorName string
-	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&serverURL, "server", "http://127.0.0.1:3001", "metawsm serve base URL")
 	fs.StringVar(&threadID, "thread-id", "", "Thread identifier")
 	fs.StringVar(&assigneeType, "assignee-type", string(model.ForumActorOperator), "Assignee type: agent|operator|human|system")
 	fs.StringVar(&assigneeName, "assignee", "", "Assignee name")
@@ -416,7 +420,7 @@ func forumAssignCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	core, err := newForumCore(dbPath)
+	core, err := newForumCore(serverURL)
 	if err != nil {
 		return err
 	}
@@ -438,12 +442,12 @@ func forumAssignCommand(args []string) error {
 
 func forumStateCommand(args []string) error {
 	fs := flag.NewFlagSet("forum state", flag.ContinueOnError)
-	var dbPath string
+	var serverURL string
 	var threadID string
 	var state string
 	var actorType string
 	var actorName string
-	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&serverURL, "server", "http://127.0.0.1:3001", "metawsm serve base URL")
 	fs.StringVar(&threadID, "thread-id", "", "Thread identifier")
 	fs.StringVar(&state, "state", "", "State: new|triaged|waiting_operator|waiting_human|answered|closed")
 	fs.StringVar(&actorType, "actor-type", string(model.ForumActorOperator), "Actor type: agent|operator|human|system")
@@ -451,7 +455,7 @@ func forumStateCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	core, err := newForumCore(dbPath)
+	core, err := newForumCore(serverURL)
 	if err != nil {
 		return err
 	}
@@ -471,12 +475,12 @@ func forumStateCommand(args []string) error {
 
 func forumPriorityCommand(args []string) error {
 	fs := flag.NewFlagSet("forum priority", flag.ContinueOnError)
-	var dbPath string
+	var serverURL string
 	var threadID string
 	var priority string
 	var actorType string
 	var actorName string
-	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&serverURL, "server", "http://127.0.0.1:3001", "metawsm serve base URL")
 	fs.StringVar(&threadID, "thread-id", "", "Thread identifier")
 	fs.StringVar(&priority, "priority", "", "Priority: low|normal|high|urgent")
 	fs.StringVar(&actorType, "actor-type", string(model.ForumActorOperator), "Actor type: agent|operator|human|system")
@@ -484,7 +488,7 @@ func forumPriorityCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	core, err := newForumCore(dbPath)
+	core, err := newForumCore(serverURL)
 	if err != nil {
 		return err
 	}
@@ -504,18 +508,18 @@ func forumPriorityCommand(args []string) error {
 
 func forumCloseCommand(args []string) error {
 	fs := flag.NewFlagSet("forum close", flag.ContinueOnError)
-	var dbPath string
+	var serverURL string
 	var threadID string
 	var actorType string
 	var actorName string
-	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&serverURL, "server", "http://127.0.0.1:3001", "metawsm serve base URL")
 	fs.StringVar(&threadID, "thread-id", "", "Thread identifier")
 	fs.StringVar(&actorType, "actor-type", string(model.ForumActorOperator), "Actor type: agent|operator|human|system")
 	fs.StringVar(&actorName, "actor-name", "", "Actor display name")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	core, err := newForumCore(dbPath)
+	core, err := newForumCore(serverURL)
 	if err != nil {
 		return err
 	}
@@ -534,14 +538,14 @@ func forumCloseCommand(args []string) error {
 
 func forumListCommand(args []string) error {
 	fs := flag.NewFlagSet("forum list", flag.ContinueOnError)
-	var dbPath string
+	var serverURL string
 	var ticket string
 	var runID string
 	var state string
 	var priority string
 	var assignee string
 	var limit int
-	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&serverURL, "server", "http://127.0.0.1:3001", "metawsm serve base URL")
 	fs.StringVar(&ticket, "ticket", "", "Ticket filter")
 	fs.StringVar(&runID, "run-id", "", "Run ID filter")
 	fs.StringVar(&state, "state", "", "State filter")
@@ -551,7 +555,7 @@ func forumListCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	core, err := newForumCore(dbPath)
+	core, err := newForumCore(serverURL)
 	if err != nil {
 		return err
 	}
@@ -579,14 +583,14 @@ func forumListCommand(args []string) error {
 
 func forumThreadCommand(args []string) error {
 	fs := flag.NewFlagSet("forum thread", flag.ContinueOnError)
-	var dbPath string
+	var serverURL string
 	var threadID string
-	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&serverURL, "server", "http://127.0.0.1:3001", "metawsm serve base URL")
 	fs.StringVar(&threadID, "thread-id", "", "Thread identifier")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	core, err := newForumCore(dbPath)
+	core, err := newForumCore(serverURL)
 	if err != nil {
 		return err
 	}
@@ -616,18 +620,18 @@ func forumThreadCommand(args []string) error {
 
 func forumWatchCommand(args []string) error {
 	fs := flag.NewFlagSet("forum watch", flag.ContinueOnError)
-	var dbPath string
+	var serverURL string
 	var ticket string
 	var cursor int64
 	var limit int
-	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&serverURL, "server", "http://127.0.0.1:3001", "metawsm serve base URL")
 	fs.StringVar(&ticket, "ticket", "", "Ticket filter")
 	fs.Int64Var(&cursor, "cursor", 0, "Event sequence cursor")
 	fs.IntVar(&limit, "limit", 50, "Maximum events")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	core, err := newForumCore(dbPath)
+	core, err := newForumCore(serverURL)
 	if err != nil {
 		return err
 	}
@@ -658,7 +662,7 @@ func forumWatchCommand(args []string) error {
 
 func forumSignalCommand(args []string) error {
 	fs := flag.NewFlagSet("forum signal", flag.ContinueOnError)
-	var dbPath string
+	var serverURL string
 	var runID string
 	var ticket string
 	var agentName string
@@ -671,7 +675,7 @@ func forumSignalCommand(args []string) error {
 	var doneCriteria string
 	var actorType string
 	var actorName string
-	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&serverURL, "server", "http://127.0.0.1:3001", "metawsm serve base URL")
 	fs.StringVar(&runID, "run-id", "", "Run identifier")
 	fs.StringVar(&ticket, "ticket", "", "Ticket identifier")
 	fs.StringVar(&agentName, "agent-name", "", "Agent name")
@@ -717,7 +721,7 @@ func forumSignalCommand(args []string) error {
 		return err
 	}
 
-	core, err := newForumCore(dbPath)
+	core, err := newForumCore(serverURL)
 	if err != nil {
 		return err
 	}
@@ -3347,7 +3351,7 @@ func printUsage() {
 	fmt.Println("  metawsm review sync [--run-id RUN_ID | --ticket T1] [--max-items N] [--dispatch] [--dry-run]")
 	fmt.Println("  metawsm watch [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--notify-cmd \"...\"] [--bell=true]")
 	fmt.Println("  metawsm operator [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--llm-mode off|assist|auto] [--dry-run]")
-	fmt.Println("  metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch|signal> [...]")
+	fmt.Println("  metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch|signal> [--server http://127.0.0.1:3001] [...]")
 	fmt.Println("  metawsm resume [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm stop [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm restart [--run-id RUN_ID | --ticket T1] [--dry-run]")

@@ -1,2 +1,7 @@
 .metawsm/
 /metawsm
+ui/node_modules/
+ui/dist/
+internal/web/embed/public/assets/
+internal/web/embed/public/*.js
+internal/web/embed/public/*.css

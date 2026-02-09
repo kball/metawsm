@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -176,16 +175,4 @@ func headerContainsToken(header string, token string) bool {
 		}
 	}
 	return false
-}
-
-func parsePositiveInt(raw string, fallback int) int {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(value)
-	if err != nil || n <= 0 {
-		return fallback
-	}
-	return n
 }
