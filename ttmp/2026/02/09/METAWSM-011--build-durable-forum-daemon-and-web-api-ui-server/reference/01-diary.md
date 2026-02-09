@@ -16,18 +16,26 @@ RelatedFiles:
       Note: |-
         Adds serve CLI command and runtime flags (commit b553d46)
         Forum CLI commands now consume serviceapi.Core (commit b251e84)
+    - Path: internal/orchestrator/service.go
+      Note: Exposes ListRuns for API service layer (commit 15b13fe)
     - Path: internal/orchestrator/service_forum.go
       Note: Exposes forum outbox stats for runtime health (commit b553d46)
+    - Path: internal/server/api.go
+      Note: HTTP run/forum routes and payload parsing (commit 15b13fe)
     - Path: internal/server/runtime.go
       Note: |-
         Daemon runtime lifecycle and health endpoint (commit b553d46)
         Runtime now depends on serviceapi.Core abstraction (commit b251e84)
+    - Path: internal/server/websocket.go
+      Note: WebSocket upgrade and live forum stream bridge (commit 15b13fe)
     - Path: internal/server/worker.go
       Note: |-
         Durable forum worker loop and metrics snapshots (commit b553d46)
         Worker loop now consumes serviceapi.Core (commit b251e84)
     - Path: internal/serviceapi/core.go
-      Note: Introduces shared Core interface and LocalCore adapter (commit b251e84)
+      Note: |-
+        Introduces shared Core interface and LocalCore adapter (commit b251e84)
+        Adds run snapshot listing for API responses (commit 15b13fe)
     - Path: internal/store/sqlite_forum.go
       Note: Adds forum outbox count and oldest timestamp queries (commit b553d46)
     - Path: internal/store/sqlite_test.go
@@ -38,6 +46,7 @@ LastUpdated: 2026-02-09T09:28:18.302287-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 
 
@@ -215,3 +224,97 @@ I intentionally kept the implementation as a thin adapter over `orchestrator.Ser
   - `newForumCore(dbPath)` now returns `serviceapi.Core`.
 - Shared shutdown path:
   - `core.Shutdown()` used by CLI forum commands and server runtime cleanup.
+
+## Step 3: Add HTTP API routes and WebSocket forum stream
+
+I implemented Tasks 4 and 5 by extending the daemon runtime into a functional API server with run and forum endpoints, plus a built-in WebSocket stream for live forum events. All handlers use the shared `serviceapi.Core` abstraction introduced in Step 2.
+
+This step intentionally prioritized API completeness and deterministic route behavior over external framework dependencies, using the standard library and a minimal native WebSocket upgrade/write implementation to keep integration lightweight and controllable.
+
+### Prompt Context
+
+**User prompt (verbatim):** "OK yeah implement task by task, keep a diary and commit as you go. Continue until complete."
+
+**Assistant interpretation:** Continue through the ticket backlog in order, delivering and committing each major capability slice.
+
+**Inferred user intent:** Progress from architecture scaffolding into a real daemon API surface that supports both programmatic and interactive (live stream) forum workflows.
+
+**Commit (code):** 15b13fecddf4fd7f7cca56a5e24ac4a599c8844d — "Add run/forum HTTP API and websocket event stream"
+
+### What I did
+- Added `internal/server/api.go`:
+  - route registration for:
+    - `GET /api/v1/health`
+    - `GET /api/v1/runs`
+    - `GET /api/v1/runs/{run_id}`
+    - forum thread list/open/detail/action endpoints
+    - `POST /api/v1/forum/control/signal`
+    - `GET /api/v1/forum/events`
+    - `GET /api/v1/forum/stream`
+  - structured JSON request parsing and API error responses.
+- Added `internal/server/websocket.go`:
+  - native WebSocket handshake/upgrade handling,
+  - text-frame writer,
+  - polling bridge from `ForumWatchEvents` to stream frames,
+  - heartbeat frames when no new events are available.
+- Updated runtime route registration to use full API route map.
+- Extended internal service API support:
+  - `Service.ListRuns()` in orchestrator,
+  - `Core.ListRunSnapshots(...)` in `serviceapi` for run list endpoint support.
+- Ran formatting and focused validation:
+  - `gofmt -w internal/orchestrator/service.go internal/serviceapi/core.go internal/server/runtime.go internal/server/api.go internal/server/websocket.go`
+  - `go test ./internal/server -count=1`
+  - `go test ./cmd/metawsm -count=1`
+  - `go test ./internal/serviceapi ./internal/orchestrator -count=1`
+
+### Why
+- Task 4 requires a daemon HTTP API for run snapshots and forum write/read operations.
+- Task 5 requires live forum updates over WebSocket, matching the resolved design decision.
+
+### What worked
+- All targeted packages compiled and test runs passed after route and stream implementation.
+- API handlers map cleanly to shared service methods (`serviceapi.Core`) with minimal glue code.
+- Task checklist updated for tasks 4 and 5.
+
+### What didn't work
+- N/A in this step; no blocking failures during implementation or validation commands.
+
+### What I learned
+- `serviceapi.Core` was sufficient to expose both list and point-in-time run snapshot endpoints after adding one run-list helper.
+- A minimal native WebSocket implementation is feasible for server-to-client event streaming without introducing immediate dependency overhead.
+
+### What was tricky to build
+- Thread action routing (`/api/v1/forum/threads/{id}/{action}`) while preserving strict method semantics and clear error responses.
+- Maintaining reliable cursor advancement + heartbeat behavior in WebSocket streaming loop while handling connection write failures.
+
+### What warrants a second pair of eyes
+- WebSocket framing/upgrade edge cases under diverse clients and proxies.
+- Whether run list sorting should be based on updated timestamps instead of run-id lexical ordering.
+
+### What should be done in the future
+- Integrate CLI forum flows and web UI against this API surface (Tasks 6 and 7).
+- Add dedicated route/stream tests with mocked `serviceapi.Core` to harden behavior (Task 8).
+
+### Code review instructions
+- API surface and route behavior:
+  - `internal/server/api.go`
+- WebSocket upgrade and stream loop:
+  - `internal/server/websocket.go`
+- Service API support for run list snapshots:
+  - `internal/serviceapi/core.go`
+  - `internal/orchestrator/service.go`
+- Validate with:
+  - `go test ./internal/server -count=1`
+  - `go test ./cmd/metawsm -count=1`
+  - `go test ./internal/orchestrator -count=1`
+
+### Technical details
+- Run list endpoint supports optional `ticket` query filtering via `ListRunSnapshots(ctx, ticket)`.
+- Forum event polling endpoint returns:
+  - `events`
+  - `next_cursor`
+- WebSocket stream endpoint supports query params:
+  - `ticket`
+  - `cursor`
+  - `limit`
+  - `poll_ms`

@@ -45,3 +45,14 @@ Step 2: added shared internal service API layer and refactored forum CLI + daemo
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/serviceapi/core.go — Core service abstraction used by CLI and server
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/09/METAWSM-011--build-durable-forum-daemon-and-web-api-ui-server/reference/01-diary.md — Step 2 diary details
 
+
+## 2026-02-09
+
+Step 3: implemented run/forum HTTP API routes and WebSocket forum event stream on the daemon runtime (commit 15b13fe).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/server/api.go — Primary HTTP route and request/response handling
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/server/websocket.go — Native WebSocket stream implementation for forum events
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/09/METAWSM-011--build-durable-forum-daemon-and-web-api-ui-server/reference/01-diary.md — Step 3 implementation notes
+
