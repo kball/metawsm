@@ -293,3 +293,15 @@ Step 23: added review sync CLI, status/watch review feedback counters, and opera
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Status output includes review feedback counters
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 23 implementation details
 
+
+## 2026-02-08
+
+Step 24: extended review sync to ingest top-level PR reviews with ignore-author filtering and actionable-state/body filtering, plus dedupe/dispatch coverage (commit f70193d).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/model/types.go — Added PR top-level review source type
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Dual-endpoint review sync and top-level normalization/filtering
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Top-level review ingestion/dedupe/dispatch regression coverage
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-009--automate-agent-commit-and-github-pr-creation/reference/02-diary.md — Recorded Step 24 implementation details
+

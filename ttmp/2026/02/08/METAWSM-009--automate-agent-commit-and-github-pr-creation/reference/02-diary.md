@@ -46,6 +46,7 @@ RelatedFiles:
         Added RunPullRequest model and pull request state enums (commit d3f13f6)
         Added RunPullRequest model and PR state enums (commit d3f13f6)
         Added review feedback model/status types and source metadata (commit 967c146)
+        Step 24 added top-level review feedback source type (commit f70193d)
     - Path: internal/orchestrator/git_pr_validation.go
       Note: Added extensible required-check validation framework and built-in checks (commit d31a862)
     - Path: internal/orchestrator/service.go
@@ -59,6 +60,7 @@ RelatedFiles:
         Added SyncReviewFeedback primitive with GH comment ingestion and normalization (commit 5178ee6)
         Added queued-feedback dispatch and commit/pr lifecycle transitions (commit 82dc694)
         Step 23 status counters for review feedback (commit 78a61bf)
+        Step 24 added top-level PR review ingestion/filtering and ignore-author enforcement (commit f70193d)
     - Path: internal/orchestrator/service_test.go
       Note: |-
         Added status test for pull request section (commit 283a68b)
@@ -70,6 +72,7 @@ RelatedFiles:
         Added end-to-end commit/push/PR test and updated PR dry-run/real tests (commit 627e397)
         Added fake-gh coverage for sync persistence
         Added dispatch-flow and queued->addressed lifecycle tests (commit 82dc694)
+        Step 24 tests for top-level review ingest/dedupe/dispatch (commit f70193d)
     - Path: internal/policy/policy.go
       Note: |-
         Added git_pr config schema/defaults/validation (commit d3f13f6)
@@ -104,12 +107,14 @@ RelatedFiles:
         Checked task 40 complete
         Checked task 41 complete
         Checked task 42 complete
+        Checked tasks 47-52 for top-level review feedback slice
 ExternalSources: []
 Summary: ""
 LastUpdated: 2026-02-08T11:22:26-08:00
 WhatFor: Implementation diary for METAWSM-009 commit/PR automation rollout.
 WhenToUse: Use when reviewing what was implemented, how it was validated, and what failed during each step.
 ---
+
 
 
 
@@ -1858,3 +1863,89 @@ I added `metawsm review sync`, extended status/watch/operator surfaces for revie
   - `SyncReviewFeedback` then `DispatchQueuedReviewFeedback`
 - Execution cap source:
   - `git_pr.review_feedback.auto_dispatch_cap_per_interval`.
+
+## Step 24: Ingest Top-Level PR Reviews in Review Sync
+
+This step extends review feedback ingestion beyond inline diff comments by adding support for top-level PR reviews from the GitHub Reviews API. The core goal was to ensure review bodies like the one on METAWSM-006 are captured into queued feedback records and can flow through the same iterate/dispatch lifecycle.
+
+I implemented dual-endpoint sync (`comments` + `reviews`), added top-level review normalization/filtering, and validated that queued dispatch works for the new source type without changing lifecycle transitions.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Ok yes implement, keep a diary and commit as you go"
+
+**Assistant interpretation:** Implement the new task slice for top-level PR review ingestion and continue commit-by-commit documentation.
+
+**Inferred user intent:** Make review sync actually capture the PR review comments seen in GitHub so they can be dispatched to an agent iteration.
+
+**Commit (code):** f70193d — "Ingest top-level PR reviews into review feedback sync"
+
+### What I did
+- Added a new review feedback source type in `internal/model/types.go`:
+  - `ReviewFeedbackSourceTypePRReview` (`pr_review`).
+- Extended `SyncReviewFeedback` in `internal/orchestrator/service.go`:
+  - continues syncing inline comments from `repos/{owner}/{repo}/pulls/{number}/comments`,
+  - now also syncs top-level reviews from `repos/{owner}/{repo}/pulls/{number}/reviews`,
+  - applies `git_pr.review_feedback.ignore_authors` filtering,
+  - preserves existing dedupe keying and lifecycle status behavior,
+  - keeps `max_items_per_sync` as a shared cap across both sources.
+- Added top-level review parsing/normalization helpers in `internal/orchestrator/service.go`:
+  - filters out empty-body, empty-state, and `PENDING` review rows,
+  - parses `submitted_at` and maps it into record timestamps,
+  - includes review metadata (`state`, `submitted_at`) in persisted body text for context.
+- Expanded orchestrator tests in `internal/orchestrator/service_test.go`:
+  - updated existing sync tests for the new `reviews` endpoint calls,
+  - added top-level ingestion + filtering coverage,
+  - added dedupe-update coverage for existing top-level review records,
+  - added dispatch dry-run coverage for top-level review source items.
+- Checked tasks:
+  - `docmgr task check --ticket METAWSM-009 --id 47,48,49,50,51,52`
+- Ran validation:
+  - `go test ./internal/orchestrator -count=1`
+  - `go test ./cmd/metawsm -count=1`
+
+### Why
+- V1 previously only ingested inline diff comments; top-level review bodies were missed even when they contained actionable feedback.
+- Reusing the existing `run_review_feedback` pipeline minimizes behavior drift and keeps dispatch semantics consistent.
+
+### What worked
+- Sync now captures actionable top-level PR review bodies and persists them with a distinct source type.
+- Dispatch rendering/iterate dry-run flow works for top-level rows without additional lifecycle code changes.
+
+### What didn't work
+- Initial test expectation for fetched review count was incorrect:
+  - failing test: `TestSyncReviewFeedbackIngestsTopLevelReviewsAndAppliesFilters`
+  - command: `go test ./internal/orchestrator -count=1`
+  - failure: `expected fetched=5 from top-level review endpoint, got 2`
+- Root cause: fetched count is based on actionable post-filter rows (after empty-body/state filtering), not raw endpoint item count.
+- Fix: updated expectation to `2` actionable rows.
+
+### What I learned
+- The `ignore_authors` policy knob had been validated but not enforced in sync; this slice made it operational.
+- Top-level review records need explicit normalization rules to avoid queuing draft/pending or empty-body entries.
+
+### What was tricky to build
+- Keeping max-item behavior deterministic while ingesting from two endpoints per PR and preserving update-vs-add accounting.
+
+### What warrants a second pair of eyes
+- Whether encoding top-level review metadata (`state`, `submitted_at`) into body text is the right long-term representation vs a dedicated schema field.
+
+### What should be done in the future
+- Complete docs updates for V1.1 (`task 53`) and then run operator follow-up against `METAWSM-006` (`task 54`).
+
+### Code review instructions
+- Start in `internal/orchestrator/service.go`:
+  - `SyncReviewFeedback`
+  - `parsePRTopLevelReviews`
+  - `formatTopLevelReviewBody`
+  - `normalizeIgnoreAuthorSet` and `reviewFeedbackAuthorIgnored`.
+- Review `internal/model/types.go` for the new source type constant.
+- Review `internal/orchestrator/service_test.go` around top-level ingestion/dedupe/dispatch tests.
+- Validate with:
+  - `go test ./internal/orchestrator -count=1`
+  - `go test ./cmd/metawsm -count=1`
+
+### Technical details
+- Top-level review endpoint: `gh api repos/{owner}/{repo}/pulls/{number}/reviews --paginate`.
+- Actionable filter: keep rows with non-empty `body`, non-empty `state`, and `state != PENDING`.
+- Dedupe key remains: `run|ticket|repo|pr_number|source_type|source_id`.
