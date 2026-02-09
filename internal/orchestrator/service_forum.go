@@ -79,6 +79,103 @@ type ForumControlSignalOptions struct {
 	Payload       model.ForumControlPayloadV1
 }
 
+func (s *Service) registerForumBusHandlers() error {
+	if s.forumBus == nil {
+		return fmt.Errorf("forum bus runtime not configured")
+	}
+	type handlerRegistration struct {
+		topic   string
+		handler func(context.Context, model.ForumOutboxMessage) error
+	}
+	registrations := []handlerRegistration{
+		{
+			topic: s.forumTopics.CommandTopic("open_thread"),
+			handler: func(ctx context.Context, message model.ForumOutboxMessage) error {
+				_ = ctx
+				var cmd model.ForumOpenThreadCommand
+				if err := json.Unmarshal([]byte(message.PayloadJSON), &cmd); err != nil {
+					return fmt.Errorf("decode open_thread command: %w", err)
+				}
+				_, err := s.store.ForumOpenThread(cmd)
+				return err
+			},
+		},
+		{
+			topic: s.forumTopics.CommandTopic("add_post"),
+			handler: func(ctx context.Context, message model.ForumOutboxMessage) error {
+				_ = ctx
+				var cmd model.ForumAddPostCommand
+				if err := json.Unmarshal([]byte(message.PayloadJSON), &cmd); err != nil {
+					return fmt.Errorf("decode add_post command: %w", err)
+				}
+				_, err := s.store.ForumAddPost(cmd)
+				return err
+			},
+		},
+		{
+			topic: s.forumTopics.CommandTopic("assign_thread"),
+			handler: func(ctx context.Context, message model.ForumOutboxMessage) error {
+				_ = ctx
+				var cmd model.ForumAssignThreadCommand
+				if err := json.Unmarshal([]byte(message.PayloadJSON), &cmd); err != nil {
+					return fmt.Errorf("decode assign_thread command: %w", err)
+				}
+				_, err := s.store.ForumAssignThread(cmd)
+				return err
+			},
+		},
+		{
+			topic: s.forumTopics.CommandTopic("change_state"),
+			handler: func(ctx context.Context, message model.ForumOutboxMessage) error {
+				_ = ctx
+				var cmd model.ForumChangeStateCommand
+				if err := json.Unmarshal([]byte(message.PayloadJSON), &cmd); err != nil {
+					return fmt.Errorf("decode change_state command: %w", err)
+				}
+				_, err := s.store.ForumChangeState(cmd)
+				return err
+			},
+		},
+		{
+			topic: s.forumTopics.CommandTopic("set_priority"),
+			handler: func(ctx context.Context, message model.ForumOutboxMessage) error {
+				_ = ctx
+				var cmd model.ForumSetPriorityCommand
+				if err := json.Unmarshal([]byte(message.PayloadJSON), &cmd); err != nil {
+					return fmt.Errorf("decode set_priority command: %w", err)
+				}
+				_, err := s.store.ForumSetPriority(cmd)
+				return err
+			},
+		},
+		{
+			topic: s.forumTopics.CommandTopic("close_thread"),
+			handler: func(ctx context.Context, message model.ForumOutboxMessage) error {
+				_ = ctx
+				var cmd model.ForumCloseThreadCommand
+				if err := json.Unmarshal([]byte(message.PayloadJSON), &cmd); err != nil {
+					return fmt.Errorf("decode close_thread command: %w", err)
+				}
+				_, err := s.store.ForumCloseThread(cmd)
+				return err
+			},
+		},
+	}
+	for _, registration := range registrations {
+		if err := s.forumBus.RegisterHandler(registration.topic, registration.handler); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) dispatchForumCommand(ctx context.Context, topic string, messageKey string, payload any) error {
+	if s.forumDispatcher == nil {
+		return fmt.Errorf("forum command dispatcher not configured")
+	}
+	return s.forumDispatcher.Dispatch(ctx, topic, messageKey, payload)
+}
+
 func (s *Service) ForumOpenThread(ctx context.Context, options ForumOpenThreadOptions) (model.ForumThreadView, error) {
 	_ = ctx
 	ticket := strings.TrimSpace(options.Ticket)
@@ -112,7 +209,7 @@ func (s *Service) ForumOpenThread(ctx context.Context, options ForumOpenThreadOp
 		correlationID = eventID
 	}
 
-	thread, err := s.store.ForumOpenThread(model.ForumOpenThreadCommand{
+	cmd := model.ForumOpenThreadCommand{
 		Envelope: model.ForumEnvelope{
 			EventID:       eventID,
 			EventType:     "forum.thread.opened",
@@ -130,7 +227,11 @@ func (s *Service) ForumOpenThread(ctx context.Context, options ForumOpenThreadOp
 		Title:    title,
 		Body:     body,
 		Priority: priority,
-	})
+	}
+	if err := s.dispatchForumCommand(ctx, s.forumTopics.CommandTopic("open_thread"), threadID, cmd); err != nil {
+		return model.ForumThreadView{}, err
+	}
+	thread, err := s.store.GetForumThread(threadID)
 	if err != nil {
 		return model.ForumThreadView{}, err
 	}
@@ -170,7 +271,7 @@ func (s *Service) ForumAddPost(ctx context.Context, options ForumAddPostOptions)
 	if correlationID == "" {
 		correlationID = eventID
 	}
-	thread, err := s.store.ForumAddPost(model.ForumAddPostCommand{
+	cmd := model.ForumAddPostCommand{
 		Envelope: model.ForumEnvelope{
 			EventID:       eventID,
 			EventType:     "forum.post.added",
@@ -186,7 +287,11 @@ func (s *Service) ForumAddPost(ctx context.Context, options ForumAddPostOptions)
 			CausationID:   strings.TrimSpace(options.CausationID),
 		},
 		Body: body,
-	})
+	}
+	if err := s.dispatchForumCommand(ctx, s.forumTopics.CommandTopic("add_post"), threadID, cmd); err != nil {
+		return model.ForumThreadView{}, err
+	}
+	thread, err := s.store.GetForumThread(threadID)
 	if err != nil {
 		return model.ForumThreadView{}, err
 	}
@@ -222,7 +327,7 @@ func (s *Service) ForumAnswerThread(ctx context.Context, options ForumAddPostOpt
 	if err != nil {
 		return model.ForumThreadView{}, err
 	}
-	if _, err := s.store.ForumAddPost(model.ForumAddPostCommand{
+	addCommand := model.ForumAddPostCommand{
 		Envelope: model.ForumEnvelope{
 			EventID:       addEventID,
 			EventType:     "forum.post.added",
@@ -238,11 +343,12 @@ func (s *Service) ForumAnswerThread(ctx context.Context, options ForumAddPostOpt
 			CausationID:   strings.TrimSpace(options.CausationID),
 		},
 		Body: strings.TrimSpace(options.Body),
-	}); err != nil {
+	}
+	if err := s.dispatchForumCommand(ctx, s.forumTopics.CommandTopic("add_post"), threadID, addCommand); err != nil {
 		return model.ForumThreadView{}, err
 	}
 
-	stateChanged, err := s.store.ForumChangeState(model.ForumChangeStateCommand{
+	stateCommand := model.ForumChangeStateCommand{
 		Envelope: model.ForumEnvelope{
 			EventID:       generateForumID("fevt"),
 			EventType:     "forum.state.changed",
@@ -258,7 +364,11 @@ func (s *Service) ForumAnswerThread(ctx context.Context, options ForumAddPostOpt
 			CausationID:   addEventID,
 		},
 		ToState: model.ForumThreadStateAnswered,
-	})
+	}
+	if err := s.dispatchForumCommand(ctx, s.forumTopics.CommandTopic("change_state"), threadID, stateCommand); err != nil {
+		return model.ForumThreadView{}, err
+	}
+	stateChanged, err := s.store.GetForumThread(threadID)
 	if err != nil {
 		return model.ForumThreadView{}, err
 	}
@@ -302,7 +412,7 @@ func (s *Service) ForumAssignThread(ctx context.Context, options ForumAssignThre
 	if correlationID == "" {
 		correlationID = eventID
 	}
-	thread, err := s.store.ForumAssignThread(model.ForumAssignThreadCommand{
+	cmd := model.ForumAssignThreadCommand{
 		Envelope: model.ForumEnvelope{
 			EventID:       eventID,
 			EventType:     "forum.assigned",
@@ -320,7 +430,11 @@ func (s *Service) ForumAssignThread(ctx context.Context, options ForumAssignThre
 		AssigneeType:   assigneeType,
 		AssigneeName:   strings.TrimSpace(options.AssigneeName),
 		AssignmentNote: strings.TrimSpace(options.AssignmentNote),
-	})
+	}
+	if err := s.dispatchForumCommand(ctx, s.forumTopics.CommandTopic("assign_thread"), threadID, cmd); err != nil {
+		return model.ForumThreadView{}, err
+	}
+	thread, err := s.store.GetForumThread(threadID)
 	if err != nil {
 		return model.ForumThreadView{}, err
 	}
@@ -359,7 +473,7 @@ func (s *Service) ForumChangeState(ctx context.Context, options ForumChangeState
 	if correlationID == "" {
 		correlationID = eventID
 	}
-	thread, err := s.store.ForumChangeState(model.ForumChangeStateCommand{
+	cmd := model.ForumChangeStateCommand{
 		Envelope: model.ForumEnvelope{
 			EventID:       eventID,
 			EventType:     "forum.state.changed",
@@ -375,7 +489,11 @@ func (s *Service) ForumChangeState(ctx context.Context, options ForumChangeState
 			CausationID:   strings.TrimSpace(options.CausationID),
 		},
 		ToState: toState,
-	})
+	}
+	if err := s.dispatchForumCommand(ctx, s.forumTopics.CommandTopic("change_state"), threadID, cmd); err != nil {
+		return model.ForumThreadView{}, err
+	}
+	thread, err := s.store.GetForumThread(threadID)
 	if err != nil {
 		return model.ForumThreadView{}, err
 	}
@@ -414,7 +532,7 @@ func (s *Service) ForumSetPriority(ctx context.Context, options ForumSetPriority
 	if correlationID == "" {
 		correlationID = eventID
 	}
-	thread, err := s.store.ForumSetPriority(model.ForumSetPriorityCommand{
+	cmd := model.ForumSetPriorityCommand{
 		Envelope: model.ForumEnvelope{
 			EventID:       eventID,
 			EventType:     "forum.priority.changed",
@@ -430,7 +548,11 @@ func (s *Service) ForumSetPriority(ctx context.Context, options ForumSetPriority
 			CausationID:   strings.TrimSpace(options.CausationID),
 		},
 		Priority: priority,
-	})
+	}
+	if err := s.dispatchForumCommand(ctx, s.forumTopics.CommandTopic("set_priority"), threadID, cmd); err != nil {
+		return model.ForumThreadView{}, err
+	}
+	thread, err := s.store.GetForumThread(threadID)
 	if err != nil {
 		return model.ForumThreadView{}, err
 	}
@@ -465,7 +587,7 @@ func (s *Service) ForumCloseThread(ctx context.Context, options ForumChangeState
 	if correlationID == "" {
 		correlationID = eventID
 	}
-	thread, err := s.store.ForumCloseThread(model.ForumCloseThreadCommand{
+	cmd := model.ForumCloseThreadCommand{
 		Envelope: model.ForumEnvelope{
 			EventID:       eventID,
 			EventType:     "forum.thread.closed",
@@ -480,7 +602,11 @@ func (s *Service) ForumCloseThread(ctx context.Context, options ForumChangeState
 			CorrelationID: correlationID,
 			CausationID:   strings.TrimSpace(options.CausationID),
 		},
-	})
+	}
+	if err := s.dispatchForumCommand(ctx, s.forumTopics.CommandTopic("close_thread"), threadID, cmd); err != nil {
+		return model.ForumThreadView{}, err
+	}
+	thread, err := s.store.GetForumThread(threadID)
 	if err != nil {
 		return model.ForumThreadView{}, err
 	}
@@ -561,7 +687,7 @@ func (s *Service) ForumAppendControlSignal(ctx context.Context, options ForumCon
 	if correlationID == "" {
 		correlationID = eventID
 	}
-	next, err := s.store.ForumAddPost(model.ForumAddPostCommand{
+	addCommand := model.ForumAddPostCommand{
 		Envelope: model.ForumEnvelope{
 			EventID:       eventID,
 			EventType:     "forum.control.signal",
@@ -577,7 +703,11 @@ func (s *Service) ForumAppendControlSignal(ctx context.Context, options ForumCon
 			CausationID:   strings.TrimSpace(options.CausationID),
 		},
 		Body: string(bodyBytes),
-	})
+	}
+	if err := s.dispatchForumCommand(ctx, s.forumTopics.CommandTopic("add_post"), thread.ThreadID, addCommand); err != nil {
+		return model.ForumThreadView{}, err
+	}
+	next, err := s.store.GetForumThread(thread.ThreadID)
 	if err != nil {
 		return model.ForumThreadView{}, err
 	}

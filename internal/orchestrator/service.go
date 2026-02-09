@@ -24,8 +24,10 @@ import (
 )
 
 type Service struct {
-	store    *store.SQLiteStore
-	forumBus *forumbus.Runtime
+	store           *store.SQLiteStore
+	forumBus        *forumbus.Runtime
+	forumDispatcher forumCommandDispatcher
+	forumTopics     model.ForumTopicRegistry
 }
 
 type RunMutationInProgressError struct {
@@ -59,7 +61,24 @@ func NewService(dbPath string) (*Service, error) {
 	if err := busRuntime.Start(context.Background()); err != nil {
 		return nil, err
 	}
-	return &Service{store: sqliteStore, forumBus: busRuntime}, nil
+	topics := model.ForumTopicRegistry{
+		CommandPrefix:     strings.TrimSpace(cfg.Forum.Topics.CommandPrefix),
+		EventPrefix:       strings.TrimSpace(cfg.Forum.Topics.EventPrefix),
+		IntegrationPrefix: strings.TrimSpace(cfg.Forum.Topics.IntegrationPrefix),
+	}
+	if topics.CommandPrefix == "" || topics.EventPrefix == "" || topics.IntegrationPrefix == "" {
+		topics = model.DefaultForumTopicRegistry()
+	}
+	service := &Service{
+		store:           sqliteStore,
+		forumBus:        busRuntime,
+		forumDispatcher: newBusForumCommandDispatcher(busRuntime),
+		forumTopics:     topics,
+	}
+	if err := service.registerForumBusHandlers(); err != nil {
+		return nil, err
+	}
+	return service, nil
 }
 
 type RunOptions struct {
