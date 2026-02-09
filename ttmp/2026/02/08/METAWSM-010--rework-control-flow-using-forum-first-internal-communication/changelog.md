@@ -42,3 +42,14 @@ Step 1: Implemented versioned forum control payload schema and one-thread-per-(r
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_forum.go — New control signal append API and deterministic control thread enforcement
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_forum.go — Control thread mapping persistence and lookup
 
+
+## 2026-02-09
+
+Step 2: Added forum bus runtime package and durable SQLite outbox primitives for publish/process flow (commit 22391b48b2ebb81845129d5f7c541b854a6f05cd).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/forumbus/runtime.go — Adds runtime lifecycle
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go — Adds forum_outbox schema table and index
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_forum.go — Adds outbox enqueue/claim/sent/failed APIs
+

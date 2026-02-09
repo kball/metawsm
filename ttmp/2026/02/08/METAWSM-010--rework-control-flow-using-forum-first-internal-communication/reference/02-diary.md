@@ -10,6 +10,12 @@ DocType: reference
 Intent: long-term
 Owners: []
 RelatedFiles:
+    - Path: internal/forumbus/runtime.go
+      Note: Implements forum bus runtime lifecycle
+    - Path: internal/forumbus/runtime_test.go
+      Note: Validates runtime publish/process behavior
+    - Path: internal/model/forum_bus.go
+      Note: Defines outbox message and status model
     - Path: internal/model/forum_control.go
       Note: Defines versioned forum control payload schema and validation
     - Path: internal/orchestrator/service_forum.go
@@ -28,6 +34,7 @@ LastUpdated: 2026-02-09T06:24:19.957975-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 
 # Diary
@@ -116,3 +123,81 @@ The implementation added a typed control payload model, store-level control-thre
   - `METAWSM-010` `T1`, `T2` checked complete.
 - Deterministic control thread ID format:
   - `fctrl-<sanitized-run-id>-<sanitized-agent-name>`
+
+## Step 2: Add forum bus runtime and durable outbox foundation
+
+I implemented the transport foundation needed for bus-backed command flow by adding a dedicated `forumbus` runtime package and outbox persistence primitives in SQLite. This establishes publish/process mechanics and health checks without yet switching forum commands over to bus dispatch.
+
+The scope here was intentionally foundational: outbox lifecycle APIs, runtime handler registry, publish/consume loop, and tests proving enqueue -> claim -> handle -> sent status transition.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok yes. follow the task list, implement, keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue implementing the next tasks in order with incremental commits and documented diary/changelog updates.
+
+**Inferred user intent:** Keep momentum on the full migration by landing reusable infrastructure pieces before command-path cutover.
+
+**Commit (code):** 22391b48b2ebb81845129d5f7c541b854a6f05cd — "Add forum bus runtime and durable outbox primitives"
+
+### What I did
+- Added `internal/model/forum_bus.go` with outbox status/message model types.
+- Added `forum_outbox` table + index in `internal/store/sqlite.go`.
+- Added outbox store APIs in `internal/store/sqlite_forum.go`:
+  - `EnqueueForumOutbox`
+  - `ClaimForumOutboxPending`
+  - `MarkForumOutboxSent`
+  - `MarkForumOutboxFailed`
+  - `ListForumOutboxByStatus`
+- Added runtime package `internal/forumbus/runtime.go`:
+  - start/stop and health checks
+  - topic handler registration
+  - outbox-backed `Publish`
+  - `ProcessOnce` dispatch loop
+- Wired service bootstrap in `internal/orchestrator/service.go`:
+  - instantiate and start bus runtime during `NewService`
+- Added service bus helpers in `internal/orchestrator/service_forum.go`:
+  - `ForumBusHealth`
+  - `ProcessForumBusOnce`
+- Added tests:
+  - `internal/forumbus/runtime_test.go`
+  - outbox lifecycle coverage in `internal/store/sqlite_test.go`
+- Validation commands:
+  - `go test ./internal/model ./internal/store ./internal/forumbus ./internal/orchestrator -count=1`
+
+### Why
+- `T3` and `T4` require concrete transport plumbing before command entrypoints can be switched to bus dispatch.
+
+### What worked
+- Runtime can publish and process command messages via outbox and topic handlers.
+- Outbox status transitions and claim semantics work under tests.
+- Existing orchestrator/store tests still pass with runtime initialization in `NewService`.
+
+### What didn't work
+- N/A in this step (no command failures encountered).
+
+### What I learned
+- Keeping runtime processing explicit (`ProcessOnce`) is a low-risk way to integrate bus mechanics before introducing background worker behavior.
+
+### What was tricky to build
+- Outbox claim semantics needed deterministic row selection and status transition to avoid duplicate handling in future concurrent processors.
+
+### What warrants a second pair of eyes
+- `internal/store/sqlite_forum.go` claim/update strategy in `ClaimForumOutboxPending`.
+- `internal/forumbus/runtime.go` failure handling and retry behavior assumptions.
+
+### What should be done in the future
+- Implement `T5/T6`: route forum command entrypoints through the bus and register command-topic consumers.
+
+### Code review instructions
+- Start here:
+  - `internal/forumbus/runtime.go`
+  - `internal/store/sqlite_forum.go`
+  - `internal/store/sqlite.go`
+  - `internal/orchestrator/service.go`
+- Validate with:
+  - `go test ./internal/model ./internal/store ./internal/forumbus ./internal/orchestrator -count=1`
+
+### Technical details
+- Task status updates:
+  - `METAWSM-010` `T3`, `T4` checked complete.

@@ -4,8 +4,8 @@
 
 - [x] T1: Define and implement forum control payload schemas (`guidance_request`, `guidance_answer`, `completion`, `validation`) with explicit versioning.
 - [x] T2: Enforce exactly one control thread per `(run_id, agent_name)` at service and store layers (validation + unique constraint/index + migration guard).
-- [ ] T3: Add Watermill + Redis runtime package (`internal/forumbus`) with router lifecycle, publisher/subscriber wiring, and health checks.
-- [ ] T4: Add durable outbox table and worker for command/event publish reliability (state+event+outbox atomic write, retry, replay).
+- [x] T3: Add Watermill + Redis runtime package (`internal/forumbus`) with router lifecycle, publisher/subscriber wiring, and health checks.
+- [x] T4: Add durable outbox table and worker for command/event publish reliability (state+event+outbox atomic write, retry, replay).
 - [ ] T5: Refactor forum command entrypoints to dispatcher abstraction and switch to bus-backed command publishing.
 - [ ] T6: Implement async Watermill command consumers for open/add-post/assign/state/priority/close command topics.
 - [ ] T7: Implement projection consumers for `forum.events.*` and idempotent projection application via `forum_projection_events`.
