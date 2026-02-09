@@ -1300,6 +1300,138 @@ func TestCloseBootstrapDryRunPassesWithValidationResult(t *testing.T) {
 	}
 }
 
+func TestForumOnlyLifecycleAskAnswerResumeCompleteValidateClose(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	svc := newTestService(t)
+	homeDir := setupWorkspaceConfigRoot(t)
+
+	runID := "run-forum-e2e-1"
+	workspaceName := "ws-forum-e2e"
+	workspacePath := filepath.Join(homeDir, "workspaces", workspaceName)
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	writeTicketDocDirFixture(t, workspacePath, "METAWSM-002")
+	initGitRepo(t, workspacePath)
+	writeWorkspaceConfig(t, workspaceName, workspacePath)
+
+	createBootstrapRunFixture(t, svc, runID, workspaceName)
+	if err := svc.store.UpdateRunStatus(runID, model.RunStatusRunning, ""); err != nil {
+		t.Fatalf("set run status running: %v", err)
+	}
+	upsertDocSyncStateFixture(t, svc, runID, "METAWSM-002", workspaceName, model.DocSyncStatusSynced, "rev-forum-e2e")
+
+	askThread, err := svc.ForumAppendControlSignal(t.Context(), ForumControlSignalOptions{
+		RunID:     runID,
+		Ticket:    "METAWSM-002",
+		AgentName: "agent",
+		ActorType: model.ForumActorAgent,
+		ActorName: "agent",
+		Payload: model.ForumControlPayloadV1{
+			SchemaVersion: model.ForumControlSchemaVersion1,
+			ControlType:   model.ForumControlTypeGuidanceRequest,
+			RunID:         runID,
+			AgentName:     "agent",
+			Question:      "Should we proceed with forum-only cutover?",
+		},
+	})
+	if err != nil {
+		t.Fatalf("append guidance request: %v", err)
+	}
+
+	snapshot, err := svc.RunSnapshot(t.Context(), runID)
+	if err != nil {
+		t.Fatalf("run snapshot after guidance request: %v", err)
+	}
+	if snapshot.Status != model.RunStatusAwaitingGuidance {
+		t.Fatalf("expected awaiting_guidance after request, got %s", snapshot.Status)
+	}
+	if len(snapshot.PendingGuidance) != 1 {
+		t.Fatalf("expected one pending guidance item, got %d", len(snapshot.PendingGuidance))
+	}
+
+	if _, err := svc.Guide(t.Context(), runID, "Proceed with forum-only flow."); err != nil {
+		t.Fatalf("guide answer: %v", err)
+	}
+	if err := svc.transitionRun(runID, model.RunStatusRunning, model.RunStatusPaused, "pause before resume"); err != nil {
+		t.Fatalf("transition to paused: %v", err)
+	}
+	if err := svc.Resume(t.Context(), runID); err != nil {
+		t.Fatalf("resume run: %v", err)
+	}
+
+	completeThread, err := svc.ForumAppendControlSignal(t.Context(), ForumControlSignalOptions{
+		RunID:     runID,
+		Ticket:    "METAWSM-002",
+		AgentName: "agent",
+		ActorType: model.ForumActorAgent,
+		ActorName: "agent",
+		Payload: model.ForumControlPayloadV1{
+			SchemaVersion: model.ForumControlSchemaVersion1,
+			ControlType:   model.ForumControlTypeCompletion,
+			RunID:         runID,
+			AgentName:     "agent",
+			Summary:       "Implementation complete",
+		},
+	})
+	if err != nil {
+		t.Fatalf("append completion signal: %v", err)
+	}
+	validateThread, err := svc.ForumAppendControlSignal(t.Context(), ForumControlSignalOptions{
+		RunID:     runID,
+		Ticket:    "METAWSM-002",
+		AgentName: "agent",
+		ActorType: model.ForumActorAgent,
+		ActorName: "agent",
+		Payload: model.ForumControlPayloadV1{
+			SchemaVersion: model.ForumControlSchemaVersion1,
+			ControlType:   model.ForumControlTypeValidation,
+			RunID:         runID,
+			AgentName:     "agent",
+			Status:        "passed",
+			DoneCriteria:  "tests pass",
+		},
+	})
+	if err != nil {
+		t.Fatalf("append validation signal: %v", err)
+	}
+
+	if askThread.ThreadID == "" || completeThread.ThreadID == "" || validateThread.ThreadID == "" {
+		t.Fatalf("expected control thread ids in lifecycle responses")
+	}
+	if askThread.ThreadID != completeThread.ThreadID || askThread.ThreadID != validateThread.ThreadID {
+		t.Fatalf("expected one control thread for run+agent, got %s / %s / %s", askThread.ThreadID, completeThread.ThreadID, validateThread.ThreadID)
+	}
+	mappings, err := svc.store.ListForumControlThreads(runID)
+	if err != nil {
+		t.Fatalf("list control thread mappings: %v", err)
+	}
+	if len(mappings) != 1 {
+		t.Fatalf("expected exactly one control thread mapping, got %d", len(mappings))
+	}
+	if mappings[0].ThreadID != askThread.ThreadID {
+		t.Fatalf("expected mapping thread id %s, got %s", askThread.ThreadID, mappings[0].ThreadID)
+	}
+
+	snapshot, err = svc.RunSnapshot(t.Context(), runID)
+	if err != nil {
+		t.Fatalf("run snapshot after completion+validation: %v", err)
+	}
+	if snapshot.Status != model.RunStatusComplete {
+		t.Fatalf("expected run status complete after completion+validation, got %s", snapshot.Status)
+	}
+
+	if err := svc.Close(t.Context(), CloseOptions{RunID: runID, DryRun: true}); err != nil {
+		t.Fatalf("close dry-run after forum-only lifecycle: %v", err)
+	}
+}
+
 func TestCloseBootstrapDryRunBlocksWhenNestedRepoDirty(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")

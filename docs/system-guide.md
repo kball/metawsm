@@ -12,8 +12,8 @@ It composes three external systems:
 Operator command surface:
 - `run`, `bootstrap`
 - `status`, `tui`
-- `guide`, `resume`, `stop`, `restart`, `iterate`
-- `forum` (`ask`, `answer`, `assign`, `state`, `priority`, `close`, `list`, `thread`, `watch`)
+- `resume`, `stop`, `restart`, `iterate`
+- `forum` (`ask`, `answer`, `assign`, `state`, `priority`, `close`, `list`, `thread`, `watch`, `signal`)
 - `merge`, `close`, `cleanup`
 - `docs` (federated docmgr API aggregation + optional refresh)
 - `policy-init`
@@ -66,10 +66,10 @@ Backward compatibility:
 Primary entities:
 - runs, run tickets, steps, agents, events
 - bootstrap run briefs
-- guidance requests
 - forum command-side + projection state:
 - `forum_threads`, `forum_posts`, `forum_assignments`, `forum_state_transitions`
 - `forum_events`, `forum_thread_views`, `forum_thread_stats`
+- `forum_control_threads`, `forum_projection_events`, `forum_outbox`
 - doc sync state (`doc_sync_states`) with per-ticket/workspace seed status + revision
 
 This enables deterministic status rendering, restart/resume behavior, and close-time safety checks.
@@ -125,15 +125,15 @@ Output includes:
 - high-level federated ticket list
 - source endpoint links for drill-down
 
-## Bootstrap Signaling Contract
+## Forum Signaling Contract
 
-For bootstrap workflows, agent/operator signaling remains file-based per workspace:
-- `.metawsm/guidance-request.json`
-- `.metawsm/guidance-response.json`
-- `.metawsm/implementation-complete.json`
-- `.metawsm/validation-result.json`
+Run lifecycle signaling is forum-first for both `run` and `bootstrap` flows.
 
-`status` ingests these files and transitions run state through HSM rules.
+Contract:
+- one control thread per `(run_id, agent_name)` persisted in `forum_control_threads`
+- control payloads are typed/versioned (`guidance_request`, `guidance_answer`, `completion`, `validation`)
+- `watch` and `operator` consume typed snapshot data from service APIs (not parsed status text)
+- close gates for bootstrap runs require forum completion + validation signals (with done-criteria match)
 
 ## Operator Workflow (Current)
 

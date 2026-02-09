@@ -15,7 +15,7 @@ Implemented command surface:
 - `metawsm review sync`
 - `metawsm watch`
 - `metawsm operator`
-- `metawsm guide`
+- `metawsm forum` (`ask`, `answer`, `assign`, `state`, `priority`, `close`, `list`, `thread`, `watch`, `signal`)
 - `metawsm resume`
 - `metawsm stop`
 - `metawsm restart`
@@ -75,7 +75,12 @@ go run ./cmd/metawsm status --ticket METAWSM-003
 Answer pending guidance from an agent:
 
 ```bash
-go run ./cmd/metawsm guide --ticket METAWSM-003 --answer "Proceed with the sentinel JSON contract."
+go run ./cmd/metawsm forum signal \
+  --run-id RUN_ID \
+  --ticket METAWSM-003 \
+  --agent-name agent \
+  --type guidance_answer \
+  --answer "Proceed with the sentinel JSON contract."
 ```
 
 Review/merge workflow for completed runs:
@@ -201,14 +206,47 @@ Kickoff doc-home selection:
 - `--doc-repo` remains as a legacy alias for compatibility.
 - Default behavior picks the first `--repos` entry.
 
-## Bootstrap Signals
+## Forum Control Signals
 
-For bootstrap runs, agents communicate through workspace files:
-- Guidance request: `<workspace>/.metawsm/guidance-request.json`
-- Guidance response (written by `metawsm guide`): `<workspace>/.metawsm/guidance-response.json`
-- Completion marker: `<workspace>/.metawsm/implementation-complete.json`
-- Validation gate (required before close for bootstrap runs):
-  `<workspace>/.metawsm/validation-result.json` with `status="passed"` and `done_criteria` matching the run brief.
+Run lifecycle signaling is forum-first (no file-signal compatibility path).
+
+Control flow conventions:
+- Exactly one control thread per `(run_id, agent_name)`.
+- Control signal payloads are versioned (`schema_version=1`) and posted via `metawsm forum signal`.
+- Supported control signal types:
+  - `guidance_request`
+  - `guidance_answer`
+  - `completion`
+  - `validation`
+
+Examples:
+
+```bash
+# agent asks for guidance
+go run ./cmd/metawsm forum signal \
+  --run-id RUN_ID \
+  --ticket METAWSM-003 \
+  --agent-name agent \
+  --type guidance_request \
+  --question "Need decision on API schema shape"
+
+# agent marks implementation complete
+go run ./cmd/metawsm forum signal \
+  --run-id RUN_ID \
+  --ticket METAWSM-003 \
+  --agent-name agent \
+  --type completion \
+  --summary "Implemented the requested contract updates"
+
+# agent posts validation result (required for bootstrap close)
+go run ./cmd/metawsm forum signal \
+  --run-id RUN_ID \
+  --ticket METAWSM-003 \
+  --agent-name agent \
+  --type validation \
+  --status passed \
+  --done-criteria "tests pass and docs updated"
+```
 
 ## Operator Escalation Summaries
 

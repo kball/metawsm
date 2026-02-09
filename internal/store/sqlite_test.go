@@ -858,6 +858,71 @@ func TestApplyForumEventProjectionsIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestForumProjectionReplayRebuildsMissingThreadView(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	s := NewSQLiteStore(dbPath)
+	if err := s.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	if _, err := s.ForumOpenThread(model.ForumOpenThreadCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:      "evt-open-proj-replay-1",
+			EventType:    "forum.thread.opened",
+			EventVersion: 1,
+			OccurredAt:   time.Now().UTC(),
+			ThreadID:     "thread-proj-replay-1",
+			RunID:        "run-proj-replay-1",
+			Ticket:       "METAWSM-010",
+			AgentName:    "agent-a",
+			ActorType:    model.ForumActorAgent,
+			ActorName:    "agent-a",
+		},
+		Title:    "Projection replay thread",
+		Body:     "Initial post for replay recovery",
+		Priority: model.ForumPriorityNormal,
+	}); err != nil {
+		t.Fatalf("open forum thread: %v", err)
+	}
+
+	event, err := s.GetForumEvent("evt-open-proj-replay-1")
+	if err != nil {
+		t.Fatalf("get forum event: %v", err)
+	}
+	if event == nil {
+		t.Fatalf("expected stored forum event")
+	}
+
+	if err := s.execSQL(`DELETE FROM forum_thread_views WHERE thread_id='thread-proj-replay-1';`); err != nil {
+		t.Fatalf("delete projection row: %v", err)
+	}
+	thread, err := s.GetForumThread("thread-proj-replay-1")
+	if err != nil {
+		t.Fatalf("get projected thread after delete: %v", err)
+	}
+	if thread != nil {
+		t.Fatalf("expected missing projection row after deletion")
+	}
+
+	if err := s.ApplyForumEventProjections(*event); err != nil {
+		t.Fatalf("replay projection event: %v", err)
+	}
+	rebuilt, err := s.GetForumThread("thread-proj-replay-1")
+	if err != nil {
+		t.Fatalf("get rebuilt thread: %v", err)
+	}
+	if rebuilt == nil {
+		t.Fatalf("expected projection row rebuilt from replay")
+	}
+	if rebuilt.PostsCount != 1 {
+		t.Fatalf("expected rebuilt posts_count=1, got %d", rebuilt.PostsCount)
+	}
+}
+
 func TestForumOutboxLifecycle(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")
