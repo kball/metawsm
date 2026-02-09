@@ -56,3 +56,15 @@ Step 3: implemented run/forum HTTP API routes and WebSocket forum event stream o
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/server/websocket.go — Native WebSocket stream implementation for forum events
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/09/METAWSM-011--build-durable-forum-daemon-and-web-api-ui-server/reference/01-diary.md — Step 3 implementation notes
 
+
+## 2026-02-09
+
+Step 4: added web UI/embed pipeline, daemon-backed remote service API client, and mandatory daemon mode for forum CLI workflows (commit ed279e1).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/serviceapi/remote.go — Remote forum/run client implementation over daemon HTTP API
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/web/spa.go — Serves SPA alongside API routes
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/09/METAWSM-011--build-durable-forum-daemon-and-web-api-ui-server/reference/01-diary.md — Step 4 implementation details
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.tsx — Initial web dashboard for run/thread visibility
+

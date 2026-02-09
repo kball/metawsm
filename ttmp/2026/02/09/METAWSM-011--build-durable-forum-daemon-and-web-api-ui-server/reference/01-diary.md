@@ -12,6 +12,10 @@ DocType: reference
 Intent: long-term
 Owners: []
 RelatedFiles:
+    - Path: .gitignore
+      Note: Prevents committing compiled frontend and generated asset noise (commit ed279e1)
+    - Path: Makefile
+      Note: Dev/build targets for backend/frontend integration (commit ed279e1)
     - Path: cmd/metawsm/main.go
       Note: |-
         Adds serve CLI command and runtime flags (commit b553d46)
@@ -36,16 +40,25 @@ RelatedFiles:
       Note: |-
         Introduces shared Core interface and LocalCore adapter (commit b251e84)
         Adds run snapshot listing for API responses (commit 15b13fe)
+    - Path: internal/serviceapi/remote.go
+      Note: Daemon-backed remote core implementation for CLI/forum integration (commit ed279e1)
     - Path: internal/store/sqlite_forum.go
       Note: Adds forum outbox count and oldest timestamp queries (commit b553d46)
     - Path: internal/store/sqlite_test.go
       Note: Regression coverage for outbox stats helpers (commit b553d46)
+    - Path: internal/web/generate_build.go
+      Note: Frontend build and copy pipeline for embed assets (commit ed279e1)
+    - Path: internal/web/spa.go
+      Note: SPA router/fallback serving for embedded or disk assets (commit ed279e1)
+    - Path: ui/src/App.tsx
+      Note: Dashboard UI using daemon API and websocket updates (commit ed279e1)
 ExternalSources: []
 Summary: ""
 LastUpdated: 2026-02-09T09:28:18.302287-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 
 
@@ -318,3 +331,100 @@ This step intentionally prioritized API completeness and deterministic route beh
   - `cursor`
   - `limit`
   - `poll_ms`
+
+## Step 4: Add web UI/embed build flow and daemon-backed CLI forum integration
+
+I implemented Tasks 6 and 7 by adding a Vite/React UI workspace, Go static serving package, generate/embed workflow, and artifact-safe gitignore rules. I also switched forum CLI commands to target the daemon HTTP server via `--server` using a remote `serviceapi` implementation, making daemon mode mandatory for forum workflows.
+
+This step connected all three interaction surfaces to one runtime model: daemon (`serve`), HTTP API, and CLI forum commands (remote client). It also established a production-compatible static asset strategy without committing compiled frontend bundles.
+
+### Prompt Context
+
+**User prompt (verbatim):** "OK yeah implement task by task, keep a diary and commit as you go. Continue until complete."
+
+**Assistant interpretation:** Continue through remaining ticket tasks in ordered, committed increments with clear documentation.
+
+**Inferred user intent:** Deliver an end-to-end usable daemon + web UI workflow with clean artifact hygiene and no ambiguity around mandatory daemon usage.
+
+**Commit (code):** ed279e153488a22e619baefcdd3911809a12b294 — "Add web UI scaffold and daemon-backed forum CLI integration"
+
+### What I did
+- Added web static serving package:
+  - `internal/web/embed.go`
+  - `internal/web/embed_none.go`
+  - `internal/web/spa.go`
+  - `internal/web/spa_test.go`
+  - placeholder `internal/web/embed/public/index.html`
+- Added frontend build/generate contract:
+  - `internal/web/generate.go`
+  - `internal/web/generate_build.go`
+- Added Vite/React UI scaffold under `ui/`:
+  - `package.json`, TS configs, Vite config,
+  - `src/main.tsx`, `src/App.tsx`, `src/styles.css`.
+- Added developer build helpers in `Makefile`:
+  - `dev-backend`, `dev-frontend`, `generate-frontend`, `build`, `test`.
+- Added artifact safety rules in `.gitignore` for:
+  - `ui/node_modules`, `ui/dist`,
+  - generated embed asset patterns.
+- Added remote service API client:
+  - `internal/serviceapi/remote.go` (HTTP-backed `Core` implementation).
+- Switched forum CLI flow to daemon URL mode:
+  - forum subcommands now accept `--server` (default `http://127.0.0.1:3001`),
+  - `newForumCore` now returns remote core instead of local DB-backed core.
+- Added forum stats endpoint support for remote core parity:
+  - `GET /api/v1/forum/stats`.
+- Ran focused validation:
+  - `go test ./internal/server ./internal/serviceapi ./internal/web ./cmd/metawsm -count=1`
+
+### Why
+- Task 6 required a usable web UI and serving integration over the new daemon API.
+- Task 7 required an embed/dev proxy flow while avoiding committed generated assets.
+- Mandatory daemon mode required forum CLI to stop performing local direct forum writes and instead call the daemon API.
+
+### What worked
+- New web package and UI scaffold compile cleanly with Go-side tests.
+- Forum CLI compiles and now routes through daemon URL mode.
+- `.gitignore` now guards expected frontend and generated artifact directories.
+- Task checklist updated for tasks 6 and 7.
+
+### What didn't work
+- Frontend dependency install/build was not executed in this environment (network-dependent npm install not attempted in this step).
+
+### What I learned
+- Implementing a remote `serviceapi.Core` keeps the “shared internal API” design intact while enforcing daemon-backed CLI behavior.
+- A placeholder tracked `index.html` in embed path enables safe builds even before generated bundle assets exist.
+
+### What was tricky to build
+- Balancing daemon-mandatory CLI behavior with service abstraction guarantees.
+- Designing gitignore patterns to allow tracked placeholder assets while avoiding compiled bundle churn.
+
+### What warrants a second pair of eyes
+- Remote client endpoint coverage completeness versus `Core` interface expansion over time.
+- Vite proxy behavior for WebSocket path `/api/v1/forum/stream` in varied local/dev environments.
+
+### What should be done in the future
+- Add comprehensive server route + websocket tests with mocked service core (Task 8).
+- Update operator/system docs to reflect daemon-mandatory forum command behavior and UI workflows (Task 9).
+
+### Code review instructions
+- Web serving and embed flow:
+  - `internal/web/spa.go`
+  - `internal/web/generate_build.go`
+- Remote daemon client + CLI integration:
+  - `internal/serviceapi/remote.go`
+  - `cmd/metawsm/main.go` (forum command path)
+- Frontend scaffold:
+  - `ui/src/App.tsx`
+  - `ui/vite.config.ts`
+- Validate Go-side wiring:
+  - `go test ./internal/server ./internal/serviceapi ./internal/web ./cmd/metawsm -count=1`
+
+### Technical details
+- Forum CLI daemon target:
+  - `metawsm forum ... --server http://127.0.0.1:3001`
+- Dev loop:
+  - `make dev-backend`
+  - `make dev-frontend`
+- Production-ish build flow:
+  - `go generate ./internal/web`
+  - `go build -tags embed ./...`
