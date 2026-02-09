@@ -31,6 +31,14 @@ func (d *busForumCommandDispatcher) Dispatch(ctx context.Context, topic string, 
 	if _, err := d.runtime.Publish(topic, strings.TrimSpace(messageKey), payload); err != nil {
 		return err
 	}
-	_, err := d.runtime.ProcessOnce(ctx, 50)
-	return err
+	for i := 0; i < 8; i++ {
+		processed, err := d.runtime.ProcessOnce(ctx, 50)
+		if err != nil {
+			return err
+		}
+		if processed == 0 {
+			return nil
+		}
+	}
+	return nil
 }

@@ -645,6 +645,74 @@ LIMIT %d;`,
 	return out, nil
 }
 
+func (s *SQLiteStore) GetForumEvent(eventID string) (*model.ForumEvent, error) {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return nil, fmt.Errorf("forum event id is required")
+	}
+	sql := fmt.Sprintf(
+		`SELECT sequence, event_id, event_type, event_version, occurred_at, thread_id, run_id, ticket, agent_name, actor_type, actor_name, correlation_id, causation_id, payload_json
+FROM forum_events
+WHERE event_id=%s
+LIMIT 1;`,
+		quote(eventID),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	row := rows[0]
+	occurredAt, err := time.Parse(time.RFC3339, asString(row["occurred_at"]))
+	if err != nil {
+		return nil, fmt.Errorf("parse forum event occurred_at: %w", err)
+	}
+	event := model.ForumEvent{
+		Sequence: int64(asInt(row["sequence"])),
+		Envelope: model.ForumEnvelope{
+			EventID:       asString(row["event_id"]),
+			EventType:     asString(row["event_type"]),
+			EventVersion:  asInt(row["event_version"]),
+			OccurredAt:    occurredAt,
+			ThreadID:      asString(row["thread_id"]),
+			RunID:         asString(row["run_id"]),
+			Ticket:        asString(row["ticket"]),
+			AgentName:     asString(row["agent_name"]),
+			ActorType:     model.ForumActorType(asString(row["actor_type"])),
+			ActorName:     asString(row["actor_name"]),
+			CorrelationID: asString(row["correlation_id"]),
+			CausationID:   asString(row["causation_id"]),
+		},
+		PayloadJSON: asString(row["payload_json"]),
+	}
+	return &event, nil
+}
+
+func (s *SQLiteStore) ApplyForumEventProjections(event model.ForumEvent) error {
+	eventID := strings.TrimSpace(event.Envelope.EventID)
+	threadID := strings.TrimSpace(event.Envelope.ThreadID)
+	ticket := strings.TrimSpace(event.Envelope.Ticket)
+	if eventID == "" {
+		return fmt.Errorf("forum projection event_id is required")
+	}
+	if threadID == "" {
+		return fmt.Errorf("forum projection thread_id is required")
+	}
+	if ticket == "" {
+		return fmt.Errorf("forum projection ticket is required")
+	}
+	if err := s.applyForumProjectionEvent("forum_thread_views_v1", eventID, func() error {
+		return s.refreshForumThreadView(threadID)
+	}); err != nil {
+		return err
+	}
+	return s.applyForumProjectionEvent("forum_thread_stats_v1", eventID, func() error {
+		return s.refreshForumThreadStats(ticket)
+	})
+}
+
 func (s *SQLiteStore) ForumAppendIntegrationEvent(envelope model.ForumEnvelope, payload map[string]any) error {
 	if strings.TrimSpace(envelope.EventID) == "" {
 		return fmt.Errorf("forum integration event_id is required")
@@ -720,6 +788,109 @@ func (s *SQLiteStore) forumEventExists(eventID string) (bool, error) {
 		return false, err
 	}
 	return len(rows) > 0, nil
+}
+
+func (s *SQLiteStore) applyForumProjectionEvent(projectionName string, eventID string, apply func() error) error {
+	projectionName = strings.TrimSpace(projectionName)
+	eventID = strings.TrimSpace(eventID)
+	if projectionName == "" {
+		return fmt.Errorf("forum projection name is required")
+	}
+	if eventID == "" {
+		return fmt.Errorf("forum projection event_id is required")
+	}
+	applied, err := s.forumProjectionEventExists(projectionName, eventID)
+	if err != nil {
+		return err
+	}
+	if applied {
+		return nil
+	}
+	if err := apply(); err != nil {
+		return err
+	}
+	return s.insertForumProjectionEvent(projectionName, eventID)
+}
+
+func (s *SQLiteStore) forumProjectionEventExists(projectionName string, eventID string) (bool, error) {
+	rows, err := s.queryJSON(fmt.Sprintf(
+		`SELECT event_id
+FROM forum_projection_events
+WHERE projection_name=%s AND event_id=%s
+LIMIT 1;`,
+		quote(projectionName),
+		quote(eventID),
+	))
+	if err != nil {
+		return false, err
+	}
+	return len(rows) > 0, nil
+}
+
+func (s *SQLiteStore) insertForumProjectionEvent(projectionName string, eventID string) error {
+	now := time.Now().Format(time.RFC3339)
+	sql := fmt.Sprintf(
+		`INSERT OR IGNORE INTO forum_projection_events
+  (projection_name, event_id, applied_at)
+VALUES
+  (%s, %s, %s);`,
+		quote(projectionName),
+		quote(eventID),
+		quote(now),
+	)
+	return s.execSQL(sql)
+}
+
+func (s *SQLiteStore) refreshForumThreadView(threadID string) error {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return fmt.Errorf("forum thread id is required")
+	}
+	sql := fmt.Sprintf(
+		`INSERT INTO forum_thread_views
+  (thread_id, ticket, run_id, agent_name, title, state, priority, assignee_type, assignee_name, opened_by_type, opened_by_name, posts_count, last_post_at, last_post_by_type, last_post_by_name, opened_at, updated_at, closed_at)
+SELECT
+  t.thread_id,
+  t.ticket,
+  t.run_id,
+  t.agent_name,
+  t.title,
+  t.state,
+  t.priority,
+  t.assignee_type,
+  t.assignee_name,
+  t.opened_by_type,
+  t.opened_by_name,
+  (SELECT COUNT(*) FROM forum_posts p WHERE p.thread_id=t.thread_id),
+  COALESCE((SELECT p.created_at FROM forum_posts p WHERE p.thread_id=t.thread_id ORDER BY p.created_at DESC, p.post_id DESC LIMIT 1), ''),
+  COALESCE((SELECT p.author_type FROM forum_posts p WHERE p.thread_id=t.thread_id ORDER BY p.created_at DESC, p.post_id DESC LIMIT 1), ''),
+  COALESCE((SELECT p.author_name FROM forum_posts p WHERE p.thread_id=t.thread_id ORDER BY p.created_at DESC, p.post_id DESC LIMIT 1), ''),
+  t.opened_at,
+  t.updated_at,
+  t.closed_at
+FROM forum_threads t
+WHERE t.thread_id=%s
+ON CONFLICT(thread_id) DO UPDATE SET
+  ticket=excluded.ticket,
+  run_id=excluded.run_id,
+  agent_name=excluded.agent_name,
+  title=excluded.title,
+  state=excluded.state,
+  priority=excluded.priority,
+  assignee_type=excluded.assignee_type,
+  assignee_name=excluded.assignee_name,
+  opened_by_type=excluded.opened_by_type,
+  opened_by_name=excluded.opened_by_name,
+  posts_count=excluded.posts_count,
+  last_post_at=excluded.last_post_at,
+  last_post_by_type=excluded.last_post_by_type,
+  last_post_by_name=excluded.last_post_by_name,
+  opened_at=excluded.opened_at,
+  updated_at=excluded.updated_at,
+  closed_at=excluded.closed_at;`,
+		quote(threadID),
+	)
+	return s.execSQL(sql)
 }
 
 func (s *SQLiteStore) UpsertForumControlThread(mapping model.ForumControlThread) error {

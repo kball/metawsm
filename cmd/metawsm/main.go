@@ -1991,33 +1991,51 @@ func resolveWatchMode(runID string, ticket string, all bool) (watchMode, error) 
 	return watchModeSingleRun, nil
 }
 
-func statusWithRetry(ctx context.Context, service *orchestrator.Service, runID string) (string, error) {
-	var lastErr error
-	for attempt := 1; attempt <= 3; attempt++ {
-		status, err := service.Status(ctx, runID)
-		if err == nil {
-			return status, nil
-		}
-		lastErr = err
-		if !strings.Contains(strings.ToLower(err.Error()), "database is locked") {
-			return "", err
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return "", lastErr
-}
-
 func loadWatchSnapshot(ctx context.Context, service *orchestrator.Service, runID string, ticketFallback string) (watchSnapshot, error) {
-	statusText, err := statusWithRetry(ctx, service, runID)
+	snapshotData, err := service.RunSnapshot(ctx, runID)
 	if err != nil {
 		return watchSnapshot{}, err
 	}
-	snapshot := parseWatchSnapshot(statusText)
-	if strings.TrimSpace(snapshot.RunID) == "" {
-		snapshot.RunID = runID
+	snapshot := watchSnapshot{
+		RunID:                strings.TrimSpace(snapshotData.RunID),
+		RunStatus:            string(snapshotData.Status),
+		Tickets:              strings.Join(snapshotData.Tickets, ", "),
+		HasGuidance:          len(snapshotData.PendingGuidance) > 0,
+		HasUnhealthyAgents:   len(snapshotData.UnhealthyAgents) > 0,
+		HasDirtyDiffs:        snapshotData.HasDirtyDiffs,
+		DraftPullRequests:    snapshotData.DraftPullRequests,
+		OpenPullRequests:     snapshotData.OpenPullRequests,
+		QueuedReviewFeedback: snapshotData.QueuedReviewFeedback,
+		NewReviewFeedback:    snapshotData.NewReviewFeedback,
 	}
-	if strings.TrimSpace(snapshot.Tickets) == "" {
+	if snapshot.RunID == "" {
+		snapshot.RunID = strings.TrimSpace(runID)
+	}
+	if snapshot.Tickets == "" {
 		snapshot.Tickets = strings.TrimSpace(ticketFallback)
+	}
+	for _, item := range snapshotData.PendingGuidance {
+		snapshot.GuidanceItems = append(snapshot.GuidanceItems, fmt.Sprintf(
+			"forum control thread=%s agent=%s workspace=%s question=%s",
+			item.ThreadID,
+			item.AgentName,
+			item.WorkspaceName,
+			item.Question,
+		))
+	}
+	for _, agent := range snapshotData.UnhealthyAgents {
+		issue := watchAgentIssue{
+			Agent:        strings.TrimSpace(agent.AgentName) + "@" + strings.TrimSpace(agent.WorkspaceName),
+			Session:      strings.TrimSpace(agent.SessionName),
+			Status:       string(agent.Status),
+			Health:       string(agent.Health),
+			LastActivity: strings.TrimSpace(agent.LastActivity),
+			LastProgress: strings.TrimSpace(agent.LastProgress),
+			ActivityAge:  strings.TrimSpace(agent.ActivityAge),
+			ProgressAge:  strings.TrimSpace(agent.ProgressAge),
+		}
+		issue.Reason = describeUnhealthyReason(issue)
+		snapshot.UnhealthyAgents = append(snapshot.UnhealthyAgents, issue)
 	}
 	return snapshot, nil
 }

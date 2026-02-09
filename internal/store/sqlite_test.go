@@ -789,6 +789,75 @@ func TestForumControlThreadMappingUpsertAndLookup(t *testing.T) {
 	}
 }
 
+func TestApplyForumEventProjectionsIsIdempotent(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	s := NewSQLiteStore(dbPath)
+	if err := s.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	if _, err := s.ForumOpenThread(model.ForumOpenThreadCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:      "evt-open-proj-1",
+			EventType:    "forum.thread.opened",
+			EventVersion: 1,
+			OccurredAt:   time.Now().UTC(),
+			ThreadID:     "thread-proj-1",
+			RunID:        "run-proj-1",
+			Ticket:       "METAWSM-010",
+			AgentName:    "agent-a",
+			ActorType:    model.ForumActorAgent,
+			ActorName:    "agent-a",
+		},
+		Title:    "Projection test thread",
+		Body:     "Initial post",
+		Priority: model.ForumPriorityHigh,
+	}); err != nil {
+		t.Fatalf("open forum thread: %v", err)
+	}
+
+	event, err := s.GetForumEvent("evt-open-proj-1")
+	if err != nil {
+		t.Fatalf("get forum event: %v", err)
+	}
+	if event == nil {
+		t.Fatalf("expected stored forum event")
+	}
+
+	if err := s.ApplyForumEventProjections(*event); err != nil {
+		t.Fatalf("apply projection first pass: %v", err)
+	}
+	if err := s.ApplyForumEventProjections(*event); err != nil {
+		t.Fatalf("apply projection second pass: %v", err)
+	}
+
+	thread, err := s.GetForumThread("thread-proj-1")
+	if err != nil {
+		t.Fatalf("get projected thread: %v", err)
+	}
+	if thread == nil {
+		t.Fatalf("expected projected thread row")
+	}
+	if thread.State != model.ForumThreadStateNew {
+		t.Fatalf("expected state=new, got %s", thread.State)
+	}
+	if thread.PostsCount != 1 {
+		t.Fatalf("expected posts_count=1, got %d", thread.PostsCount)
+	}
+
+	projectionRows, err := s.queryJSON(`SELECT projection_name, event_id FROM forum_projection_events WHERE event_id='evt-open-proj-1' ORDER BY projection_name;`)
+	if err != nil {
+		t.Fatalf("list projection events: %v", err)
+	}
+	if len(projectionRows) != 2 {
+		t.Fatalf("expected two projection markers (views+stats), got %d", len(projectionRows))
+	}
+}
+
 func TestForumOutboxLifecycle(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")

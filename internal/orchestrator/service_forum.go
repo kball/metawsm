@@ -91,75 +91,106 @@ func (s *Service) registerForumBusHandlers() error {
 		{
 			topic: s.forumTopics.CommandTopic("open_thread"),
 			handler: func(ctx context.Context, message model.ForumOutboxMessage) error {
-				_ = ctx
 				var cmd model.ForumOpenThreadCommand
 				if err := json.Unmarshal([]byte(message.PayloadJSON), &cmd); err != nil {
 					return fmt.Errorf("decode open_thread command: %w", err)
 				}
-				_, err := s.store.ForumOpenThread(cmd)
-				return err
+				if _, err := s.store.ForumOpenThread(cmd); err != nil {
+					return err
+				}
+				return s.publishForumEventByID(ctx, cmd.Envelope.EventID)
 			},
 		},
 		{
 			topic: s.forumTopics.CommandTopic("add_post"),
 			handler: func(ctx context.Context, message model.ForumOutboxMessage) error {
-				_ = ctx
 				var cmd model.ForumAddPostCommand
 				if err := json.Unmarshal([]byte(message.PayloadJSON), &cmd); err != nil {
 					return fmt.Errorf("decode add_post command: %w", err)
 				}
-				_, err := s.store.ForumAddPost(cmd)
-				return err
+				if _, err := s.store.ForumAddPost(cmd); err != nil {
+					return err
+				}
+				return s.publishForumEventByID(ctx, cmd.Envelope.EventID)
 			},
 		},
 		{
 			topic: s.forumTopics.CommandTopic("assign_thread"),
 			handler: func(ctx context.Context, message model.ForumOutboxMessage) error {
-				_ = ctx
 				var cmd model.ForumAssignThreadCommand
 				if err := json.Unmarshal([]byte(message.PayloadJSON), &cmd); err != nil {
 					return fmt.Errorf("decode assign_thread command: %w", err)
 				}
-				_, err := s.store.ForumAssignThread(cmd)
-				return err
+				if _, err := s.store.ForumAssignThread(cmd); err != nil {
+					return err
+				}
+				return s.publishForumEventByID(ctx, cmd.Envelope.EventID)
 			},
 		},
 		{
 			topic: s.forumTopics.CommandTopic("change_state"),
 			handler: func(ctx context.Context, message model.ForumOutboxMessage) error {
-				_ = ctx
 				var cmd model.ForumChangeStateCommand
 				if err := json.Unmarshal([]byte(message.PayloadJSON), &cmd); err != nil {
 					return fmt.Errorf("decode change_state command: %w", err)
 				}
-				_, err := s.store.ForumChangeState(cmd)
-				return err
+				if _, err := s.store.ForumChangeState(cmd); err != nil {
+					return err
+				}
+				return s.publishForumEventByID(ctx, cmd.Envelope.EventID)
 			},
 		},
 		{
 			topic: s.forumTopics.CommandTopic("set_priority"),
 			handler: func(ctx context.Context, message model.ForumOutboxMessage) error {
-				_ = ctx
 				var cmd model.ForumSetPriorityCommand
 				if err := json.Unmarshal([]byte(message.PayloadJSON), &cmd); err != nil {
 					return fmt.Errorf("decode set_priority command: %w", err)
 				}
-				_, err := s.store.ForumSetPriority(cmd)
-				return err
+				if _, err := s.store.ForumSetPriority(cmd); err != nil {
+					return err
+				}
+				return s.publishForumEventByID(ctx, cmd.Envelope.EventID)
 			},
 		},
 		{
 			topic: s.forumTopics.CommandTopic("close_thread"),
 			handler: func(ctx context.Context, message model.ForumOutboxMessage) error {
-				_ = ctx
 				var cmd model.ForumCloseThreadCommand
 				if err := json.Unmarshal([]byte(message.PayloadJSON), &cmd); err != nil {
 					return fmt.Errorf("decode close_thread command: %w", err)
 				}
-				_, err := s.store.ForumCloseThread(cmd)
-				return err
+				if _, err := s.store.ForumCloseThread(cmd); err != nil {
+					return err
+				}
+				return s.publishForumEventByID(ctx, cmd.Envelope.EventID)
 			},
 		},
+	}
+	for _, eventType := range []string{
+		"forum.thread.opened",
+		"forum.post.added",
+		"forum.control.signal",
+		"forum.assigned",
+		"forum.state.changed",
+		"forum.priority.changed",
+		"forum.thread.closed",
+	} {
+		eventTopic := forumEventTopicForType(s.forumTopics, eventType)
+		if eventTopic == "" {
+			continue
+		}
+		registrations = append(registrations, handlerRegistration{
+			topic: eventTopic,
+			handler: func(ctx context.Context, message model.ForumOutboxMessage) error {
+				_ = ctx
+				var event model.ForumEvent
+				if err := json.Unmarshal([]byte(message.PayloadJSON), &event); err != nil {
+					return fmt.Errorf("decode forum event message: %w", err)
+				}
+				return s.store.ApplyForumEventProjections(event)
+			},
+		})
 	}
 	for _, registration := range registrations {
 		if err := s.forumBus.RegisterHandler(registration.topic, registration.handler); err != nil {
@@ -174,6 +205,26 @@ func (s *Service) dispatchForumCommand(ctx context.Context, topic string, messag
 		return fmt.Errorf("forum command dispatcher not configured")
 	}
 	return s.forumDispatcher.Dispatch(ctx, topic, messageKey, payload)
+}
+
+func (s *Service) publishForumEventByID(ctx context.Context, eventID string) error {
+	_ = ctx
+	if s.forumBus == nil {
+		return fmt.Errorf("forum bus runtime not configured")
+	}
+	event, err := s.store.GetForumEvent(eventID)
+	if err != nil {
+		return err
+	}
+	if event == nil {
+		return fmt.Errorf("forum event %s not found for publish", strings.TrimSpace(eventID))
+	}
+	topic := forumEventTopicForType(s.forumTopics, event.Envelope.EventType)
+	if topic == "" {
+		return fmt.Errorf("forum event type %q cannot be mapped to event topic", event.Envelope.EventType)
+	}
+	_, err = s.forumBus.Publish(topic, strings.TrimSpace(event.Envelope.ThreadID), event)
+	return err
 }
 
 func (s *Service) ForumOpenThread(ctx context.Context, options ForumOpenThreadOptions) (model.ForumThreadView, error) {
@@ -794,6 +845,19 @@ func generateForumID(prefix string) string {
 		prefix = "forum"
 	}
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+}
+
+func forumEventTopicForType(topics model.ForumTopicRegistry, eventType string) string {
+	eventType = strings.TrimSpace(strings.ToLower(eventType))
+	if eventType == "" {
+		return ""
+	}
+	suffix := strings.TrimPrefix(eventType, "forum.")
+	suffix = strings.TrimPrefix(suffix, ".")
+	if suffix == "" {
+		return ""
+	}
+	return topics.EventTopic(suffix)
 }
 
 func sanitizeForumIDSegment(value string) string {

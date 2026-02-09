@@ -373,6 +373,27 @@ func TestForumServiceLifecycleAndValidation(t *testing.T) {
 	if !foundDocsSync {
 		t.Fatalf("expected docs-sync integration event in forum event stream")
 	}
+
+	sentOutbox, err := svc.store.ListForumOutboxByStatus(model.ForumOutboxStatusSent, 200)
+	if err != nil {
+		t.Fatalf("list sent outbox messages: %v", err)
+	}
+	hasOpenCommand := false
+	hasOpenEvent := false
+	for _, msg := range sentOutbox {
+		if msg.Topic == svc.forumTopics.CommandTopic("open_thread") {
+			hasOpenCommand = true
+		}
+		if msg.Topic == svc.forumTopics.EventTopic("thread.opened") {
+			hasOpenEvent = true
+		}
+	}
+	if !hasOpenCommand {
+		t.Fatalf("expected sent outbox command message for open_thread")
+	}
+	if !hasOpenEvent {
+		t.Fatalf("expected sent outbox event message for forum thread opened projection flow")
+	}
 }
 
 func TestForumAppendControlSignalUsesSingleControlThreadPerRunAgent(t *testing.T) {
@@ -504,6 +525,91 @@ func TestStatusIncludesForumEscalationGuidance(t *testing.T) {
 	}
 	if !strings.Contains(status, "Forum:") {
 		t.Fatalf("expected forum summary block in status output:\n%s", status)
+	}
+}
+
+func TestRunSnapshotReturnsTypedForumGuidance(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	svc, err := NewService(dbPath)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	spec := model.RunSpec{
+		RunID:             "run-snapshot-typed",
+		Mode:              model.RunModeBootstrap,
+		Tickets:           []string{"METAWSM-010"},
+		Repos:             []string{"metawsm"},
+		WorkspaceStrategy: model.WorkspaceStrategyCreate,
+		Agents:            []model.AgentSpec{{Name: "agent", Command: "bash"}},
+		PolicyPath:        ".metawsm/policy.json",
+		CreatedAt:         time.Now().UTC(),
+	}
+	if err := svc.store.CreateRun(spec, `{"version":1}`); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := svc.store.UpdateRunStatus(spec.RunID, model.RunStatusRunning, ""); err != nil {
+		t.Fatalf("set run status running: %v", err)
+	}
+	now := time.Now().Add(-2 * time.Hour)
+	if err := svc.store.UpsertAgent(model.AgentRecord{
+		RunID:          spec.RunID,
+		Name:           "agent",
+		WorkspaceName:  "ws-snapshot",
+		SessionName:    "missing-session",
+		Status:         model.AgentStatusRunning,
+		HealthState:    model.HealthStateHealthy,
+		LastActivityAt: &now,
+		LastProgressAt: &now,
+	}); err != nil {
+		t.Fatalf("upsert agent: %v", err)
+	}
+	if _, err := svc.ForumAppendControlSignal(t.Context(), ForumControlSignalOptions{
+		RunID:     spec.RunID,
+		Ticket:    "METAWSM-010",
+		AgentName: "agent",
+		ActorType: model.ForumActorAgent,
+		ActorName: "agent",
+		Payload: model.ForumControlPayloadV1{
+			SchemaVersion: model.ForumControlSchemaVersion1,
+			ControlType:   model.ForumControlTypeGuidanceRequest,
+			RunID:         spec.RunID,
+			AgentName:     "agent",
+			Question:      "Need a decision on event projection ownership?",
+		},
+	}); err != nil {
+		t.Fatalf("append guidance request control signal: %v", err)
+	}
+
+	snapshot, err := svc.RunSnapshot(t.Context(), spec.RunID)
+	if err != nil {
+		t.Fatalf("run snapshot: %v", err)
+	}
+	if snapshot.RunID != spec.RunID {
+		t.Fatalf("expected run id %s, got %s", spec.RunID, snapshot.RunID)
+	}
+	if snapshot.Status != model.RunStatusAwaitingGuidance {
+		t.Fatalf("expected run status awaiting_guidance after pending control signal, got %s", snapshot.Status)
+	}
+	if len(snapshot.Tickets) != 1 || snapshot.Tickets[0] != "METAWSM-010" {
+		t.Fatalf("unexpected tickets: %#v", snapshot.Tickets)
+	}
+	if len(snapshot.PendingGuidance) != 1 {
+		t.Fatalf("expected one pending guidance item, got %d", len(snapshot.PendingGuidance))
+	}
+	item := snapshot.PendingGuidance[0]
+	if item.AgentName != "agent" {
+		t.Fatalf("expected pending guidance agent=agent, got %s", item.AgentName)
+	}
+	if item.ThreadID == "" {
+		t.Fatalf("expected pending guidance thread id")
+	}
+	if item.Question == "" {
+		t.Fatalf("expected pending guidance question")
 	}
 }
 
