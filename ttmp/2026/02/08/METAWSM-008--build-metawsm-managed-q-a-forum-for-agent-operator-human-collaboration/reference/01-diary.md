@@ -20,6 +20,8 @@ RelatedFiles:
       Note: Documents forum command surface
     - Path: internal/model/forum.go
       Note: Defines forum envelopes
+    - Path: internal/orchestrator/service.go
+      Note: Adds forum escalation summary into status output to feed watch/operator guidance alerts
     - Path: internal/orchestrator/service_forum.go
       Note: Implements invariant-checked forum command handlers and service-level query/watch APIs
     - Path: internal/orchestrator/service_test.go
@@ -40,6 +42,7 @@ LastUpdated: 2026-02-08T18:35:18.672486-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 
 # Diary
@@ -142,3 +145,81 @@ The delivered slice established forum state and event persistence in SQLite, ser
   - `metawsm forum ask|answer|assign|state|priority|close|list|thread|watch`
 - New persistence primitives:
   - command state tables, read projections, event audit log with sequence cursor.
+
+## Step 2: Add forum escalation signaling and docs-sync integration events
+
+After the first commit, two high-value operational gaps remained: integrating forum escalations into operator pathways and implementing default-on docs-sync behavior with policy control. This step added both without introducing external side effects or blocking forum command paths.
+
+The approach was to reuse existing watch/operator guidance signals by surfacing escalation-worthy forum threads in run status output, and to emit explicit integration events (`forum.integration.docs_sync.requested`) on answer/close transitions when `forum.docs_sync.enabled` is true.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Use docmgr to pick up ticket METAWSM-008, break the plan down into tasks as needed, then implement. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue implementation until the remaining practical parts of the plan are wired into runtime behavior, while maintaining incremental commits and ticket documentation.
+
+**Inferred user intent:** Move the ticket toward operational readiness, not just schema/API scaffolding.
+
+**Commit (code):** 5f8b61c30870e61888cc8669afa828d1195f0deb — "Integrate forum escalations into status/operator and emit docs-sync events"
+
+### What I did
+- Updated `internal/orchestrator/service.go` status rendering to include:
+  - forum queue summary counts;
+  - escalation detection for `new`/`waiting_human` threads based on priority/SLA;
+  - escalation lines injected into `Guidance:` to trigger existing watch/operator escalation handling.
+- Updated watch hints in `cmd/metawsm/main.go` so forum escalation guidance points operators to:
+  - `metawsm forum answer --thread-id ...`
+  - `metawsm forum thread --thread-id ...`
+- Added `ForumAppendIntegrationEvent` in `internal/store/sqlite_forum.go`.
+- Added policy-gated docs-sync integration event emission in `internal/orchestrator/service_forum.go` for answer/close flows.
+- Added tests:
+  - forum guidance hints for watch direction (`cmd/metawsm/main_test.go`);
+  - status forum escalation visibility and docs-sync integration event presence (`internal/orchestrator/service_test.go`).
+- Re-ran validation:
+  - `go test ./internal/orchestrator ./internal/store ./cmd/metawsm -count=1`
+
+### Why
+- Operator loop integration needed to be practical without introducing a separate runtime daemon.
+- Docs-sync needed an explicit, durable trigger path tied to forum events and policy.
+- Reusing existing guidance/event flow reduced risk and implementation overhead.
+
+### What worked
+- Forum escalations now show up in the same guidance channel consumed by watch/operator workflows.
+- Answer/close now emit integration events in the forum stream when docs-sync is enabled.
+- Updated tests passed and validated these behaviors.
+
+### What didn't work
+- N/A in this step (no additional command or runtime failures encountered).
+
+### What I learned
+- Existing run status + watch parsing is a strong integration seam for new subsystem signals.
+- Integration events provide a stable handoff point for future subscribers without hard-coupling forum handlers to doc updates.
+
+### What was tricky to build
+- Balancing escalation sensitivity (priority/SLA) without over-alerting operator loops.
+- Ensuring docs-sync behavior remained policy-controlled and additive to current flows.
+
+### What warrants a second pair of eyes
+- Escalation criteria thresholds in `internal/orchestrator/service.go` (priority and age logic).
+- Whether `forum.integration.docs_sync.requested` payload fields are sufficient for downstream subscribers.
+
+### What should be done in the future
+- Implement the actual docs-sync consumer to process `forum.integration.docs_sync.requested` and append ticket summaries.
+- Add resilience tests for Redis outage/projection lag/replay recovery (remaining task 9).
+
+### Code review instructions
+- Where to start:
+  - `internal/orchestrator/service.go`
+  - `internal/orchestrator/service_forum.go`
+  - `internal/store/sqlite_forum.go`
+  - `cmd/metawsm/main.go`
+- How to validate:
+  - `go test ./internal/orchestrator ./internal/store ./cmd/metawsm -count=1`
+  - Optional watch smoke:
+    - `go run ./cmd/metawsm status --run-id <run>`
+    - `go run ./cmd/metawsm watch --run-id <run>`
+
+### Technical details
+- Tasks checked in this step: `5`, `8`.
+- New integration event type: `forum.integration.docs_sync.requested`.
+- Remaining open task: `9` (resilience/e2e scenarios).

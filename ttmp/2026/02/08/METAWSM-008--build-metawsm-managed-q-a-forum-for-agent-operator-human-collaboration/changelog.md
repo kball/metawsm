@@ -61,3 +61,14 @@ Step 1: Implemented forum domain envelopes, SQLite command/projection/event sche
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_forum.go — Service APIs with forum invariant validation and transition controls
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_forum.go — Core forum command/event persistence and projection/query logic
 
+
+## 2026-02-08
+
+Step 2: Integrated forum escalation cues into status/watch/operator loops and added default-on, policy-gated docs-sync integration events for answered/closed threads (commit 5f8b61c30870e61888cc8669afa828d1195f0deb).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Status now emits forum escalation signals consumed by watch/operator alerting
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_forum.go — Emits forum.integration.docs_sync.requested events based on policy override
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_forum.go — Supports appending integration events to forum event stream
+
