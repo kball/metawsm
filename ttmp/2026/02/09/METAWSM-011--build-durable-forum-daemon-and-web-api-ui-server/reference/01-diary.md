@@ -16,16 +16,24 @@ RelatedFiles:
       Note: Prevents committing compiled frontend and generated asset noise (commit ed279e1)
     - Path: Makefile
       Note: Dev/build targets for backend/frontend integration (commit ed279e1)
+    - Path: README.md
+      Note: Daemon/UI rollout guidance and command updates (commit e1ac9a2)
     - Path: cmd/metawsm/main.go
       Note: |-
         Adds serve CLI command and runtime flags (commit b553d46)
         Forum CLI commands now consume serviceapi.Core (commit b251e84)
+    - Path: docs/how-to-run-forum.md
+      Note: Daemon-first forum runtime runbook and recovery guidance (commit e1ac9a2)
+    - Path: docs/system-guide.md
+      Note: Architecture updates for shared service API and daemon workflow (commit e1ac9a2)
     - Path: internal/orchestrator/service.go
       Note: Exposes ListRuns for API service layer (commit 15b13fe)
     - Path: internal/orchestrator/service_forum.go
       Note: Exposes forum outbox stats for runtime health (commit b553d46)
     - Path: internal/server/api.go
       Note: HTTP run/forum routes and payload parsing (commit 15b13fe)
+    - Path: internal/server/api_test.go
+      Note: Regression tests for daemon API and websocket routes (commit 4dc9edc)
     - Path: internal/server/runtime.go
       Note: |-
         Daemon runtime lifecycle and health endpoint (commit b553d46)
@@ -50,6 +58,8 @@ RelatedFiles:
       Note: Frontend build and copy pipeline for embed assets (commit ed279e1)
     - Path: internal/web/spa.go
       Note: SPA router/fallback serving for embedded or disk assets (commit ed279e1)
+    - Path: ttmp/2026/02/09/METAWSM-011--build-durable-forum-daemon-and-web-api-ui-server/tasks.md
+      Note: Marks Task 9 docs rollout complete (commit e1ac9a2)
     - Path: ui/src/App.tsx
       Note: Dashboard UI using daemon API and websocket updates (commit ed279e1)
 ExternalSources: []
@@ -58,6 +68,7 @@ LastUpdated: 2026-02-09T09:28:18.302287-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 
 
@@ -428,3 +439,146 @@ This step connected all three interaction surfaces to one runtime model: daemon 
 - Production-ish build flow:
   - `go generate ./internal/web`
   - `go build -tags embed ./...`
+
+## Step 5: Add daemon API and websocket regression tests
+
+I implemented Task 8 by adding targeted tests for the new server API and WebSocket stream behavior. This step focused on locking in contract behavior for forum routes, run snapshot routes, and stream failure/success paths so later UI and operator changes can rely on stable runtime behavior.
+
+The tests validate both happy-path responses and key failure modes without depending on external services. That keeps the route-level checks deterministic and makes regressions around daemon route wiring easier to catch during future iteration.
+
+### Prompt Context
+
+**User prompt (verbatim):** "OK yeah implement task by task, keep a diary and commit as you go. Continue until complete."
+
+**Assistant interpretation:** Continue finishing remaining ticket tasks in order and keep implementation traceability with commits and diary updates.
+
+**Inferred user intent:** Ensure the daemon/web surface is production-ready by adding regression tests before final rollout docs and closeout.
+
+**Commit (code):** 4dc9edca71a7a909f347f7f6d3ad2057574707c6 — "Add server route and websocket runtime tests"
+
+### What I did
+- Added `internal/server/api_test.go` with route-level tests covering:
+  - health endpoint behavior,
+  - run snapshot endpoint behavior,
+  - forum command/query route behavior,
+  - WebSocket stream upgrade and event delivery.
+- Added failure-path coverage for invalid requests and service-layer errors.
+- Ran focused validation:
+  - `go test ./internal/server -count=1`
+  - `go test ./internal/serviceapi -count=1`
+  - `go test ./internal/web -count=1`
+  - `go test ./cmd/metawsm -count=1`
+
+### Why
+- Task 8 requires regression coverage for daemon runtime route behavior and failure handling.
+- WebSocket support is central to the UI interaction model, so stream behavior needed explicit tests before finalizing rollout docs.
+
+### What worked
+- New tests passed and exercised both JSON API routes and WebSocket flow.
+- The route surface and worker/runtime integrations remained stable under test.
+
+### What didn't work
+- N/A in this step; no blocking failures remained after tests were added.
+
+### What I learned
+- The shared `serviceapi.Core` boundary made server test setup cleaner because handlers can be exercised with deterministic service behavior.
+
+### What was tricky to build
+- Verifying WebSocket behavior with deterministic timing while avoiding flaky assumptions about event arrival cadence.
+
+### What warrants a second pair of eyes
+- WebSocket close/error-path behavior under slow clients and larger event volumes.
+
+### What should be done in the future
+- Keep adding route contract tests when API surface expands (especially auth and remote deployment scenarios).
+
+### Code review instructions
+- Start with:
+  - `internal/server/api_test.go`
+- Re-check command/runtime integration:
+  - `internal/server/api.go`
+  - `internal/server/websocket.go`
+- Validate with:
+  - `go test ./internal/server -count=1`
+  - `go test ./cmd/metawsm -count=1`
+
+### Technical details
+- New tests focus on `/api/v1/runs`, `/api/v1/forum/*`, and `/api/v1/forum/stream` contracts.
+
+## Step 6: Finalize daemon-mode runbooks and rollout docs
+
+I implemented Task 9 by updating user-facing runbooks and system docs to match the delivered daemon architecture. The key change is documenting that forum command workflows are now daemon-backed and mandatory through `metawsm serve`, with API/WebSocket and web UI flows captured as first-class operations.
+
+I also updated README quick-start/build sections so developers can run the backend daemon, optional frontend dev server, and production embed build without relying on stale branch-specific assumptions. This closes the ticket with docs aligned to the actual merged implementation.
+
+### Prompt Context
+
+**User prompt (verbatim):** "OK yeah implement task by task, keep a diary and commit as you go. Continue until complete."
+
+**Assistant interpretation:** Finish the last backlog item by documenting rollout and operational behavior, then close out ticket bookkeeping.
+
+**Inferred user intent:** Ensure operators and developers have durable, accurate runbooks for the new daemon + API + UI model before declaring completion.
+
+**Commit (code):** e1ac9a2d846b46e433091b2810564970a5de7bac — "Update daemon-mode runbooks and rollout docs"
+
+### What I did
+- Updated `README.md` with:
+  - `metawsm serve` command in primary command surface,
+  - daemon/API/UI quick-start and core endpoint summary,
+  - updated build guidance (`go build -tags embed ./...`).
+- Rewrote `docs/how-to-run-forum.md` from in-process assumptions to daemon-first operations:
+  - mandatory daemon mode for forum commands,
+  - health/API/WebSocket verification checks,
+  - updated failure/recovery guidance.
+- Updated `docs/system-guide.md` architecture and workflow sections:
+  - durable daemon runtime,
+  - shared service API (`serviceapi.Core`) consumed by CLI+HTTP,
+  - operator workflow explicitly starting Redis + `metawsm serve`.
+- Marked Task 9 complete:
+  - `docmgr task check --ticket METAWSM-011 --id 9`
+- Re-ran focused validation:
+  - `go test ./internal/server -count=1`
+  - `go test ./internal/serviceapi -count=1`
+  - `go test ./internal/web -count=1`
+  - `go test ./cmd/metawsm -count=1`
+
+### Why
+- Task 9 requires docs/runbook updates that match the mandatory daemon migration.
+- Operational clarity for startup/health/failure modes is necessary before ticket close.
+
+### What worked
+- Runbooks now reflect actual merged behavior and command defaults.
+- Validation commands passed after documentation changes and task closeout.
+
+### What didn't work
+- N/A in this step; no blockers occurred.
+
+### What I learned
+- The biggest migration risk was stale language implying forum processing is in-process only; explicit daemon-first phrasing removes that ambiguity.
+
+### What was tricky to build
+- Keeping doc updates synchronized across quick-start (`README`), operational runbook, and architecture guide without duplicating conflicting details.
+
+### What warrants a second pair of eyes
+- The runbook’s optional tool references (`jq`, `websocat`) should be reviewed for environment assumptions in CI or constrained operator setups.
+
+### What should be done in the future
+- Add dedicated API reference docs if external/non-CLI clients expand beyond local-only workflows.
+
+### Code review instructions
+- Review docs in this order:
+  - `README.md`
+  - `docs/how-to-run-forum.md`
+  - `docs/system-guide.md`
+  - `ttmp/2026/02/09/METAWSM-011--build-durable-forum-daemon-and-web-api-ui-server/tasks.md`
+- Validate commands:
+  - `go test ./internal/server -count=1`
+  - `go test ./internal/serviceapi -count=1`
+  - `go test ./internal/web -count=1`
+  - `go test ./cmd/metawsm -count=1`
+
+### Technical details
+- Forum CLI daemon default endpoint:
+  - `http://127.0.0.1:3001`
+- Live forum stream path:
+  - `/api/v1/forum/stream`

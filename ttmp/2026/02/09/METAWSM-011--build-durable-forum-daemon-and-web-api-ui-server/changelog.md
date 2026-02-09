@@ -68,3 +68,26 @@ Step 4: added web UI/embed pipeline, daemon-backed remote service API client, an
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/09/METAWSM-011--build-durable-forum-daemon-and-web-api-ui-server/reference/01-diary.md — Step 4 implementation details
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.tsx — Initial web dashboard for run/thread visibility
 
+
+## 2026-02-09
+
+Step 5: added daemon API and websocket regression tests for route behavior and failure modes (commit 4dc9edc).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/server/api_test.go — Route and websocket regression coverage
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/09/METAWSM-011--build-durable-forum-daemon-and-web-api-ui-server/reference/01-diary.md — Step 5 diary details
+
+
+## 2026-02-09
+
+Step 6: finalized daemon-mode rollout docs/runbooks and marked Task 9 complete (commit e1ac9a2).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/README.md — Updated command surface and daemon/UI quick start
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/docs/how-to-run-forum.md — Daemon-first forum operations runbook
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/docs/system-guide.md — System architecture updated for daemon/shared service API
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/09/METAWSM-011--build-durable-forum-daemon-and-web-api-ui-server/reference/01-diary.md — Step 6 diary details
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/09/METAWSM-011--build-durable-forum-daemon-and-web-api-ui-server/tasks.md — Task checklist now fully complete
+
