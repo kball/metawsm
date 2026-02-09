@@ -6,8 +6,8 @@
 - [x] T2: Enforce exactly one control thread per `(run_id, agent_name)` at service and store layers (validation + unique constraint/index + migration guard).
 - [x] T3: Add Watermill + Redis runtime package (`internal/forumbus`) with router lifecycle, publisher/subscriber wiring, and health checks.
 - [x] T4: Add durable outbox table and worker for command/event publish reliability (state+event+outbox atomic write, retry, replay).
-- [ ] T5: Refactor forum command entrypoints to dispatcher abstraction and switch to bus-backed command publishing.
-- [ ] T6: Implement async Watermill command consumers for open/add-post/assign/state/priority/close command topics.
+- [x] T5: Refactor forum command entrypoints to dispatcher abstraction and switch to bus-backed command publishing.
+- [x] T6: Implement async Watermill command consumers for open/add-post/assign/state/priority/close command topics.
 - [ ] T7: Implement projection consumers for `forum.events.*` and idempotent projection application via `forum_projection_events`.
 - [ ] T8: Refactor `Guide` flow to forum-answer command path only; remove legacy `.metawsm/guidance-response.json` writes.
 - [ ] T9: Refactor `syncBootstrapSignals()` to forum-only control-state derivation; remove legacy file-ingestion control path.

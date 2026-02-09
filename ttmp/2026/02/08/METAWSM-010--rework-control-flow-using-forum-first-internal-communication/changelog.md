@@ -53,3 +53,13 @@ Step 2: Added forum bus runtime package and durable SQLite outbox primitives for
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite.go — Adds forum_outbox schema table and index
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_forum.go — Adds outbox enqueue/claim/sent/failed APIs
 
+
+## 2026-02-09
+
+Step 3: Refactored forum command entrypoints to bus-backed dispatch and registered command topic handlers (commit d78deff127187700d4b1424721c0c66ade1b8c34).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/forum_dispatcher.go — Dispatcher abstraction and publish/process semantics
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_forum.go — Forum command methods now dispatch to bus topics
+

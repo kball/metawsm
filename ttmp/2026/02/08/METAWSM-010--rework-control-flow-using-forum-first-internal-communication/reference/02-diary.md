@@ -18,6 +18,8 @@ RelatedFiles:
       Note: Defines outbox message and status model
     - Path: internal/model/forum_control.go
       Note: Defines versioned forum control payload schema and validation
+    - Path: internal/orchestrator/forum_dispatcher.go
+      Note: Adds bus-backed dispatcher abstraction for forum command publishing
     - Path: internal/orchestrator/service_forum.go
       Note: Adds control signal append flow and one-thread-per-run-agent control thread enforcement
     - Path: internal/orchestrator/service_test.go
@@ -34,6 +36,7 @@ LastUpdated: 2026-02-09T06:24:19.957975-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 
 
@@ -201,3 +204,74 @@ The scope here was intentionally foundational: outbox lifecycle APIs, runtime ha
 ### Technical details
 - Task status updates:
   - `METAWSM-010` `T3`, `T4` checked complete.
+
+## Step 3: Switch forum command entrypoints to bus-backed dispatcher
+
+With the runtime/outbox foundation in place, I switched forum command entrypoints to dispatch through command topics and registered handlers that execute command-side mutations. This replaces direct service-to-store forum command writes with publish/process semantics while preserving current CLI behavior.
+
+The service now constructs typed forum commands, dispatches to topic handlers, and reads resulting thread state back from projections. This keeps the API behavior stable while moving command execution through the same bus path.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok yes. follow the task list, implement, keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue implementing the next backlog tasks in order and keep progress documented with incremental commits.
+
+**Inferred user intent:** Move from infrastructure setup to actual command-path cutover, not just scaffolding.
+
+**Commit (code):** d78deff127187700d4b1424721c0c66ade1b8c34 — "Route forum commands through bus dispatcher and topic handlers"
+
+### What I did
+- Added dispatcher abstraction in `internal/orchestrator/forum_dispatcher.go`.
+- Extended service wiring in `internal/orchestrator/service.go`:
+  - forum topic registry capture from policy
+  - dispatcher assignment
+  - forum bus handler registration during `NewService`
+- Added bus command handler registration and dispatch helper in `internal/orchestrator/service_forum.go`.
+- Refactored forum command entrypoints to bus dispatch:
+  - `ForumOpenThread`
+  - `ForumAddPost`
+  - `ForumAnswerThread`
+  - `ForumAssignThread`
+  - `ForumChangeState`
+  - `ForumSetPriority`
+  - `ForumCloseThread`
+  - `ForumAppendControlSignal`
+- Validation command:
+  - `go test ./internal/orchestrator ./internal/forumbus ./internal/store ./internal/model -count=1`
+
+### Why
+- `T5` and `T6` required moving command entrypoints off direct store writes into bus-backed command publication and topic consumer handling.
+
+### What worked
+- Forum command APIs still return expected thread results.
+- Command execution now traverses outbox-backed topic handlers.
+- Existing test suites passed after cutover.
+
+### What didn't work
+- N/A in this step (no command failures encountered).
+
+### What I learned
+- Registering handlers during `NewService` allows immediate cutover without introducing extra runtime bootstrap commands.
+
+### What was tricky to build
+- Preserving existing method-level invariants while replacing direct mutation calls with asynchronous dispatch + post-dispatch reads.
+
+### What warrants a second pair of eyes
+- `internal/orchestrator/service_forum.go` handler registration and dispatch flow, especially `ForumAnswerThread` sequencing.
+- `internal/orchestrator/forum_dispatcher.go` process-once semantics under bursty command loads.
+
+### What should be done in the future
+- Implement `T7` event-projection consumer shape and then proceed to lifecycle migration tasks (`T8+`).
+
+### Code review instructions
+- Start here:
+  - `internal/orchestrator/forum_dispatcher.go`
+  - `internal/orchestrator/service_forum.go`
+  - `internal/orchestrator/service.go`
+- Validate with:
+  - `go test ./internal/orchestrator ./internal/forumbus ./internal/store ./internal/model -count=1`
+
+### Technical details
+- Task status updates:
+  - `METAWSM-010` `T5`, `T6` checked complete.
