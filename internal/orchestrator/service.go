@@ -1728,7 +1728,7 @@ func (s *Service) Guide(ctx context.Context, runID string, answer string) (Guide
 		return GuideResult{}, fmt.Errorf("guidance answer cannot be empty")
 	}
 
-	record, specJSON, _, err := s.store.GetRun(runID)
+	record, _, _, err := s.store.GetRun(runID)
 	if err != nil {
 		return GuideResult{}, err
 	}
@@ -1736,71 +1736,65 @@ func (s *Service) Guide(ctx context.Context, runID string, answer string) (Guide
 		return GuideResult{}, fmt.Errorf("run %s is not waiting for guidance (current: %s)", runID, record.Status)
 	}
 
-	pending, err := s.store.ListGuidanceRequests(runID, model.GuidanceStatusPending)
+	agents, err := s.store.GetAgents(runID)
 	if err != nil {
 		return GuideResult{}, err
 	}
-	if len(pending) == 0 {
-		return GuideResult{}, fmt.Errorf("run %s has no pending guidance requests", runID)
-	}
-	var spec model.RunSpec
-	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
-		return GuideResult{}, fmt.Errorf("unmarshal run spec: %w", err)
-	}
-
-	req := pending[0]
-	workspacePath, err := resolveWorkspacePath(req.WorkspaceName)
+	states, err := s.forumControlStatesForRun(runID, agents)
 	if err != nil {
 		return GuideResult{}, err
 	}
-	signalRoots := bootstrapSignalRoots(workspacePath, spec)
-	responseRoot := firstSignalRootWithFile(signalRoots, "guidance-request.json")
-	if responseRoot == "" && len(signalRoots) > 0 {
-		responseRoot = signalRoots[0]
-	}
-	if responseRoot == "" {
-		responseRoot = workspacePath
-	}
-	responsePath := filepath.Join(responseRoot, ".metawsm", "guidance-response.json")
-	if err := os.MkdirAll(filepath.Dir(responsePath), 0o755); err != nil {
-		return GuideResult{}, err
-	}
-	answeredAt := time.Now().Format(time.RFC3339)
-	payload := model.GuidanceResponsePayload{
-		GuidanceID: req.ID,
-		RunID:      runID,
-		Agent:      req.AgentName,
-		Question:   req.Question,
-		Answer:     answer,
-		AnsweredAt: answeredAt,
-	}
-	encoded, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return GuideResult{}, err
-	}
-	if err := os.WriteFile(responsePath, append(encoded, '\n'), 0o644); err != nil {
-		return GuideResult{}, err
-	}
 
-	for _, root := range signalRoots {
-		requestPath := filepath.Join(root, ".metawsm", "guidance-request.json")
-		_ = os.Remove(requestPath)
+	var target *forumControlAgentState
+	for _, agent := range agents {
+		state := states[agent.Name]
+		if state.PendingGuidance {
+			state.WorkspaceName = agent.WorkspaceName
+			target = &state
+			break
+		}
 	}
-
-	if err := s.store.MarkGuidanceAnswered(req.ID, answer); err != nil {
+	if target == nil {
+		return GuideResult{}, fmt.Errorf("run %s has no pending forum guidance requests", runID)
+	}
+	ticket := strings.TrimSpace(target.Ticket)
+	if ticket == "" {
+		tickets, err := s.store.GetTickets(runID)
+		if err != nil {
+			return GuideResult{}, err
+		}
+		if len(tickets) == 0 {
+			return GuideResult{}, fmt.Errorf("run %s has no ticket context for guidance answer", runID)
+		}
+		ticket = strings.TrimSpace(tickets[0])
+	}
+	if _, err := s.ForumAppendControlSignal(ctx, ForumControlSignalOptions{
+		RunID:     runID,
+		Ticket:    ticket,
+		AgentName: target.AgentName,
+		ActorType: model.ForumActorOperator,
+		ActorName: "operator",
+		Payload: model.ForumControlPayloadV1{
+			SchemaVersion: model.ForumControlSchemaVersion1,
+			ControlType:   model.ForumControlTypeGuidanceAnswer,
+			RunID:         runID,
+			AgentName:     target.AgentName,
+			Answer:        answer,
+		},
+	}); err != nil {
 		return GuideResult{}, err
 	}
-	_ = s.store.AddEvent(runID, "guidance", fmt.Sprintf("%d", req.ID), "answered", string(model.GuidanceStatusPending), string(model.GuidanceStatusAnswered), fmt.Sprintf("%s@%s", req.AgentName, req.WorkspaceName))
+	_ = s.store.AddEvent(runID, "guidance", target.AgentName, "answered", "pending", "answered", fmt.Sprintf("%s@%s", target.AgentName, target.WorkspaceName))
 
 	if err := s.transitionRun(runID, model.RunStatusAwaitingGuidance, model.RunStatusRunning, "guidance answered"); err != nil {
 		return GuideResult{}, err
 	}
 	return GuideResult{
 		RunID:         runID,
-		GuidanceID:    req.ID,
-		WorkspaceName: req.WorkspaceName,
-		AgentName:     req.AgentName,
-		Question:      req.Question,
+		GuidanceID:    0,
+		WorkspaceName: target.WorkspaceName,
+		AgentName:     target.AgentName,
+		Question:      target.PendingGuidanceQuestion,
 	}, nil
 }
 
@@ -1930,7 +1924,22 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 		}
 		record, _, _, _ = s.store.GetRun(runID)
 	}
-	pendingGuidance, _ := s.store.ListGuidanceRequests(runID, model.GuidanceStatusPending)
+	controlStates, _ := s.forumControlStatesForRun(runID, agents)
+	pendingControlGuidance := []forumControlAgentState{}
+	controlThreadIDs := map[string]struct{}{}
+	for _, agent := range agents {
+		state, ok := controlStates[agent.Name]
+		if !ok {
+			continue
+		}
+		state.WorkspaceName = agent.WorkspaceName
+		if strings.TrimSpace(state.ThreadID) != "" {
+			controlThreadIDs[state.ThreadID] = struct{}{}
+		}
+		if state.PendingGuidance {
+			pendingControlGuidance = append(pendingControlGuidance, state)
+		}
+	}
 	forumThreads, _ := s.store.ListForumThreads(model.ForumThreadFilter{RunID: runID, Limit: 200})
 	brief, _ := s.store.GetRunBrief(runID)
 	docSyncStates, _ := s.store.ListDocSyncStates(runID)
@@ -1944,6 +1953,9 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 	slaThreshold := time.Duration(slaMinutes) * time.Minute
 	forumEscalations := []model.ForumThreadView{}
 	for _, thread := range forumThreads {
+		if _, isControl := controlThreadIDs[thread.ThreadID]; isControl {
+			continue
+		}
 		if thread.State != model.ForumThreadStateNew && thread.State != model.ForumThreadStateWaitingHuman {
 			continue
 		}
@@ -2017,10 +2029,10 @@ func (s *Service) Status(ctx context.Context, runID string) (string, error) {
 		b.WriteString(fmt.Sprintf("  constraints=%s\n", brief.Constraints))
 		b.WriteString(fmt.Sprintf("  merge_intent=%s\n", brief.MergeIntent))
 	}
-	if len(pendingGuidance) > 0 || len(forumEscalations) > 0 {
+	if len(pendingControlGuidance) > 0 || len(forumEscalations) > 0 {
 		b.WriteString("Guidance:\n")
-		for _, item := range pendingGuidance {
-			b.WriteString(fmt.Sprintf("  - id=%d %s@%s question=%s\n", item.ID, item.AgentName, item.WorkspaceName, item.Question))
+		for _, item := range pendingControlGuidance {
+			b.WriteString(fmt.Sprintf("  - forum control thread=%s agent=%s workspace=%s question=%s\n", item.ThreadID, item.AgentName, item.WorkspaceName, item.PendingGuidanceQuestion))
 		}
 		for _, thread := range forumEscalations {
 			b.WriteString(fmt.Sprintf("  - forum thread=%s state=%s priority=%s title=%s\n", thread.ThreadID, thread.State, thread.Priority, thread.Title))
@@ -2261,6 +2273,8 @@ func (s *Service) ActiveDocContexts() ([]ActiveDocContext, error) {
 }
 
 func (s *Service) syncBootstrapSignals(ctx context.Context, runID string, currentStatus model.RunStatus, spec model.RunSpec, agents []model.AgentRecord) error {
+	_ = ctx
+	_ = spec
 	if currentStatus != model.RunStatusRunning && currentStatus != model.RunStatusAwaitingGuidance {
 		return nil
 	}
@@ -2270,76 +2284,52 @@ func (s *Service) syncBootstrapSignals(ctx context.Context, runID string, curren
 		}
 	}
 
-	existingPending, err := s.store.ListGuidanceRequests(runID, model.GuidanceStatusPending)
+	controlStates, err := s.forumControlStatesForRun(runID, agents)
 	if err != nil {
 		return err
 	}
-	pendingByKey := make(map[string]struct{}, len(existingPending))
-	for _, item := range existingPending {
-		key := guidanceKey(item.WorkspaceName, item.AgentName, item.Question)
-		pendingByKey[key] = struct{}{}
-	}
-
 	allComplete := len(agents) > 0
+	pendingGuidanceCount := 0
 	for _, agent := range agents {
-		workspacePath, err := resolveWorkspacePath(agent.WorkspaceName)
-		if err != nil {
+		state, ok := controlStates[agent.Name]
+		if !ok {
 			allComplete = false
 			continue
 		}
-		signalRoots := bootstrapSignalRoots(workspacePath, spec)
-
-		if req, ok := readGuidanceRequestFileFromRoots(signalRoots); ok {
-			if strings.TrimSpace(req.RunID) == "" || req.RunID == runID {
-				if strings.TrimSpace(req.Agent) == "" {
-					req.Agent = agent.Name
-				}
-				key := guidanceKey(agent.WorkspaceName, req.Agent, req.Question)
-				if _, exists := pendingByKey[key]; !exists && strings.TrimSpace(req.Question) != "" {
-					id, err := s.store.AddGuidanceRequest(model.GuidanceRequest{
-						RunID:         runID,
-						WorkspaceName: agent.WorkspaceName,
-						AgentName:     req.Agent,
-						Question:      strings.TrimSpace(req.Question),
-						Context:       strings.TrimSpace(req.Context),
-						Status:        model.GuidanceStatusPending,
-					})
-					if err != nil {
-						return err
-					}
-					_ = s.store.AddEvent(runID, "guidance", fmt.Sprintf("%d", id), "requested", "", string(model.GuidanceStatusPending), fmt.Sprintf("%s@%s", req.Agent, agent.WorkspaceName))
-					pendingByKey[key] = struct{}{}
-				}
-			}
+		if state.PendingGuidance {
+			pendingGuidanceCount++
 		}
-
-		if !hasCompletionSignalFromRoots(signalRoots, runID, agent.Name) {
+		if !state.CompletionSignaled || state.ValidationStatus != "passed" {
 			allComplete = false
 		}
 	}
 
-	pendingAfter, err := s.store.ListGuidanceRequests(runID, model.GuidanceStatusPending)
-	if err != nil {
-		return err
-	}
-	if currentStatus == model.RunStatusRunning && len(pendingAfter) > 0 {
+	if currentStatus == model.RunStatusRunning && pendingGuidanceCount > 0 {
 		return s.transitionRun(runID, model.RunStatusRunning, model.RunStatusAwaitingGuidance, "awaiting operator guidance")
 	}
-	if currentStatus == model.RunStatusRunning && len(pendingAfter) == 0 && allComplete {
-		return s.transitionRun(runID, model.RunStatusRunning, model.RunStatusComplete, "completion signal detected")
+	if currentStatus == model.RunStatusAwaitingGuidance && pendingGuidanceCount == 0 && !allComplete {
+		return s.transitionRun(runID, model.RunStatusAwaitingGuidance, model.RunStatusRunning, "guidance resolved")
+	}
+	if pendingGuidanceCount == 0 && allComplete {
+		switch currentStatus {
+		case model.RunStatusRunning:
+			return s.transitionRun(runID, model.RunStatusRunning, model.RunStatusComplete, "forum completion and validation detected")
+		case model.RunStatusAwaitingGuidance:
+			if err := s.transitionRun(runID, model.RunStatusAwaitingGuidance, model.RunStatusRunning, "guidance resolved"); err != nil {
+				return err
+			}
+			return s.transitionRun(runID, model.RunStatusRunning, model.RunStatusComplete, "forum completion and validation detected")
+		}
 	}
 	return nil
 }
 
 func (s *Service) ensureBootstrapCloseChecks(runID string, workspaceNames []string) error {
-	_, specJSON, _, err := s.store.GetRun(runID)
+	_, _, _, err := s.store.GetRun(runID)
 	if err != nil {
 		return err
 	}
-	var spec model.RunSpec
-	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
-		return fmt.Errorf("unmarshal run spec: %w", err)
-	}
+	_ = workspaceNames
 
 	brief, err := s.store.GetRunBrief(runID)
 	if err != nil {
@@ -2352,31 +2342,37 @@ func (s *Service) ensureBootstrapCloseChecks(runID string, workspaceNames []stri
 		return fmt.Errorf("bootstrap run %s has empty done criteria; close blocked", runID)
 	}
 
-	pending, err := s.store.ListGuidanceRequests(runID, model.GuidanceStatusPending)
+	agents, err := s.store.GetAgents(runID)
 	if err != nil {
 		return err
 	}
-	if len(pending) > 0 {
-		return fmt.Errorf("bootstrap run %s has %d pending guidance request(s); close blocked", runID, len(pending))
+	controlStates, err := s.forumControlStatesForRun(runID, agents)
+	if err != nil {
+		return err
 	}
-
-	for _, workspaceName := range workspaceNames {
-		workspacePath, err := resolveWorkspacePath(workspaceName)
-		if err != nil {
-			return err
+	pendingCount := 0
+	for _, agent := range agents {
+		state := controlStates[agent.Name]
+		if state.PendingGuidance {
+			pendingCount++
 		}
-		result, ok := readValidationResultFromRoots(bootstrapSignalRoots(workspacePath, spec))
+	}
+	if pendingCount > 0 {
+		return fmt.Errorf("bootstrap run %s has %d pending forum guidance request(s); close blocked", runID, pendingCount)
+	}
+	for _, agent := range agents {
+		state, ok := controlStates[agent.Name]
 		if !ok {
-			return fmt.Errorf("workspace %s is missing .metawsm/validation-result.json; close blocked", workspaceName)
+			return fmt.Errorf("agent %s@%s missing forum control state; close blocked", agent.Name, agent.WorkspaceName)
 		}
-		if strings.TrimSpace(result.RunID) != "" && result.RunID != runID {
-			return fmt.Errorf("workspace %s validation result run_id mismatch (%s)", workspaceName, result.RunID)
+		if !state.CompletionSignaled {
+			return fmt.Errorf("agent %s@%s missing forum completion signal; close blocked", agent.Name, agent.WorkspaceName)
 		}
-		if !strings.EqualFold(strings.TrimSpace(result.Status), "passed") {
-			return fmt.Errorf("workspace %s validation status=%q; close blocked", workspaceName, result.Status)
+		if state.ValidationStatus != "passed" {
+			return fmt.Errorf("agent %s@%s forum validation status=%q; close blocked", agent.Name, agent.WorkspaceName, state.ValidationStatus)
 		}
-		if strings.TrimSpace(result.DoneCriteria) != strings.TrimSpace(brief.DoneCriteria) {
-			return fmt.Errorf("workspace %s validation done_criteria mismatch; close blocked", workspaceName)
+		if strings.TrimSpace(state.ValidationDoneCriteria) != strings.TrimSpace(brief.DoneCriteria) {
+			return fmt.Errorf("agent %s@%s forum validation done_criteria mismatch; close blocked", agent.Name, agent.WorkspaceName)
 		}
 	}
 	return nil
@@ -4017,21 +4013,6 @@ func workspaceNamesFromAgents(agents []model.AgentRecord) []string {
 
 func recordIterationFeedback(workspacePath string, docRepo string, repos []string, tickets []string, feedback string, at time.Time, dryRun bool) ([]string, error) {
 	actions := []string{}
-	signalFiles := []string{
-		filepath.Join(workspacePath, ".metawsm", "implementation-complete.json"),
-		filepath.Join(workspacePath, ".metawsm", "validation-result.json"),
-		filepath.Join(workspacePath, ".metawsm", "guidance-request.json"),
-		filepath.Join(workspacePath, ".metawsm", "guidance-response.json"),
-	}
-	for _, path := range signalFiles {
-		actions = append(actions, fmt.Sprintf("rm -f %s", shellQuote(path)))
-		if dryRun {
-			continue
-		}
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return nil, err
-		}
-	}
 
 	mainFeedbackPath := filepath.Join(workspacePath, ".metawsm", "operator-feedback.md")
 	actions = append(actions, fmt.Sprintf("append feedback %s", shellQuote(mainFeedbackPath)))
@@ -4340,165 +4321,6 @@ func waitForAgentStartup(ctx context.Context, sessionName string, timeout time.D
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-}
-
-func guidanceKey(workspaceName string, agentName string, question string) string {
-	return workspaceName + "|" + agentName + "|" + strings.TrimSpace(question)
-}
-
-func bootstrapSignalRoots(workspacePath string, spec model.RunSpec) []string {
-	roots := []string{workspacePath}
-	docRoot, err := resolveDocRepoPath(workspacePath, effectiveDocHomeRepo(spec), spec.Repos)
-	if err != nil {
-		return roots
-	}
-	docRoot = filepath.Clean(strings.TrimSpace(docRoot))
-	workspacePath = filepath.Clean(strings.TrimSpace(workspacePath))
-	if docRoot != "" && docRoot != workspacePath {
-		roots = append(roots, docRoot)
-	}
-	return roots
-}
-
-func firstSignalRootWithFile(roots []string, filename string) string {
-	for _, root := range roots {
-		path := filepath.Join(root, ".metawsm", filename)
-		if _, err := os.Stat(path); err == nil {
-			return root
-		}
-	}
-	return ""
-}
-
-func readGuidanceRequestFile(workspacePath string) (model.GuidanceRequestPayload, bool) {
-	path := filepath.Join(workspacePath, ".metawsm", "guidance-request.json")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return model.GuidanceRequestPayload{}, false
-	}
-	var raw struct {
-		RunID    string          `json:"run_id,omitempty"`
-		Agent    string          `json:"agent,omitempty"`
-		Question string          `json:"question"`
-		Context  json.RawMessage `json:"context,omitempty"`
-	}
-	if err := json.Unmarshal(b, &raw); err != nil {
-		return model.GuidanceRequestPayload{}, false
-	}
-	payload := model.GuidanceRequestPayload{
-		RunID:    strings.TrimSpace(raw.RunID),
-		Agent:    strings.TrimSpace(raw.Agent),
-		Question: strings.TrimSpace(raw.Question),
-		Context:  parseGuidanceContext(raw.Context),
-	}
-	if strings.TrimSpace(payload.Question) == "" {
-		return model.GuidanceRequestPayload{}, false
-	}
-	return payload, true
-}
-
-func readGuidanceRequestFileFromRoots(roots []string) (model.GuidanceRequestPayload, bool) {
-	for _, root := range roots {
-		if payload, ok := readGuidanceRequestFile(root); ok {
-			return payload, true
-		}
-	}
-	return model.GuidanceRequestPayload{}, false
-}
-
-func parseGuidanceContext(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" || trimmed == "null" {
-		return ""
-	}
-
-	var asString string
-	if err := json.Unmarshal(raw, &asString); err == nil {
-		return strings.TrimSpace(asString)
-	}
-
-	var generic any
-	if err := json.Unmarshal(raw, &generic); err == nil {
-		encoded, err := json.Marshal(generic)
-		if err == nil {
-			return strings.TrimSpace(string(encoded))
-		}
-	}
-
-	return trimmed
-}
-
-func hasCompletionSignal(workspacePath string, runID string, agentName string) bool {
-	path := filepath.Join(workspacePath, ".metawsm", "implementation-complete.json")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	var payload model.CompletionSignalPayload
-	if err := json.Unmarshal(b, &payload); err != nil {
-		return false
-	}
-	if strings.TrimSpace(payload.RunID) != "" && payload.RunID != runID {
-		return false
-	}
-	if strings.TrimSpace(payload.Agent) != "" && payload.Agent != agentName {
-		return false
-	}
-	return true
-}
-
-func hasCompletionSignalFromRoots(roots []string, runID string, agentName string) bool {
-	for _, root := range roots {
-		if hasCompletionSignal(root, runID, agentName) {
-			return true
-		}
-	}
-	return false
-}
-
-func readValidationResult(workspacePath string) (struct {
-	RunID        string `json:"run_id,omitempty"`
-	Status       string `json:"status"`
-	DoneCriteria string `json:"done_criteria"`
-}, bool) {
-	path := filepath.Join(workspacePath, ".metawsm", "validation-result.json")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return struct {
-			RunID        string `json:"run_id,omitempty"`
-			Status       string `json:"status"`
-			DoneCriteria string `json:"done_criteria"`
-		}{}, false
-	}
-	var payload struct {
-		RunID        string `json:"run_id,omitempty"`
-		Status       string `json:"status"`
-		DoneCriteria string `json:"done_criteria"`
-	}
-	if err := json.Unmarshal(b, &payload); err != nil {
-		return payload, false
-	}
-	return payload, true
-}
-
-func readValidationResultFromRoots(roots []string) (struct {
-	RunID        string `json:"run_id,omitempty"`
-	Status       string `json:"status"`
-	DoneCriteria string `json:"done_criteria"`
-}, bool) {
-	for _, root := range roots {
-		if payload, ok := readValidationResult(root); ok {
-			return payload, true
-		}
-	}
-	return struct {
-		RunID        string `json:"run_id,omitempty"`
-		Status       string `json:"status"`
-		DoneCriteria string `json:"done_criteria"`
-	}{}, false
 }
 
 func shellQuote(value string) string {

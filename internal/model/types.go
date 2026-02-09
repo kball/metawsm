@@ -210,28 +210,6 @@ type GuidanceRequest struct {
 	AnsweredAt    *time.Time     `json:"answered_at,omitempty"`
 }
 
-type GuidanceRequestPayload struct {
-	RunID    string `json:"run_id,omitempty"`
-	Agent    string `json:"agent,omitempty"`
-	Question string `json:"question"`
-	Context  string `json:"context,omitempty"`
-}
-
-type GuidanceResponsePayload struct {
-	GuidanceID int64  `json:"guidance_id"`
-	RunID      string `json:"run_id"`
-	Agent      string `json:"agent,omitempty"`
-	Question   string `json:"question"`
-	Answer     string `json:"answer"`
-	AnsweredAt string `json:"answered_at"`
-}
-
-type CompletionSignalPayload struct {
-	RunID   string `json:"run_id,omitempty"`
-	Agent   string `json:"agent,omitempty"`
-	Summary string `json:"summary,omitempty"`
-}
-
 type OperatorRunState struct {
 	RunID           string     `json:"run_id"`
 	RestartAttempts int        `json:"restart_attempts"`

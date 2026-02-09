@@ -229,51 +229,43 @@ func TestGuideAnswersPendingRequest(t *testing.T) {
 	if err := svc.transitionRun(spec.RunID, model.RunStatusRunning, model.RunStatusAwaitingGuidance, "test awaiting"); err != nil {
 		t.Fatalf("transition to awaiting: %v", err)
 	}
-
-	workspacePath := filepath.Join(t.TempDir(), "workspace")
-	if err := os.MkdirAll(filepath.Join(workspacePath, ".metawsm"), 0o755); err != nil {
-		t.Fatalf("mkdir workspace: %v", err)
+	now := time.Now()
+	if err := svc.store.UpsertAgent(model.AgentRecord{
+		RunID:          spec.RunID,
+		Name:           "agent",
+		WorkspaceName:  "ws-guide",
+		SessionName:    "agent-ws-guide",
+		Status:         model.AgentStatusRunning,
+		HealthState:    model.HealthStateHealthy,
+		LastActivityAt: &now,
+		LastProgressAt: &now,
+	}); err != nil {
+		t.Fatalf("upsert agent: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workspacePath, ".metawsm", "guidance-request.json"), []byte(`{"run_id":"run-guide","agent":"agent","question":"Need API decision?"}`), 0o644); err != nil {
-		t.Fatalf("write guidance request file: %v", err)
-	}
-
-	homeDir := filepath.Join(t.TempDir(), "home")
-	t.Setenv("HOME", homeDir)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, ".config"))
-	workspaceConfigDir := filepath.Join(homeDir, "Library", "Application Support", "workspace-manager", "workspaces")
-	if err := os.MkdirAll(workspaceConfigDir, 0o755); err != nil {
-		t.Fatalf("mkdir workspace config dir: %v", err)
-	}
-	configPayload, err := json.Marshal(map[string]string{"path": workspacePath})
-	if err != nil {
-		t.Fatalf("marshal config payload: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(workspaceConfigDir, "ws-guide.json"), configPayload, 0o644); err != nil {
-		t.Fatalf("write workspace config: %v", err)
-	}
-
-	reqID, err := svc.store.AddGuidanceRequest(model.GuidanceRequest{
-		RunID:         spec.RunID,
-		WorkspaceName: "ws-guide",
-		AgentName:     "agent",
-		Question:      "Need API decision?",
-		Context:       "Pick schema",
-		Status:        model.GuidanceStatusPending,
-	})
-	if err != nil {
-		t.Fatalf("add guidance request: %v", err)
-	}
-	if reqID == 0 {
-		t.Fatalf("expected non-zero guidance id")
+	if _, err := svc.ForumAppendControlSignal(t.Context(), ForumControlSignalOptions{
+		RunID:     spec.RunID,
+		Ticket:    "METAWSM-002",
+		AgentName: "agent",
+		ActorType: model.ForumActorAgent,
+		ActorName: "agent",
+		Payload: model.ForumControlPayloadV1{
+			SchemaVersion: model.ForumControlSchemaVersion1,
+			ControlType:   model.ForumControlTypeGuidanceRequest,
+			RunID:         spec.RunID,
+			AgentName:     "agent",
+			Question:      "Need API decision?",
+			Context:       "Pick schema",
+		},
+	}); err != nil {
+		t.Fatalf("append guidance request control signal: %v", err)
 	}
 
 	result, err := svc.Guide(t.Context(), spec.RunID, "Use JSON payload format")
 	if err != nil {
 		t.Fatalf("guide: %v", err)
 	}
-	if result.GuidanceID != reqID {
-		t.Fatalf("expected guidance id %d, got %d", reqID, result.GuidanceID)
+	if result.GuidanceID != 0 {
+		t.Fatalf("expected guidance id 0 in forum-first mode, got %d", result.GuidanceID)
 	}
 
 	record, _, _, err := svc.store.GetRun(spec.RunID)
@@ -284,64 +276,17 @@ func TestGuideAnswersPendingRequest(t *testing.T) {
 		t.Fatalf("expected run status running after guide, got %s", record.Status)
 	}
 
-	pending, err := svc.store.ListGuidanceRequests(spec.RunID, model.GuidanceStatusPending)
+	states, err := svc.forumControlStatesForRun(spec.RunID, []model.AgentRecord{{
+		RunID:         spec.RunID,
+		Name:          "agent",
+		WorkspaceName: "ws-guide",
+	}})
 	if err != nil {
-		t.Fatalf("list pending guidance: %v", err)
+		t.Fatalf("forum control states: %v", err)
 	}
-	if len(pending) != 0 {
-		t.Fatalf("expected no pending guidance requests, got %d", len(pending))
-	}
-
-	answered, err := svc.store.ListGuidanceRequests(spec.RunID, model.GuidanceStatusAnswered)
-	if err != nil {
-		t.Fatalf("list answered guidance: %v", err)
-	}
-	if len(answered) != 1 {
-		t.Fatalf("expected one answered guidance request, got %d", len(answered))
-	}
-	if answered[0].Answer != "Use JSON payload format" {
-		t.Fatalf("expected stored answer, got %q", answered[0].Answer)
-	}
-
-	if _, err := os.Stat(filepath.Join(workspacePath, ".metawsm", "guidance-response.json")); err != nil {
-		t.Fatalf("expected guidance-response file: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(workspacePath, ".metawsm", "guidance-request.json")); !os.IsNotExist(err) {
-		t.Fatalf("expected guidance-request file to be removed")
-	}
-}
-
-func TestReadGuidanceRequestFileSupportsStructuredContext(t *testing.T) {
-	workspacePath := t.TempDir()
-	requestDir := filepath.Join(workspacePath, ".metawsm")
-	if err := os.MkdirAll(requestDir, 0o755); err != nil {
-		t.Fatalf("mkdir .metawsm: %v", err)
-	}
-
-	content := `{
-  "run_id": "run-structured",
-  "agent": "agent",
-  "question": "Can we defer npm install?",
-  "context": {
-    "blocked_checks": [
-      "npm --prefix ui install"
-    ],
-    "reason": "network unavailable"
-  }
-}`
-	if err := os.WriteFile(filepath.Join(requestDir, "guidance-request.json"), []byte(content), 0o644); err != nil {
-		t.Fatalf("write guidance request file: %v", err)
-	}
-
-	payload, ok := readGuidanceRequestFile(workspacePath)
-	if !ok {
-		t.Fatalf("expected structured guidance request to parse")
-	}
-	if payload.Question != "Can we defer npm install?" {
-		t.Fatalf("unexpected question: %q", payload.Question)
-	}
-	if !strings.Contains(payload.Context, "blocked_checks") {
-		t.Fatalf("expected serialized context payload, got %q", payload.Context)
+	state := states["agent"]
+	if state.PendingGuidance {
+		t.Fatalf("expected pending guidance to be resolved")
 	}
 }
 
@@ -562,33 +507,6 @@ func TestStatusIncludesForumEscalationGuidance(t *testing.T) {
 	}
 }
 
-func TestReadGuidanceRequestFileFromRootsFindsDocHomeRepo(t *testing.T) {
-	workspacePath := t.TempDir()
-	repoPath := filepath.Join(workspacePath, "metawsm")
-	if err := os.MkdirAll(filepath.Join(repoPath, ".metawsm"), 0o755); err != nil {
-		t.Fatalf("mkdir repo .metawsm: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repoPath, ".metawsm", "guidance-request.json"), []byte(`{"question":"Need decision","context":{"reason":"blocked"}}`), 0o644); err != nil {
-		t.Fatalf("write guidance request file: %v", err)
-	}
-
-	spec := model.RunSpec{
-		Repos:       []string{"metawsm"},
-		DocHomeRepo: "metawsm",
-	}
-	roots := bootstrapSignalRoots(workspacePath, spec)
-	payload, ok := readGuidanceRequestFileFromRoots(roots)
-	if !ok {
-		t.Fatalf("expected to find guidance request in doc-home repo")
-	}
-	if payload.Question != "Need decision" {
-		t.Fatalf("unexpected question: %q", payload.Question)
-	}
-	if !strings.Contains(payload.Context, "blocked") {
-		t.Fatalf("expected serialized context in payload, got %q", payload.Context)
-	}
-}
-
 func TestGuideWritesResponseInDocHomeRepoAndRemovesRequest(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")
@@ -626,46 +544,42 @@ func TestGuideWritesResponseInDocHomeRepoAndRemovesRequest(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repoPath, ".metawsm"), 0o755); err != nil {
 		t.Fatalf("mkdir repo workspace: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(repoPath, ".metawsm", "guidance-request.json"), []byte(`{"question":"Need API decision?"}`), 0o644); err != nil {
-		t.Fatalf("write guidance request file: %v", err)
+	now := time.Now()
+	if err := svc.store.UpsertAgent(model.AgentRecord{
+		RunID:          spec.RunID,
+		Name:           "agent",
+		WorkspaceName:  "ws-guide-doc-root",
+		SessionName:    "agent-ws-guide-doc-root",
+		Status:         model.AgentStatusRunning,
+		HealthState:    model.HealthStateHealthy,
+		LastActivityAt: &now,
+		LastProgressAt: &now,
+	}); err != nil {
+		t.Fatalf("upsert agent: %v", err)
 	}
-
-	homeDir := filepath.Join(t.TempDir(), "home")
-	t.Setenv("HOME", homeDir)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, ".config"))
-	workspaceConfigDir := filepath.Join(homeDir, "Library", "Application Support", "workspace-manager", "workspaces")
-	if err := os.MkdirAll(workspaceConfigDir, 0o755); err != nil {
-		t.Fatalf("mkdir workspace config dir: %v", err)
-	}
-	configPayload, err := json.Marshal(map[string]string{"path": workspacePath})
-	if err != nil {
-		t.Fatalf("marshal config payload: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(workspaceConfigDir, "ws-guide-doc-root.json"), configPayload, 0o644); err != nil {
-		t.Fatalf("write workspace config: %v", err)
-	}
-
-	_, err = svc.store.AddGuidanceRequest(model.GuidanceRequest{
-		RunID:         spec.RunID,
-		WorkspaceName: "ws-guide-doc-root",
-		AgentName:     "agent",
-		Question:      "Need API decision?",
-		Context:       "Pick schema",
-		Status:        model.GuidanceStatusPending,
-	})
-	if err != nil {
-		t.Fatalf("add guidance request: %v", err)
+	if _, err := svc.ForumAppendControlSignal(t.Context(), ForumControlSignalOptions{
+		RunID:     spec.RunID,
+		Ticket:    "METAWSM-002",
+		AgentName: "agent",
+		ActorType: model.ForumActorAgent,
+		ActorName: "agent",
+		Payload: model.ForumControlPayloadV1{
+			SchemaVersion: model.ForumControlSchemaVersion1,
+			ControlType:   model.ForumControlTypeGuidanceRequest,
+			RunID:         spec.RunID,
+			AgentName:     "agent",
+			Question:      "Need API decision?",
+		},
+	}); err != nil {
+		t.Fatalf("append guidance request control signal: %v", err)
 	}
 
 	if _, err := svc.Guide(t.Context(), spec.RunID, "Use JSON payload format"); err != nil {
 		t.Fatalf("guide: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(repoPath, ".metawsm", "guidance-response.json")); err != nil {
-		t.Fatalf("expected guidance-response file in doc-home repo: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(repoPath, ".metawsm", "guidance-request.json")); !os.IsNotExist(err) {
-		t.Fatalf("expected guidance-request file to be removed from doc-home repo")
+	if _, err := os.Stat(filepath.Join(repoPath, ".metawsm", "guidance-response.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected no legacy guidance-response file in forum-first mode")
 	}
 }
 
@@ -1185,13 +1099,29 @@ func TestCloseBootstrapRequiresValidationResult(t *testing.T) {
 
 	createBootstrapRunFixture(t, svc, runID, workspaceName)
 	upsertDocSyncStateFixture(t, svc, runID, "METAWSM-002", workspaceName, model.DocSyncStatusSynced, "rev-1")
+	if _, err := svc.ForumAppendControlSignal(t.Context(), ForumControlSignalOptions{
+		RunID:     runID,
+		Ticket:    "METAWSM-002",
+		AgentName: "agent",
+		ActorType: model.ForumActorAgent,
+		ActorName: "agent",
+		Payload: model.ForumControlPayloadV1{
+			SchemaVersion: model.ForumControlSchemaVersion1,
+			ControlType:   model.ForumControlTypeCompletion,
+			RunID:         runID,
+			AgentName:     "agent",
+			Summary:       "implemented",
+		},
+	}); err != nil {
+		t.Fatalf("append completion signal: %v", err)
+	}
 
 	err := svc.Close(t.Context(), CloseOptions{RunID: runID, DryRun: true})
 	if err == nil {
-		t.Fatalf("expected close to fail without validation-result file")
+		t.Fatalf("expected close to fail without forum validation signal")
 	}
-	if !strings.Contains(err.Error(), "validation-result.json") {
-		t.Fatalf("expected validation-result close error, got: %v", err)
+	if !strings.Contains(err.Error(), "forum validation status") {
+		t.Fatalf("expected forum validation close error, got: %v", err)
 	}
 }
 
@@ -1213,12 +1143,44 @@ func TestCloseBootstrapDryRunPassesWithValidationResult(t *testing.T) {
 		t.Fatalf("mkdir workspace: %v", err)
 	}
 	writeTicketDocDirFixture(t, workspacePath, "METAWSM-002")
-	writeValidationResult(t, workspacePath, runID, "tests pass")
 	initGitRepo(t, workspacePath)
 	writeWorkspaceConfig(t, workspaceName, workspacePath)
 
 	createBootstrapRunFixture(t, svc, runID, workspaceName)
 	upsertDocSyncStateFixture(t, svc, runID, "METAWSM-002", workspaceName, model.DocSyncStatusSynced, "rev-2")
+	if _, err := svc.ForumAppendControlSignal(t.Context(), ForumControlSignalOptions{
+		RunID:     runID,
+		Ticket:    "METAWSM-002",
+		AgentName: "agent",
+		ActorType: model.ForumActorAgent,
+		ActorName: "agent",
+		Payload: model.ForumControlPayloadV1{
+			SchemaVersion: model.ForumControlSchemaVersion1,
+			ControlType:   model.ForumControlTypeCompletion,
+			RunID:         runID,
+			AgentName:     "agent",
+			Summary:       "Implemented changes",
+		},
+	}); err != nil {
+		t.Fatalf("append completion signal: %v", err)
+	}
+	if _, err := svc.ForumAppendControlSignal(t.Context(), ForumControlSignalOptions{
+		RunID:     runID,
+		Ticket:    "METAWSM-002",
+		AgentName: "agent",
+		ActorType: model.ForumActorAgent,
+		ActorName: "agent",
+		Payload: model.ForumControlPayloadV1{
+			SchemaVersion: model.ForumControlSchemaVersion1,
+			ControlType:   model.ForumControlTypeValidation,
+			RunID:         runID,
+			AgentName:     "agent",
+			Status:        "passed",
+			DoneCriteria:  "tests pass",
+		},
+	}); err != nil {
+		t.Fatalf("append validation signal: %v", err)
+	}
 
 	if err := svc.Close(t.Context(), CloseOptions{RunID: runID, DryRun: true}); err != nil {
 		t.Fatalf("close dry-run with validation: %v", err)
@@ -3501,21 +3463,10 @@ func TestIterateDryRunIncludesFeedbackAndRestartActions(t *testing.T) {
 	}
 }
 
-func TestRecordIterationFeedbackWritesAndClearsSignals(t *testing.T) {
+func TestRecordIterationFeedbackWritesFeedbackDocs(t *testing.T) {
 	workspacePath := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(workspacePath, ".metawsm"), 0o755); err != nil {
 		t.Fatalf("mkdir .metawsm: %v", err)
-	}
-	signalFiles := []string{
-		filepath.Join(workspacePath, ".metawsm", "implementation-complete.json"),
-		filepath.Join(workspacePath, ".metawsm", "validation-result.json"),
-		filepath.Join(workspacePath, ".metawsm", "guidance-request.json"),
-		filepath.Join(workspacePath, ".metawsm", "guidance-response.json"),
-	}
-	for _, path := range signalFiles {
-		if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
-			t.Fatalf("write signal file %s: %v", path, err)
-		}
 	}
 
 	ticket := "METAWSM-011"
@@ -3527,12 +3478,6 @@ func TestRecordIterationFeedbackWritesAndClearsSignals(t *testing.T) {
 	feedback := "Address the button spacing regression and add a request spec."
 	if _, err := recordIterationFeedback(workspacePath, "metawsm", []string{"metawsm"}, []string{ticket}, feedback, now, false); err != nil {
 		t.Fatalf("record iteration feedback: %v", err)
-	}
-
-	for _, path := range signalFiles {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Fatalf("expected signal file removed %s, stat err=%v", path, err)
-		}
 	}
 
 	mainFeedback := filepath.Join(workspacePath, ".metawsm", "operator-feedback.md")

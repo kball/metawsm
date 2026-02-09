@@ -61,8 +61,6 @@ func main() {
 		err = watchCommand(args)
 	case "operator":
 		err = operatorCommand(args)
-	case "guide":
-		err = guideCommand(args)
 	case "forum":
 		err = forumCommand(args)
 	case "resume":
@@ -281,46 +279,9 @@ func bootstrapCommand(args []string) error {
 	return nil
 }
 
-func guideCommand(args []string) error {
-	fs := flag.NewFlagSet("guide", flag.ContinueOnError)
-	var runID string
-	var ticket string
-	var dbPath string
-	var answer string
-	fs.StringVar(&runID, "run-id", "", "Run identifier")
-	fs.StringVar(&ticket, "ticket", "", "Ticket identifier (guide latest run for this ticket)")
-	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
-	fs.StringVar(&answer, "answer", "", "Guidance answer for the pending question")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if strings.TrimSpace(answer) == "" {
-		return fmt.Errorf("--answer is required")
-	}
-	runID, ticket, err := requireRunSelector(runID, ticket)
-	if err != nil {
-		return err
-	}
-
-	service, err := orchestrator.NewService(dbPath)
-	if err != nil {
-		return err
-	}
-	runID, err = service.ResolveRunID(runID, ticket)
-	if err != nil {
-		return err
-	}
-	result, err := service.Guide(context.Background(), runID, answer)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("Guidance answered for run %s (id=%d %s@%s).\n", result.RunID, result.GuidanceID, result.AgentName, result.WorkspaceName)
-	return nil
-}
-
 func forumCommand(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch> [...]")
+		return fmt.Errorf("usage: metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch|signal> [...]")
 	}
 	subcommand := strings.TrimSpace(strings.ToLower(args[0]))
 	rest := args[1:]
@@ -343,6 +304,8 @@ func forumCommand(args []string) error {
 		return forumThreadCommand(rest)
 	case "watch":
 		return forumWatchCommand(rest)
+	case "signal":
+		return forumSignalCommand(rest)
 	default:
 		return fmt.Errorf("unknown forum subcommand %q", subcommand)
 	}
@@ -673,6 +636,86 @@ func forumWatchCommand(args []string) error {
 			event.Envelope.OccurredAt.Format(time.RFC3339),
 		)
 	}
+	return nil
+}
+
+func forumSignalCommand(args []string) error {
+	fs := flag.NewFlagSet("forum signal", flag.ContinueOnError)
+	var dbPath string
+	var runID string
+	var ticket string
+	var agentName string
+	var signalType string
+	var question string
+	var contextText string
+	var answer string
+	var summary string
+	var status string
+	var doneCriteria string
+	var actorType string
+	var actorName string
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	fs.StringVar(&runID, "run-id", "", "Run identifier")
+	fs.StringVar(&ticket, "ticket", "", "Ticket identifier")
+	fs.StringVar(&agentName, "agent-name", "", "Agent name")
+	fs.StringVar(&signalType, "type", "", "Signal type: guidance_request|guidance_answer|completion|validation")
+	fs.StringVar(&question, "question", "", "Guidance question body")
+	fs.StringVar(&contextText, "context", "", "Optional question context")
+	fs.StringVar(&answer, "answer", "", "Guidance answer body")
+	fs.StringVar(&summary, "summary", "", "Optional completion summary")
+	fs.StringVar(&status, "status", "", "Validation status: passed|failed")
+	fs.StringVar(&doneCriteria, "done-criteria", "", "Validation done criteria")
+	fs.StringVar(&actorType, "actor-type", string(model.ForumActorOperator), "Actor type: agent|operator|human|system")
+	fs.StringVar(&actorName, "actor-name", "operator", "Actor name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	runID = strings.TrimSpace(runID)
+	ticket = strings.TrimSpace(ticket)
+	agentName = strings.TrimSpace(agentName)
+	if runID == "" {
+		return fmt.Errorf("--run-id is required")
+	}
+	if ticket == "" {
+		return fmt.Errorf("--ticket is required")
+	}
+	if agentName == "" {
+		return fmt.Errorf("--agent-name is required")
+	}
+	controlType := model.ForumControlType(strings.TrimSpace(strings.ToLower(signalType)))
+	payload := model.ForumControlPayloadV1{
+		SchemaVersion: model.ForumControlSchemaVersion1,
+		ControlType:   controlType,
+		RunID:         runID,
+		AgentName:     agentName,
+		Question:      strings.TrimSpace(question),
+		Context:       strings.TrimSpace(contextText),
+		Answer:        strings.TrimSpace(answer),
+		Summary:       strings.TrimSpace(summary),
+		Status:        strings.TrimSpace(strings.ToLower(status)),
+		DoneCriteria:  strings.TrimSpace(doneCriteria),
+	}
+	if err := payload.Validate(); err != nil {
+		return err
+	}
+
+	service, err := orchestrator.NewService(dbPath)
+	if err != nil {
+		return err
+	}
+	thread, err := service.ForumAppendControlSignal(context.Background(), orchestrator.ForumControlSignalOptions{
+		RunID:     runID,
+		Ticket:    ticket,
+		AgentName: agentName,
+		ActorType: model.ForumActorType(strings.TrimSpace(strings.ToLower(actorType))),
+		ActorName: strings.TrimSpace(actorName),
+		Payload:   payload,
+	})
+	if err != nil {
+		return err
+	}
+	printForumThreadSummary(thread)
 	return nil
 }
 
@@ -2292,7 +2335,7 @@ func buildWatchDirectionHints(snapshot watchSnapshot, event string) []string {
 			hints = append(hints, fmt.Sprintf("Forum escalation detected. Answer with: metawsm forum answer --thread-id %s --body \"<decision>\"", forumThreadID))
 			hints = append(hints, fmt.Sprintf("Or inspect thread first: metawsm forum thread --thread-id %s", forumThreadID))
 		} else {
-			hints = append(hints, fmt.Sprintf("Answer with: metawsm guide --run-id %s --answer \"<decision>\"", snapshot.RunID))
+			hints = append(hints, fmt.Sprintf("Answer via control signal: metawsm forum signal --run-id %s --ticket <TICKET> --agent-name <AGENT> --type guidance_answer --answer \"<decision>\"", snapshot.RunID))
 		}
 		hints = append(hints, fmt.Sprintf("Or inspect first: metawsm status --run-id %s", snapshot.RunID))
 	case "agent_unhealthy":
@@ -2301,7 +2344,7 @@ func buildWatchDirectionHints(snapshot watchSnapshot, event string) []string {
 			hints = append(hints, fmt.Sprintf("Likely cause: %s (%s)", issue.Reason, issue.Agent))
 		}
 		hints = append(hints, fmt.Sprintf("If you want to re-run the agent: metawsm restart --run-id %s", snapshot.RunID))
-		hints = append(hints, fmt.Sprintf("If this needs operator guidance: metawsm guide --run-id %s --answer \"<direction>\"", snapshot.RunID))
+		hints = append(hints, fmt.Sprintf("If this needs guidance, post a control signal: metawsm forum signal --run-id %s --ticket <TICKET> --agent-name <AGENT> --type guidance_request --question \"<question>\"", snapshot.RunID))
 		hints = append(hints, fmt.Sprintf("Inspect details: metawsm status --run-id %s", snapshot.RunID))
 	case "run_failed":
 		hints = append(hints, fmt.Sprintf("Inspect failure context: metawsm status --run-id %s", snapshot.RunID))
@@ -3232,8 +3275,7 @@ func printUsage() {
 	fmt.Println("  metawsm review sync [--run-id RUN_ID | --ticket T1] [--max-items N] [--dispatch] [--dry-run]")
 	fmt.Println("  metawsm watch [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--notify-cmd \"...\"] [--bell=true]")
 	fmt.Println("  metawsm operator [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--llm-mode off|assist|auto] [--dry-run]")
-	fmt.Println("  metawsm guide [--run-id RUN_ID | --ticket T1] --answer \"...\"")
-	fmt.Println("  metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch> [...]")
+	fmt.Println("  metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch|signal> [...]")
 	fmt.Println("  metawsm resume [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm stop [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm restart [--run-id RUN_ID | --ticket T1] [--dry-run]")
