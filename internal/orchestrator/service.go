@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"metawsm/internal/forumbus"
 	"metawsm/internal/hsm"
 	"metawsm/internal/model"
 	"metawsm/internal/policy"
@@ -23,7 +24,8 @@ import (
 )
 
 type Service struct {
-	store *store.SQLiteStore
+	store    *store.SQLiteStore
+	forumBus *forumbus.Runtime
 }
 
 type RunMutationInProgressError struct {
@@ -49,7 +51,15 @@ func NewService(dbPath string) (*Service, error) {
 	if err := sqliteStore.Init(); err != nil {
 		return nil, err
 	}
-	return &Service{store: sqliteStore}, nil
+	cfg, _, err := policy.Load("")
+	if err != nil {
+		cfg = policy.Default()
+	}
+	busRuntime := forumbus.NewRuntime(sqliteStore, cfg)
+	if err := busRuntime.Start(context.Background()); err != nil {
+		return nil, err
+	}
+	return &Service{store: sqliteStore, forumBus: busRuntime}, nil
 }
 
 type RunOptions struct {

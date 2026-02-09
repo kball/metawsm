@@ -838,6 +838,204 @@ ORDER BY run_id, agent_name;`,
 	return out, nil
 }
 
+func (s *SQLiteStore) EnqueueForumOutbox(message model.ForumOutboxMessage) error {
+	messageID := strings.TrimSpace(message.MessageID)
+	topic := strings.TrimSpace(message.Topic)
+	payload := strings.TrimSpace(message.PayloadJSON)
+	if messageID == "" {
+		return fmt.Errorf("forum outbox message_id is required")
+	}
+	if topic == "" {
+		return fmt.Errorf("forum outbox topic is required")
+	}
+	if payload == "" {
+		return fmt.Errorf("forum outbox payload_json is required")
+	}
+	status := message.Status
+	if strings.TrimSpace(string(status)) == "" {
+		status = model.ForumOutboxStatusPending
+	}
+	now := time.Now().Format(time.RFC3339)
+	sql := fmt.Sprintf(
+		`INSERT OR IGNORE INTO forum_outbox
+  (message_id, topic, message_key, payload_json, status, attempt_count, last_error, created_at, updated_at, sent_at)
+VALUES
+  (%s, %s, %s, %s, %s, %d, %s, %s, %s, '');`,
+		quote(messageID),
+		quote(topic),
+		quote(strings.TrimSpace(message.MessageKey)),
+		quote(payload),
+		quote(string(status)),
+		message.AttemptCount,
+		quote(strings.TrimSpace(message.LastError)),
+		quote(now),
+		quote(now),
+	)
+	return s.execSQL(sql)
+}
+
+func (s *SQLiteStore) ClaimForumOutboxPending(limit int) ([]model.ForumOutboxMessage, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	marker := time.Now().UTC().Format(time.RFC3339Nano)
+	sql := fmt.Sprintf(
+		`BEGIN IMMEDIATE;
+UPDATE forum_outbox
+SET status=%s,
+    attempt_count=attempt_count+1,
+    updated_at=%s
+WHERE id IN (
+  SELECT id
+  FROM forum_outbox
+  WHERE status IN (%s, %s)
+  ORDER BY created_at, id
+  LIMIT %d
+);
+COMMIT;`,
+		quote(string(model.ForumOutboxStatusProcessing)),
+		quote(marker),
+		quote(string(model.ForumOutboxStatusPending)),
+		quote(string(model.ForumOutboxStatusFailed)),
+		limit,
+	)
+	if err := s.execSQL(sql); err != nil {
+		return nil, err
+	}
+	return s.listForumOutboxByStatusAndUpdatedAt(model.ForumOutboxStatusProcessing, marker)
+}
+
+func (s *SQLiteStore) MarkForumOutboxSent(messageID string) error {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return fmt.Errorf("forum outbox message_id is required")
+	}
+	now := time.Now().Format(time.RFC3339)
+	sql := fmt.Sprintf(
+		`UPDATE forum_outbox
+SET status=%s,
+    last_error='',
+    sent_at=%s,
+    updated_at=%s
+WHERE message_id=%s;`,
+		quote(string(model.ForumOutboxStatusSent)),
+		quote(now),
+		quote(now),
+		quote(messageID),
+	)
+	return s.execSQL(sql)
+}
+
+func (s *SQLiteStore) MarkForumOutboxFailed(messageID string, lastError string) error {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return fmt.Errorf("forum outbox message_id is required")
+	}
+	now := time.Now().Format(time.RFC3339)
+	sql := fmt.Sprintf(
+		`UPDATE forum_outbox
+SET status=%s,
+    last_error=%s,
+    updated_at=%s
+WHERE message_id=%s;`,
+		quote(string(model.ForumOutboxStatusFailed)),
+		quote(strings.TrimSpace(lastError)),
+		quote(now),
+		quote(messageID),
+	)
+	return s.execSQL(sql)
+}
+
+func (s *SQLiteStore) ListForumOutboxByStatus(status model.ForumOutboxStatus, limit int) ([]model.ForumOutboxMessage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	sql := fmt.Sprintf(
+		`SELECT id, message_id, topic, message_key, payload_json, status, attempt_count, last_error, created_at, updated_at, sent_at
+FROM forum_outbox
+WHERE status=%s
+ORDER BY id
+LIMIT %d;`,
+		quote(string(status)),
+		limit,
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.ForumOutboxMessage, 0, len(rows))
+	for _, row := range rows {
+		createdAt, err := time.Parse(time.RFC3339, asString(row["created_at"]))
+		if err != nil {
+			return nil, fmt.Errorf("parse forum_outbox created_at: %w", err)
+		}
+		updatedAtParsed, err := time.Parse(time.RFC3339Nano, asString(row["updated_at"]))
+		if err != nil {
+			updatedAtParsed, err = time.Parse(time.RFC3339, asString(row["updated_at"]))
+			if err != nil {
+				return nil, fmt.Errorf("parse forum_outbox updated_at: %w", err)
+			}
+		}
+		out = append(out, model.ForumOutboxMessage{
+			ID:           int64(asInt(row["id"])),
+			MessageID:    asString(row["message_id"]),
+			Topic:        asString(row["topic"]),
+			MessageKey:   asString(row["message_key"]),
+			PayloadJSON:  asString(row["payload_json"]),
+			Status:       model.ForumOutboxStatus(asString(row["status"])),
+			AttemptCount: asInt(row["attempt_count"]),
+			LastError:    asString(row["last_error"]),
+			CreatedAt:    createdAt,
+			UpdatedAt:    updatedAtParsed,
+			SentAt:       parseTimePtr(asString(row["sent_at"])),
+		})
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) listForumOutboxByStatusAndUpdatedAt(status model.ForumOutboxStatus, updatedAt string) ([]model.ForumOutboxMessage, error) {
+	sql := fmt.Sprintf(
+		`SELECT id, message_id, topic, message_key, payload_json, status, attempt_count, last_error, created_at, updated_at, sent_at
+FROM forum_outbox
+WHERE status=%s AND updated_at=%s
+ORDER BY id;`,
+		quote(string(status)),
+		quote(updatedAt),
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.ForumOutboxMessage, 0, len(rows))
+	for _, row := range rows {
+		createdAt, err := time.Parse(time.RFC3339, asString(row["created_at"]))
+		if err != nil {
+			return nil, fmt.Errorf("parse forum_outbox created_at: %w", err)
+		}
+		updatedAtParsed, err := time.Parse(time.RFC3339Nano, asString(row["updated_at"]))
+		if err != nil {
+			updatedAtParsed, err = time.Parse(time.RFC3339, asString(row["updated_at"]))
+			if err != nil {
+				return nil, fmt.Errorf("parse forum_outbox updated_at: %w", err)
+			}
+		}
+		out = append(out, model.ForumOutboxMessage{
+			ID:           int64(asInt(row["id"])),
+			MessageID:    asString(row["message_id"]),
+			Topic:        asString(row["topic"]),
+			MessageKey:   asString(row["message_key"]),
+			PayloadJSON:  asString(row["payload_json"]),
+			Status:       model.ForumOutboxStatus(asString(row["status"])),
+			AttemptCount: asInt(row["attempt_count"]),
+			LastError:    asString(row["last_error"]),
+			CreatedAt:    createdAt,
+			UpdatedAt:    updatedAtParsed,
+			SentAt:       parseTimePtr(asString(row["sent_at"])),
+		})
+	}
+	return out, nil
+}
+
 func parseForumThreadView(row map[string]any) (model.ForumThreadView, error) {
 	openedAt, err := time.Parse(time.RFC3339, asString(row["opened_at"]))
 	if err != nil {

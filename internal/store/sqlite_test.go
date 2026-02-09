@@ -788,3 +788,50 @@ func TestForumControlThreadMappingUpsertAndLookup(t *testing.T) {
 		t.Fatalf("expected updated thread id, got %q", updated.ThreadID)
 	}
 }
+
+func TestForumOutboxLifecycle(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	s := NewSQLiteStore(dbPath)
+	if err := s.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	if err := s.EnqueueForumOutbox(model.ForumOutboxMessage{
+		MessageID:   "msg-1",
+		Topic:       "forum.commands.open_thread",
+		MessageKey:  "thread-1",
+		PayloadJSON: `{"ok":true}`,
+	}); err != nil {
+		t.Fatalf("enqueue outbox: %v", err)
+	}
+
+	claimed, err := s.ClaimForumOutboxPending(10)
+	if err != nil {
+		t.Fatalf("claim outbox: %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("expected one claimed message, got %d", len(claimed))
+	}
+	if claimed[0].Status != model.ForumOutboxStatusProcessing {
+		t.Fatalf("expected processing status, got %s", claimed[0].Status)
+	}
+
+	if err := s.MarkForumOutboxSent("msg-1"); err != nil {
+		t.Fatalf("mark outbox sent: %v", err)
+	}
+
+	sent, err := s.ListForumOutboxByStatus(model.ForumOutboxStatusSent, 10)
+	if err != nil {
+		t.Fatalf("list sent outbox: %v", err)
+	}
+	if len(sent) != 1 {
+		t.Fatalf("expected one sent outbox row, got %d", len(sent))
+	}
+	if sent[0].SentAt == nil {
+		t.Fatalf("expected sent_at to be set")
+	}
+}

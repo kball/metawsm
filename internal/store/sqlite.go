@@ -239,6 +239,21 @@ CREATE TABLE IF NOT EXISTS forum_control_threads (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (run_id, agent_name)
 );
+CREATE TABLE IF NOT EXISTS forum_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id TEXT NOT NULL UNIQUE,
+  topic TEXT NOT NULL,
+  message_key TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  sent_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_forum_outbox_status_created
+  ON forum_outbox (status, created_at, id);
 CREATE TABLE IF NOT EXISTS doc_sync_states (
   run_id TEXT NOT NULL,
   ticket TEXT NOT NULL,

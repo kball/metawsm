@@ -518,6 +518,20 @@ func (s *Service) ForumWatchEvents(ticket string, cursor int64, limit int) ([]mo
 	return s.store.WatchForumEvents(strings.TrimSpace(ticket), cursor, limit)
 }
 
+func (s *Service) ForumBusHealth() error {
+	if s.forumBus == nil {
+		return fmt.Errorf("forum bus runtime not configured")
+	}
+	return s.forumBus.Healthy()
+}
+
+func (s *Service) ProcessForumBusOnce(ctx context.Context, limit int) (int, error) {
+	if s.forumBus == nil {
+		return 0, fmt.Errorf("forum bus runtime not configured")
+	}
+	return s.forumBus.ProcessOnce(ctx, limit)
+}
+
 func (s *Service) ForumAppendControlSignal(ctx context.Context, options ForumControlSignalOptions) (model.ForumThreadView, error) {
 	_ = ctx
 	actorType, err := normalizeForumActorType(options.ActorType)
