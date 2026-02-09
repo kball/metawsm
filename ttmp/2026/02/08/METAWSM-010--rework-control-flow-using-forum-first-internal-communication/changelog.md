@@ -75,3 +75,15 @@ Step 4: Migrated runtime lifecycle to forum-only control signals, removed metaws
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service.go — Guide/syncBootstrapSignals/close checks now forum-first
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_forum_control.go — Introduces control-state derivation from forum control posts
 
+
+## 2026-02-09
+
+Step 5: Added forum.events projection consumers with idempotent forum_projection_events markers and introduced typed RunSnapshot API for watch/operator (commit f589f30d952f32ef3ab4020f66ebf0e3f062b8d0).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main.go — Removes runtime dependence on status-text parsing for watch snapshots
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_forum.go — Publishes command-side events to forum.events topics and registers projection consumers
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_snapshot.go — Adds typed run snapshot API consumed by watch/operator
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_forum.go — Adds projection marker idempotency and thread-view rebuild
+

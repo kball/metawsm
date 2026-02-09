@@ -11,7 +11,9 @@ Intent: long-term
 Owners: []
 RelatedFiles:
     - Path: cmd/metawsm/main.go
-      Note: Removed guide command and added forum signal subcommand
+      Note: |-
+        Removed guide command and added forum signal subcommand
+        watch/operator now consume typed snapshot instead of status parsing
     - Path: internal/forumbus/runtime.go
       Note: Implements forum bus runtime lifecycle
     - Path: internal/forumbus/runtime_test.go
@@ -23,13 +25,19 @@ RelatedFiles:
     - Path: internal/model/types.go
       Note: Removed legacy file-signal payload structs
     - Path: internal/orchestrator/forum_dispatcher.go
-      Note: Adds bus-backed dispatcher abstraction for forum command publishing
+      Note: |-
+        Adds bus-backed dispatcher abstraction for forum command publishing
+        Drains outbox chain to process command + event topics
     - Path: internal/orchestrator/service.go
       Note: Forum-first Guide/syncBootstrapSignals/close-check migration
     - Path: internal/orchestrator/service_forum.go
-      Note: Adds control signal append flow and one-thread-per-run-agent control thread enforcement
+      Note: |-
+        Adds control signal append flow and one-thread-per-run-agent control thread enforcement
+        Publishes forum events and registers projection consumers
     - Path: internal/orchestrator/service_forum_control.go
       Note: Derives per-agent forum control lifecycle state
+    - Path: internal/orchestrator/service_snapshot.go
+      Note: Typed run snapshot API for watch/operator
     - Path: internal/orchestrator/service_test.go
       Note: |-
         Adds service-level test for control thread reuse
@@ -37,15 +45,20 @@ RelatedFiles:
     - Path: internal/store/sqlite.go
       Note: Adds forum_control_threads mapping table for store-level enforcement
     - Path: internal/store/sqlite_forum.go
-      Note: Implements control thread mapping read/write queries
+      Note: |-
+        Implements control thread mapping read/write queries
+        Projection idempotency and refresh via forum_projection_events
     - Path: internal/store/sqlite_test.go
-      Note: Adds store-level mapping tests
+      Note: |-
+        Adds store-level mapping tests
+        Validates projection idempotency markers
 ExternalSources: []
 Summary: ""
-LastUpdated: 2026-02-09T06:47:15-08:00
+LastUpdated: 2026-02-09T06:58:55-08:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 
 
@@ -368,3 +381,86 @@ This step also removed remaining runtime file-signal readers/writers and related
 ### Technical details
 - Task status updates:
   - `METAWSM-010` `T8`, `T9`, `T10`, `T12`, `T13` checked complete.
+
+## Step 5: Add forum event projection consumers and typed watch/operator snapshots
+
+I implemented the remaining control-flow plumbing so forum command handling now emits `forum.events.*` messages and applies projection updates through dedicated consumers. The projection application is now explicitly idempotent via `forum_projection_events`, which gives a durable replay guard independent of command dedupe.
+
+In the same slice, I added a typed run snapshot API and moved watch/operator loading off status-text parsing. `watch` and `operator` now read structured snapshot data from the orchestrator service, while `status` stays as human-oriented rendering.
+
+### Prompt Context
+
+**User prompt (verbatim):** "ok yes. follow the task list, implement, keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue completing the remaining task backlog in implementation order with focused commits and updated diary/changelog/task tracking.
+
+**Inferred user intent:** Finish the migration with concrete transport/projection behavior and remove brittle parsing paths from automation loops.
+
+**Commit (code):** f589f30d952f32ef3ab4020f66ebf0e3f062b8d0 — "Add forum event projections and typed run snapshot API"
+
+### What I did
+- Updated forum command bus handlers in `internal/orchestrator/service_forum.go`:
+  - after each command mutation, fetches persisted forum event by event ID
+  - publishes it to mapped `forum.events.*` topics
+  - registers event-topic handlers that apply projections
+- Added event topic mapping helper and event publish helper in service layer.
+- Updated dispatcher in `internal/orchestrator/forum_dispatcher.go`:
+  - drains `ProcessOnce` in a bounded loop so command + event chains process within one dispatch cycle.
+- Added projection APIs in `internal/store/sqlite_forum.go`:
+  - `GetForumEvent`
+  - `ApplyForumEventProjections`
+  - projection idempotency helpers keyed by `(projection_name, event_id)` in `forum_projection_events`
+  - deterministic thread-view rebuild (`refreshForumThreadView`) and stats refresh path
+- Added typed snapshot API in `internal/orchestrator/service_snapshot.go`:
+  - `RunSnapshot` with pending guidance, unhealthy agents, diff flag, PR counts, review feedback counts
+- Migrated watch/operator load path in `cmd/metawsm/main.go`:
+  - `loadWatchSnapshot` now consumes `service.RunSnapshot(...)`
+  - no runtime dependency on parsing `service.Status(...)` text
+- Added/updated tests:
+  - `internal/store/sqlite_test.go`: projection idempotency + projection marker assertions
+  - `internal/orchestrator/service_test.go`: command+event outbox flow assertion and typed snapshot guidance coverage
+- Validation commands:
+  - `go test ./internal/store ./internal/orchestrator ./internal/forumbus -count=1`
+  - `go test ./cmd/metawsm ./internal/orchestrator ./internal/store ./internal/forumbus -count=1`
+  - `go test ./... -count=1`
+
+### Why
+- `T7` required real event-driven projection consumers with idempotent replay protection.
+- `T11` required eliminating status-text parsing from machine decision paths (`watch`/`operator`) in favor of structured service data.
+
+### What worked
+- Command handlers now publish event-topic messages and projection consumers apply successfully.
+- `forum_projection_events` records projection application and blocks duplicate re-apply.
+- Watch/operator behavior still passes existing tests after migration to typed snapshot loading.
+- Full repository tests passed.
+
+### What didn't work
+- `docmgr task list --ticket METAWSM-010` immediately after `task check` still displayed stale checkboxes for `T7`/`T11`; direct `tasks.md` inspection confirmed both were updated to checked state.
+
+### What I learned
+- Rebuilding projection rows from command-side source tables is a practical idempotent strategy that avoids brittle event-payload-specific mutation logic.
+
+### What was tricky to build
+- Preserving synchronous command UX while introducing command->event->projection chains required bounded dispatcher draining to ensure follow-on event work gets processed in the same command call flow.
+
+### What warrants a second pair of eyes
+- `internal/orchestrator/service_forum.go` command handler sequencing and event publish error semantics.
+- `internal/store/sqlite_forum.go` projection marker usage and rebuild SQL (`refreshForumThreadView`).
+- `internal/orchestrator/service_snapshot.go` parity with prior watch/operator signal semantics.
+
+### What should be done in the future
+- Complete `T14` docs refresh and the remaining resilience/e2e coverage (`T15`, `T16`), then perform cutover checklist execution (`T17`).
+
+### Code review instructions
+- Start here:
+  - `internal/orchestrator/service_forum.go`
+  - `internal/store/sqlite_forum.go`
+  - `internal/orchestrator/service_snapshot.go`
+  - `cmd/metawsm/main.go`
+  - `internal/orchestrator/forum_dispatcher.go`
+- Validate with:
+  - `go test ./... -count=1`
+
+### Technical details
+- Task status updates:
+  - `METAWSM-010` `T7`, `T11` checked complete.

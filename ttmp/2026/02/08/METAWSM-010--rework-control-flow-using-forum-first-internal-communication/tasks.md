@@ -8,11 +8,11 @@
 - [x] T4: Add durable outbox table and worker for command/event publish reliability (state+event+outbox atomic write, retry, replay).
 - [x] T5: Refactor forum command entrypoints to dispatcher abstraction and switch to bus-backed command publishing.
 - [x] T6: Implement async Watermill command consumers for open/add-post/assign/state/priority/close command topics.
-- [ ] T7: Implement projection consumers for `forum.events.*` and idempotent projection application via `forum_projection_events`.
+- [x] T7: Implement projection consumers for `forum.events.*` and idempotent projection application via `forum_projection_events`.
 - [x] T8: Refactor `Guide` flow to forum-answer command path only; remove legacy `.metawsm/guidance-response.json` writes.
 - [x] T9: Refactor `syncBootstrapSignals()` to forum-only control-state derivation; remove legacy file-ingestion control path.
 - [x] T10: Refactor `ensureBootstrapCloseChecks()` to forum completion/validation semantics only; remove file-based close gates.
-- [ ] T11: Add typed run snapshot API and migrate `watch`/`operator` off status-text parsing.
+- [x] T11: Add typed run snapshot API and migrate `watch`/`operator` off status-text parsing.
 - [x] T12: Remove `metawsm guide` command from CLI surface and replace with forum command guidance in help/hints.
 - [x] T13: Remove all legacy file-signal readers/writers (`guidance-request/response`, `implementation-complete`, `validation-result`) from runtime code.
 - [ ] T14: Update docs (`README.md`, `docs/system-guide.md`, ticket docs/playbooks) to forum-first-only control flow and commands.
