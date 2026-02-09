@@ -72,3 +72,30 @@ Step 2: Integrated forum escalation cues into status/watch/operator loops and ad
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_forum.go — Emits forum.integration.docs_sync.requested events based on policy override
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_forum.go — Supports appending integration events to forum event stream
 
+
+## 2026-02-09
+
+Added a detailed Redis/Watermill implementation and forum-first migration plan, including phased rollout modes, rollback strategy, and validation criteria.
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-008--build-metawsm-managed-q-a-forum-for-agent-operator-human-collaboration/design-doc/02-plan-implement-redis-watermill-forum-control-flow-and-migration.md — Captures the transport/runtime implementation and cutover plan
+
+
+## 2026-02-09
+
+Updated the Redis/Watermill migration plan to a full-cutover strategy (no compat bridge), with direct-to-forum_first mode progression.
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-008--build-metawsm-managed-q-a-forum-for-agent-operator-human-collaboration/design-doc/02-plan-implement-redis-watermill-forum-control-flow-and-migration.md — Removed dual-write/compat bridge approach and defined full cutover
+
+
+## 2026-02-09
+
+Resolved open migration decisions: exactly one control thread per run+agent, remove metawsm guide, no soak/canary period, and no kill-switch/back-compat path.
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/08/METAWSM-008--build-metawsm-managed-q-a-forum-for-agent-operator-human-collaboration/design-doc/02-plan-implement-redis-watermill-forum-control-flow-and-migration.md — Open questions converted to binding decisions and rollout changed to single full cutover
+
