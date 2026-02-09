@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"metawsm/internal/model"
-	"metawsm/internal/orchestrator"
+	"metawsm/internal/serviceapi"
 )
 
 type Options struct {
@@ -25,7 +25,7 @@ type Options struct {
 
 type Runtime struct {
 	opts      Options
-	service   *orchestrator.Service
+	service   serviceapi.Core
 	worker    *ForumWorker
 	startedAt time.Time
 	server    *http.Server
@@ -47,7 +47,7 @@ type HealthBusStatus struct {
 
 func NewRuntime(options Options) (*Runtime, error) {
 	options = normalizeOptions(options)
-	service, err := orchestrator.NewService(options.DBPath)
+	service, err := serviceapi.NewLocalCore(options.DBPath)
 	if err != nil {
 		return nil, err
 	}

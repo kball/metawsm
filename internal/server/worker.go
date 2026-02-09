@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"metawsm/internal/model"
-	"metawsm/internal/orchestrator"
+	"metawsm/internal/serviceapi"
 )
 
 type ForumWorkerSnapshot struct {
@@ -28,7 +28,7 @@ type ForumWorkerSnapshot struct {
 }
 
 type ForumWorker struct {
-	service     *orchestrator.Service
+	service     serviceapi.Core
 	interval    time.Duration
 	batchSize   int
 	logInterval time.Duration
@@ -41,7 +41,7 @@ type ForumWorker struct {
 	snapshot ForumWorkerSnapshot
 }
 
-func NewForumWorker(service *orchestrator.Service, interval time.Duration, batchSize int, logInterval time.Duration, logger *log.Logger) *ForumWorker {
+func NewForumWorker(service serviceapi.Core, interval time.Duration, batchSize int, logInterval time.Duration, logger *log.Logger) *ForumWorker {
 	if interval <= 0 {
 		interval = 500 * time.Millisecond
 	}

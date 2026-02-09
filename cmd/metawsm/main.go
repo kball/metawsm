@@ -24,6 +24,7 @@ import (
 	"metawsm/internal/orchestrator"
 	"metawsm/internal/policy"
 	"metawsm/internal/server"
+	"metawsm/internal/serviceapi"
 )
 
 type multiValueFlag []string
@@ -314,6 +315,10 @@ func forumCommand(args []string) error {
 	}
 }
 
+func newForumCore(dbPath string) (serviceapi.Core, error) {
+	return serviceapi.NewLocalCore(dbPath)
+}
+
 func forumAskCommand(args []string) error {
 	fs := flag.NewFlagSet("forum ask", flag.ContinueOnError)
 	var dbPath string
@@ -337,11 +342,12 @@ func forumAskCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	service, err := orchestrator.NewService(dbPath)
+	core, err := newForumCore(dbPath)
 	if err != nil {
 		return err
 	}
-	thread, err := service.ForumOpenThread(context.Background(), orchestrator.ForumOpenThreadOptions{
+	defer core.Shutdown()
+	thread, err := core.ForumOpenThread(context.Background(), serviceapi.ForumOpenThreadOptions{
 		Ticket:    strings.TrimSpace(ticket),
 		RunID:     strings.TrimSpace(runID),
 		AgentName: strings.TrimSpace(agentName),
@@ -373,11 +379,12 @@ func forumAnswerCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	service, err := orchestrator.NewService(dbPath)
+	core, err := newForumCore(dbPath)
 	if err != nil {
 		return err
 	}
-	thread, err := service.ForumAnswerThread(context.Background(), orchestrator.ForumAddPostOptions{
+	defer core.Shutdown()
+	thread, err := core.ForumAnswerThread(context.Background(), serviceapi.ForumAddPostOptions{
 		ThreadID:  strings.TrimSpace(threadID),
 		Body:      strings.TrimSpace(body),
 		ActorType: model.ForumActorType(strings.TrimSpace(actorType)),
@@ -409,11 +416,12 @@ func forumAssignCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	service, err := orchestrator.NewService(dbPath)
+	core, err := newForumCore(dbPath)
 	if err != nil {
 		return err
 	}
-	thread, err := service.ForumAssignThread(context.Background(), orchestrator.ForumAssignThreadOptions{
+	defer core.Shutdown()
+	thread, err := core.ForumAssignThread(context.Background(), serviceapi.ForumAssignThreadOptions{
 		ThreadID:       strings.TrimSpace(threadID),
 		AssigneeType:   model.ForumActorType(strings.TrimSpace(assigneeType)),
 		AssigneeName:   strings.TrimSpace(assigneeName),
@@ -443,11 +451,12 @@ func forumStateCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	service, err := orchestrator.NewService(dbPath)
+	core, err := newForumCore(dbPath)
 	if err != nil {
 		return err
 	}
-	thread, err := service.ForumChangeState(context.Background(), orchestrator.ForumChangeStateOptions{
+	defer core.Shutdown()
+	thread, err := core.ForumChangeState(context.Background(), serviceapi.ForumChangeStateOptions{
 		ThreadID:  strings.TrimSpace(threadID),
 		ToState:   model.ForumThreadState(strings.TrimSpace(state)),
 		ActorType: model.ForumActorType(strings.TrimSpace(actorType)),
@@ -475,11 +484,12 @@ func forumPriorityCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	service, err := orchestrator.NewService(dbPath)
+	core, err := newForumCore(dbPath)
 	if err != nil {
 		return err
 	}
-	thread, err := service.ForumSetPriority(context.Background(), orchestrator.ForumSetPriorityOptions{
+	defer core.Shutdown()
+	thread, err := core.ForumSetPriority(context.Background(), serviceapi.ForumSetPriorityOptions{
 		ThreadID:  strings.TrimSpace(threadID),
 		Priority:  model.ForumPriority(strings.TrimSpace(priority)),
 		ActorType: model.ForumActorType(strings.TrimSpace(actorType)),
@@ -505,11 +515,12 @@ func forumCloseCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	service, err := orchestrator.NewService(dbPath)
+	core, err := newForumCore(dbPath)
 	if err != nil {
 		return err
 	}
-	thread, err := service.ForumCloseThread(context.Background(), orchestrator.ForumChangeStateOptions{
+	defer core.Shutdown()
+	thread, err := core.ForumCloseThread(context.Background(), serviceapi.ForumChangeStateOptions{
 		ThreadID:  strings.TrimSpace(threadID),
 		ActorType: model.ForumActorType(strings.TrimSpace(actorType)),
 		ActorName: strings.TrimSpace(actorName),
@@ -540,11 +551,12 @@ func forumListCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	service, err := orchestrator.NewService(dbPath)
+	core, err := newForumCore(dbPath)
 	if err != nil {
 		return err
 	}
-	threads, err := service.ForumListThreads(model.ForumThreadFilter{
+	defer core.Shutdown()
+	threads, err := core.ForumListThreads(model.ForumThreadFilter{
 		Ticket:   strings.TrimSpace(ticket),
 		RunID:    strings.TrimSpace(runID),
 		State:    model.ForumThreadState(strings.TrimSpace(state)),
@@ -574,11 +586,12 @@ func forumThreadCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	service, err := orchestrator.NewService(dbPath)
+	core, err := newForumCore(dbPath)
 	if err != nil {
 		return err
 	}
-	detail, err := service.ForumGetThread(strings.TrimSpace(threadID))
+	defer core.Shutdown()
+	detail, err := core.ForumGetThread(strings.TrimSpace(threadID))
 	if err != nil {
 		return err
 	}
@@ -614,11 +627,12 @@ func forumWatchCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	service, err := orchestrator.NewService(dbPath)
+	core, err := newForumCore(dbPath)
 	if err != nil {
 		return err
 	}
-	events, err := service.ForumWatchEvents(strings.TrimSpace(ticket), cursor, limit)
+	defer core.Shutdown()
+	events, err := core.ForumWatchEvents(strings.TrimSpace(ticket), cursor, limit)
 	if err != nil {
 		return err
 	}
@@ -703,11 +717,12 @@ func forumSignalCommand(args []string) error {
 		return err
 	}
 
-	service, err := orchestrator.NewService(dbPath)
+	core, err := newForumCore(dbPath)
 	if err != nil {
 		return err
 	}
-	thread, err := service.ForumAppendControlSignal(context.Background(), orchestrator.ForumControlSignalOptions{
+	defer core.Shutdown()
+	thread, err := core.ForumAppendControlSignal(context.Background(), serviceapi.ForumControlSignalOptions{
 		RunID:     runID,
 		Ticket:    ticket,
 		AgentName: agentName,
