@@ -2,6 +2,8 @@ package serviceapi
 
 import (
 	"context"
+	"sort"
+	"strings"
 
 	"metawsm/internal/model"
 	"metawsm/internal/orchestrator"
@@ -24,6 +26,7 @@ type Core interface {
 	ForumOutboxStats() (model.ForumOutboxStats, error)
 
 	RunSnapshot(ctx context.Context, runID string) (RunSnapshot, error)
+	ListRunSnapshots(ctx context.Context, ticket string) ([]RunSnapshot, error)
 
 	ForumOpenThread(ctx context.Context, options ForumOpenThreadOptions) (model.ForumThreadView, error)
 	ForumAddPost(ctx context.Context, options ForumAddPostOptions) (model.ForumThreadView, error)
@@ -75,6 +78,29 @@ func (l *LocalCore) RunSnapshot(ctx context.Context, runID string) (RunSnapshot,
 	return l.service.RunSnapshot(ctx, runID)
 }
 
+func (l *LocalCore) ListRunSnapshots(ctx context.Context, ticket string) ([]RunSnapshot, error) {
+	runs, err := l.service.ListRuns()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RunSnapshot, 0, len(runs))
+	ticket = strings.TrimSpace(ticket)
+	for _, run := range runs {
+		snapshot, err := l.service.RunSnapshot(ctx, strings.TrimSpace(run.RunID))
+		if err != nil {
+			return nil, err
+		}
+		if ticket != "" && !snapshotHasTicket(snapshot, ticket) {
+			continue
+		}
+		out = append(out, snapshot)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.TrimSpace(out[i].RunID) > strings.TrimSpace(out[j].RunID)
+	})
+	return out, nil
+}
+
 func (l *LocalCore) ForumOpenThread(ctx context.Context, options ForumOpenThreadOptions) (model.ForumThreadView, error) {
 	return l.service.ForumOpenThread(ctx, options)
 }
@@ -121,4 +147,14 @@ func (l *LocalCore) ForumListStats(ticket string, runID string) ([]model.ForumTh
 
 func (l *LocalCore) ForumWatchEvents(ticket string, cursor int64, limit int) ([]model.ForumEvent, error) {
 	return l.service.ForumWatchEvents(ticket, cursor, limit)
+}
+
+func snapshotHasTicket(snapshot RunSnapshot, ticket string) bool {
+	ticket = strings.TrimSpace(ticket)
+	for _, candidate := range snapshot.Tickets {
+		if strings.EqualFold(strings.TrimSpace(candidate), ticket) {
+			return true
+		}
+	}
+	return false
 }

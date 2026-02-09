@@ -1623,6 +1623,10 @@ func (s *Service) ResolveRunID(explicitRunID string, ticket string) (string, err
 	return s.resolveRunID(explicitRunID, ticket)
 }
 
+func (s *Service) ListRuns() ([]model.RunRecord, error) {
+	return s.store.ListRuns()
+}
+
 func (s *Service) GetOperatorRunState(runID string) (*model.OperatorRunState, error) {
 	return s.store.GetOperatorRunState(runID)
 }

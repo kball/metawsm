@@ -59,8 +59,7 @@ func NewRuntime(options Options) (*Runtime, error) {
 		startedAt: time.Now().UTC(),
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/health", runtime.handleHealth)
-	mux.HandleFunc("/", runtime.handleNotFound)
+	runtime.registerRoutes(mux)
 	runtime.server = &http.Server{
 		Addr:    options.Addr,
 		Handler: mux,
