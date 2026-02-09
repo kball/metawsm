@@ -262,3 +262,7 @@ Entries include run id, escalation intent, summary/evidence, and requested opera
 go test ./...
 go build ./...
 ```
+
+## Additional Runbook
+
+- Forum runtime/operations runbook: `docs/how-to-run-forum.md`

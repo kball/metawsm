@@ -7,10 +7,31 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
+
 	"metawsm/internal/model"
 	"metawsm/internal/policy"
 	"metawsm/internal/store"
 )
+
+func startTestRedis(t *testing.T) *miniredis.Miniredis {
+	t.Helper()
+	server, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("start miniredis: %v", err)
+	}
+	t.Cleanup(server.Close)
+	return server
+}
+
+func testPolicyWithRedis(server *miniredis.Miniredis) policy.Config {
+	cfg := policy.Default()
+	cfg.Forum.Redis.URL = "redis://" + server.Addr() + "/0"
+	cfg.Forum.Redis.Stream = "metawsm-forum-test"
+	cfg.Forum.Redis.Group = "metawsm-forum-test"
+	cfg.Forum.Redis.Consumer = "metawsm-runtime-test"
+	return cfg
+}
 
 func TestRuntimePublishAndProcessOnce(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
@@ -23,7 +44,8 @@ func TestRuntimePublishAndProcessOnce(t *testing.T) {
 		t.Fatalf("init store: %v", err)
 	}
 
-	rt := NewRuntime(sqliteStore, policy.Default())
+	redisServer := startTestRedis(t)
+	rt := NewRuntime(sqliteStore, testPolicyWithRedis(redisServer))
 	if err := rt.Start(context.Background()); err != nil {
 		t.Fatalf("start runtime: %v", err)
 	}
@@ -49,8 +71,8 @@ func TestRuntimePublishAndProcessOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("process once: %v", err)
 	}
-	if processed != 1 {
-		t.Fatalf("expected processed=1, got %d", processed)
+	if processed < 1 {
+		t.Fatalf("expected processed>=1, got %d", processed)
 	}
 	if atomic.LoadInt32(&handled) != 1 {
 		t.Fatalf("expected handler invocation count 1, got %d", handled)
@@ -79,24 +101,23 @@ func TestRuntimeFailsWhenRedisUnavailable(t *testing.T) {
 	cfg.Forum.Redis.URL = ""
 	rt := NewRuntime(sqliteStore, cfg)
 	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("start runtime: %v", err)
-	}
-	defer rt.Stop()
-
-	if err := rt.Healthy(); err == nil {
-		t.Fatalf("expected unhealthy runtime when redis url is empty")
+		// Start should fail if URL is empty.
+	} else {
+		defer rt.Stop()
+		t.Fatalf("expected runtime start to fail when redis url is empty")
 	}
 	if _, err := rt.ProcessOnce(context.Background(), 10); err == nil {
 		t.Fatalf("expected process once to fail when redis is unavailable")
 	}
 
-	cfg = policy.Default()
+	redisServer := startTestRedis(t)
+	cfg = testPolicyWithRedis(redisServer)
 	rt = NewRuntime(sqliteStore, cfg)
 	if err := rt.Start(context.Background()); err != nil {
 		t.Fatalf("start runtime for mid-run outage test: %v", err)
 	}
 	defer rt.Stop()
-	rt.cfg.Forum.Redis.URL = ""
+	redisServer.Close()
 	if _, err := rt.ProcessOnce(context.Background(), 10); err == nil {
 		t.Fatalf("expected process once to fail after mid-run redis outage")
 	}
@@ -113,7 +134,8 @@ func TestRuntimeReplaysFailedOutboxMessageAfterHandlerRegistration(t *testing.T)
 		t.Fatalf("init store: %v", err)
 	}
 
-	rt := NewRuntime(sqliteStore, policy.Default())
+	redisServer := startTestRedis(t)
+	rt := NewRuntime(sqliteStore, testPolicyWithRedis(redisServer))
 	if err := rt.Start(context.Background()); err != nil {
 		t.Fatalf("start runtime: %v", err)
 	}

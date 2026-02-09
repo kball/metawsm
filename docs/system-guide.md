@@ -159,4 +159,5 @@ Contract:
 ## Notes
 
 - `README.md` is the primary quick-start command reference.
+- Forum runtime runbook: `docs/how-to-run-forum.md`.
 - Ticket history, design docs, and playbooks live under `ttmp/` and are managed with `docmgr`.
