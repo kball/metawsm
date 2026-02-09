@@ -100,3 +100,8 @@ Step 6: Updated README/system-guide to forum-first signaling, added outage/repla
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/orchestrator/service_test.go — Forum-only lifecycle e2e test
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/store/sqlite_test.go — Projection replay catch-up test
 
+
+## 2026-02-09
+
+All METAWSM-010 migration tasks completed; forum-first control flow fully cut over.
+
