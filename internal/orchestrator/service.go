@@ -546,7 +546,7 @@ func (s *Service) Restart(ctx context.Context, options RestartOptions) (RestartR
 			return RestartResult{}, err
 		}
 		time.Sleep(200 * time.Millisecond)
-		if !tmuxHasSession(ctx, sessionName) {
+		if tmuxSessionProbe(ctx, sessionName) == tmuxSessionMissing {
 			return RestartResult{}, fmt.Errorf("tmux session %s exited immediately after restart", sessionName)
 		}
 		if err := waitForAgentStartup(ctx, sessionName, 4*time.Second); err != nil {
@@ -2449,7 +2449,7 @@ func (s *Service) executeSingleStep(ctx context.Context, spec model.RunSpec, cfg
 			return err
 		}
 		time.Sleep(200 * time.Millisecond)
-		if !tmuxHasSession(ctx, sessionName) {
+		if tmuxSessionProbe(ctx, sessionName) == tmuxSessionMissing {
 			return fmt.Errorf("tmux session %s exited immediately after start", sessionName)
 		}
 		if err := waitForAgentStartup(ctx, sessionName, 4*time.Second); err != nil {
@@ -4041,9 +4041,20 @@ func locateTicketDocDirsInWorkspace(docRootPath string, ticket string) ([]string
 }
 
 func evaluateHealth(ctx context.Context, cfg policy.Config, agent model.AgentRecord, now time.Time) (model.HealthState, model.AgentStatus, *time.Time, *time.Time) {
-	hasSession := tmuxHasSession(ctx, agent.SessionName)
-	if !hasSession {
+	sessionState := tmuxSessionProbe(ctx, agent.SessionName)
+	if sessionState == tmuxSessionMissing {
 		return model.HealthStateDead, model.AgentStatusDead, agent.LastActivityAt, agent.LastProgressAt
+	}
+	if sessionState == tmuxSessionUnknown {
+		status := agent.Status
+		health := agent.HealthState
+		if status == model.AgentStatusDead || status == model.AgentStatusFailed || status == model.AgentStatusStopped || strings.TrimSpace(string(status)) == "" {
+			status = model.AgentStatusIdle
+		}
+		if health == model.HealthStateDead || strings.TrimSpace(string(health)) == "" {
+			health = model.HealthStateIdle
+		}
+		return health, status, agent.LastActivityAt, agent.LastProgressAt
 	}
 	if exitCode, found := readAgentExitCode(ctx, agent.SessionName); found {
 		if exitCode != 0 {
@@ -4103,11 +4114,69 @@ func fetchSessionActivity(ctx context.Context, sessionName string) int64 {
 	return n
 }
 
-func tmuxHasSession(ctx context.Context, sessionName string) bool {
+type tmuxSessionState int
+
+const (
+	tmuxSessionUnknown tmuxSessionState = iota
+	tmuxSessionPresent
+	tmuxSessionMissing
+)
+
+func tmuxSessionProbe(ctx context.Context, sessionName string) tmuxSessionState {
 	cmd := exec.CommandContext(ctx, "zsh", "-lc", fmt.Sprintf("tmux has-session -t %s", shellQuote(sessionName)))
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
-	return cmd.Run() == nil
+	if err := cmd.Run(); err == nil {
+		return tmuxSessionPresent
+	}
+	if isTmuxSessionMissingMessage(stderr.String()) {
+		return tmuxSessionMissing
+	}
+	if listState, ok := tmuxSessionProbeViaList(ctx, sessionName); ok {
+		return listState
+	}
+	return tmuxSessionUnknown
+}
+
+func tmuxSessionProbeViaList(ctx context.Context, sessionName string) (tmuxSessionState, bool) {
+	cmd := exec.CommandContext(ctx, "zsh", "-lc", "tmux ls -F '#S'")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		if isTmuxSessionMissingMessage(stderr.String()) {
+			return tmuxSessionMissing, true
+		}
+		return tmuxSessionUnknown, false
+	}
+	target := strings.TrimSpace(sessionName)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) == target {
+			return tmuxSessionPresent, true
+		}
+	}
+	return tmuxSessionMissing, true
+}
+
+func isTmuxSessionMissingMessage(stderr string) bool {
+	message := strings.ToLower(strings.TrimSpace(stderr))
+	if strings.Contains(message, "can't find session") {
+		return true
+	}
+	if strings.Contains(message, "no server running") {
+		return true
+	}
+	if strings.Contains(message, "no such file or directory") {
+		return true
+	}
+	if strings.Contains(message, "no sessions") {
+		return true
+	}
+	return false
+}
+
+func tmuxHasSession(ctx context.Context, sessionName string) bool {
+	return tmuxSessionProbe(ctx, sessionName) == tmuxSessionPresent
 }
 
 func tmuxKillSession(ctx context.Context, sessionName string) error {
@@ -4159,7 +4228,7 @@ func parseAgentExitCode(output string) (int, bool) {
 func waitForAgentStartup(ctx context.Context, sessionName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
-		if !tmuxHasSession(ctx, sessionName) {
+		if tmuxSessionProbe(ctx, sessionName) == tmuxSessionMissing {
 			return fmt.Errorf("tmux session %s exited during startup", sessionName)
 		}
 		if exitCode, found := readAgentExitCode(ctx, sessionName); found {

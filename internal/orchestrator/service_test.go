@@ -898,6 +898,27 @@ func TestParseAgentExitCode(t *testing.T) {
 	}
 }
 
+func TestIsTmuxSessionMissingMessage(t *testing.T) {
+	cases := []struct {
+		name     string
+		stderr   string
+		expected bool
+	}{
+		{name: "cannot find session", stderr: "can't find session: abc", expected: true},
+		{name: "no server running", stderr: "no server running on /tmp/tmux-501/default", expected: true},
+		{name: "no such socket file", stderr: "error connecting to /tmp/tmux-501/default (No such file or directory)", expected: true},
+		{name: "permission denied probe", stderr: "error connecting to /private/tmp/tmux-501/default (Operation not permitted)", expected: false},
+		{name: "empty", stderr: "", expected: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTmuxSessionMissingMessage(tc.stderr); got != tc.expected {
+				t.Fatalf("isTmuxSessionMissingMessage(%q)=%v want %v", tc.stderr, got, tc.expected)
+			}
+		})
+	}
+}
+
 func TestNormalizeAgentCommand(t *testing.T) {
 	normalized := normalizeAgentCommand("codex exec --full-auto \"do work\"")
 	if !strings.Contains(normalized, "--skip-git-repo-check") {
