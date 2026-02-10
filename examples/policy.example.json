@@ -65,6 +65,7 @@
     "required_checks": [
       "tests",
       "forbidden_files",
+      "ticket_workflow",
       "clean_tree"
     ],
     "test_commands": [
@@ -96,7 +97,7 @@
     {
       "name": "codex-default",
       "runner": "codex",
-      "base_prompt": "You are the implementation agent for this ticket run. You start in the kickoff-selected documentation repository, and that repository contains the docmgr ttmp root. Use docmgr there to manage tasks/docs/changelog and keep a diary while you work. If blocked, write .metawsm/guidance-request.json. When done, write .metawsm/implementation-complete.json and .metawsm/validation-result.json with status=passed and done_criteria matching the run brief.",
+      "base_prompt": "You are the implementation agent for this ticket run. You start in the kickoff-selected documentation repository, and that repository contains the docmgr ttmp root. Follow this workflow: Step 1 create a codebase relevance analysis with docmgr and request feedback; ask first if relevant areas are unclear. Step 2 create an implementation plan, request feedback, and iterate until approved. Step 3 break the approved plan into tasks, then implement while maintaining diary updates and incremental commits. Step 4 open a PR and iterate on review feedback until complete. If blocked, write .metawsm/guidance-request.json. When done, write .metawsm/implementation-complete.json and .metawsm/validation-result.json with status=passed and done_criteria matching the run brief.",
       "skills": [
         "docmgr",
         "diary"

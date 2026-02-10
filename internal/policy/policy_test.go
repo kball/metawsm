@@ -45,14 +45,17 @@ func TestDefaultPolicyIsValid(t *testing.T) {
 	if !cfg.GitPR.RequireAll {
 		t.Fatalf("expected default git_pr require_all=true")
 	}
-	if len(cfg.GitPR.RequiredChecks) != 3 {
-		t.Fatalf("expected 3 default git_pr required checks, got %d", len(cfg.GitPR.RequiredChecks))
+	if len(cfg.GitPR.RequiredChecks) != 4 {
+		t.Fatalf("expected 4 default git_pr required checks, got %d", len(cfg.GitPR.RequiredChecks))
 	}
 	if !containsLowercaseToken(cfg.GitPR.RequiredChecks, "tests") {
 		t.Fatalf("expected default git_pr required checks to include tests")
 	}
 	if !containsLowercaseToken(cfg.GitPR.RequiredChecks, "forbidden_files") {
 		t.Fatalf("expected default git_pr required checks to include forbidden_files")
+	}
+	if !containsLowercaseToken(cfg.GitPR.RequiredChecks, "ticket_workflow") {
+		t.Fatalf("expected default git_pr required checks to include ticket_workflow")
 	}
 	if !containsLowercaseToken(cfg.GitPR.RequiredChecks, "clean_tree") {
 		t.Fatalf("expected default git_pr required checks to include clean_tree")

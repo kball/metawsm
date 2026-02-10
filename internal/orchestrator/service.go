@@ -854,6 +854,10 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 		if err != nil {
 			return CommitResult{}, err
 		}
+		docRootPath := ""
+		if resolvedDocRootPath, err := resolveDocRepoPath(workspacePath, effectiveDocHomeRepo(spec), spec.Repos); err == nil {
+			docRootPath = resolvedDocRootPath
+		}
 		targets, err := resolveWorkspaceCommitRepoTargets(workspacePath, repos)
 		if err != nil {
 			return CommitResult{}, err
@@ -887,6 +891,7 @@ func (s *Service) Commit(ctx context.Context, options CommitOptions) (CommitResu
 				WorkspaceName: workspaceName,
 				Repo:          target.Repo,
 				RepoPath:      target.RepoPath,
+				DocRootPath:   docRootPath,
 				BaseBranch:    baseBranch,
 			})
 			if err != nil {
@@ -1074,6 +1079,10 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 		if err != nil {
 			return PullRequestResult{}, err
 		}
+		docRootPath := ""
+		if resolvedDocRootPath, err := resolveDocRepoPath(workspacePath, effectiveDocHomeRepo(spec), spec.Repos); err == nil {
+			docRootPath = resolvedDocRootPath
+		}
 		targets, err := resolveWorkspaceCommitRepoTargets(workspacePath, []string{repo})
 		if err != nil {
 			return PullRequestResult{}, err
@@ -1157,6 +1166,7 @@ func (s *Service) OpenPullRequests(ctx context.Context, options PullRequestOptio
 			WorkspaceName: workspaceName,
 			Repo:          repo,
 			RepoPath:      repoPath,
+			DocRootPath:   docRootPath,
 			BaseBranch:    baseBranch,
 			HeadBranch:    headBranch,
 		})
