@@ -26,3 +26,15 @@ Step 1: Added server-side forum event broker with ticket/run filtered fanout and
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/server/forum_event_broker_test.go — Unit tests validating broker matching and delivery behavior
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Diary entry for step 1 implementation and validation
 
+
+## 2026-02-10
+
+Step 2: Reworked forum websocket stream to catch-up plus live broker fanout, sourced from Redis-consumed forum events (commit 05d88afe3febf2fe85a3bdbfb775ca38ae891f8f).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/forumbus/runtime.go — Observer support emits consumed topic messages for event pump source
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/server/runtime.go — Runtime lifecycle now starts and stops live event pump
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/server/websocket.go — Primary stream behavior change from timer polling to event-driven push
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Diary entry for step 2 details and verification
+

@@ -3,7 +3,7 @@
 ## TODO
 
 - [x] Add server-side forum event broker for websocket fanout (ticket-filtered subscriptions)
-- [ ] Rework `/api/v1/forum/stream` to use catch-up + live event push instead of timer polling loop
+- [x] Rework `/api/v1/forum/stream` to use catch-up + live event push instead of timer polling loop
 - [ ] Update websocket tests in `internal/server/api_test.go` for event/heartbeat behavior
 - [ ] Update UI websocket handler to ignore heartbeat frames and debounce refresh on event frames
 - [ ] Reduce automatic debug panel refresh frequency (no refresh per websocket frame)
