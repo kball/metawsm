@@ -26,11 +26,13 @@ type Options struct {
 }
 
 type Runtime struct {
-	opts      Options
-	service   serviceapi.Core
-	worker    *ForumWorker
-	startedAt time.Time
-	server    *http.Server
+	opts          Options
+	service       serviceapi.Core
+	worker        *ForumWorker
+	startedAt     time.Time
+	server        *http.Server
+	eventBroker   *ForumEventBroker
+	stopEventPump func()
 }
 
 type HealthResponse struct {
@@ -55,10 +57,11 @@ func NewRuntime(options Options) (*Runtime, error) {
 	}
 	logger := log.New(os.Stdout, "", 0)
 	runtime := &Runtime{
-		opts:      options,
-		service:   service,
-		worker:    NewForumWorker(service, options.WorkerInterval, options.WorkerBatchSize, options.WorkerLogPeriod, logger),
-		startedAt: time.Now().UTC(),
+		opts:        options,
+		service:     service,
+		worker:      NewForumWorker(service, options.WorkerInterval, options.WorkerBatchSize, options.WorkerLogPeriod, logger),
+		startedAt:   time.Now().UTC(),
+		eventBroker: NewForumEventBroker(128),
 	}
 	mux := http.NewServeMux()
 	runtime.registerRoutes(mux)
@@ -86,6 +89,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
 	r.worker.Start(workerCtx)
+	r.startEventPump()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -101,6 +105,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		if err != nil {
 			workerCancel()
 			_ = r.worker.Wait(2 * time.Second)
+			r.stopForumEventPump()
 			r.service.Shutdown()
 			return err
 		}
@@ -111,11 +116,13 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if err := r.server.Shutdown(shutdownCtx); err != nil {
 		workerCancel()
 		_ = r.worker.Wait(2 * time.Second)
+		r.stopForumEventPump()
 		r.service.Shutdown()
 		return err
 	}
 	workerCancel()
 	_ = r.worker.Wait(2 * time.Second)
+	r.stopForumEventPump()
 	r.service.Shutdown()
 	return nil
 }
@@ -140,6 +147,39 @@ func normalizeOptions(options Options) Options {
 		options.ShutdownTimeout = 5 * time.Second
 	}
 	return options
+}
+
+func (r *Runtime) startEventPump() {
+	if r == nil || r.service == nil {
+		return
+	}
+	subscriber, ok := r.service.(serviceapi.LiveForumEventSubscriber)
+	if !ok {
+		return
+	}
+	stop, err := subscriber.SubscribeForumEvents(func(event model.ForumEvent) {
+		if r.eventBroker == nil {
+			return
+		}
+		r.eventBroker.Publish(event)
+	})
+	if err != nil {
+		return
+	}
+	r.stopEventPump = stop
+}
+
+func (r *Runtime) stopForumEventPump() {
+	if r == nil {
+		return
+	}
+	if r.stopEventPump != nil {
+		r.stopEventPump()
+		r.stopEventPump = nil
+	}
+	if r.eventBroker != nil {
+		r.eventBroker.Close()
+	}
 }
 
 func (r *Runtime) handleHealth(w http.ResponseWriter, _ *http.Request) {

@@ -736,6 +736,29 @@ func (s *Service) ForumListStats(ticket string, runID string) ([]model.ForumThre
 	return s.store.ListForumThreadStats(strings.TrimSpace(ticket), strings.TrimSpace(runID))
 }
 
+func (s *Service) SubscribeForumEvents(callback func(model.ForumEvent)) (func(), error) {
+	if callback == nil {
+		return nil, fmt.Errorf("forum event callback is required")
+	}
+	if s.forumBus == nil {
+		return nil, fmt.Errorf("forum bus runtime not configured")
+	}
+	topicPrefix := strings.TrimSpace(s.forumTopics.EventPrefix)
+	if topicPrefix == "" {
+		topicPrefix = strings.TrimSpace(model.DefaultForumTopicRegistry().EventPrefix)
+	}
+	if topicPrefix != "" {
+		topicPrefix += "."
+	}
+	return s.forumBus.RegisterObserver(topicPrefix, func(_ string, message model.ForumOutboxMessage) {
+		var event model.ForumEvent
+		if err := json.Unmarshal([]byte(message.PayloadJSON), &event); err != nil {
+			return
+		}
+		callback(event)
+	})
+}
+
 func (s *Service) ForumWatchEvents(ticket string, cursor int64, limit int) ([]model.ForumEvent, error) {
 	return s.store.WatchForumEvents(strings.TrimSpace(ticket), cursor, limit)
 }

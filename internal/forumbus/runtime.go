@@ -23,6 +23,13 @@ import (
 )
 
 type MessageHandler func(context.Context, model.ForumOutboxMessage) error
+type MessageObserver func(topic string, message model.ForumOutboxMessage)
+
+type runtimeObserver struct {
+	id          int64
+	topicPrefix string
+	observer    MessageObserver
+}
 
 type Runtime struct {
 	store         *store.SQLiteStore
@@ -39,6 +46,8 @@ type Runtime struct {
 	streamName    string
 	groupName     string
 	consumerName  string
+	observers     map[int64]runtimeObserver
+	nextObserver  int64
 }
 
 func NewRuntime(sqliteStore *store.SQLiteStore, cfg policy.Config) *Runtime {
@@ -56,6 +65,7 @@ func NewRuntime(sqliteStore *store.SQLiteStore, cfg policy.Config) *Runtime {
 		streamName:    streamName,
 		groupName:     groupName,
 		consumerName:  consumerName,
+		observers:     make(map[int64]runtimeObserver),
 	}
 }
 
@@ -285,6 +295,27 @@ func (r *Runtime) RegisterHandler(topic string, handler MessageHandler) error {
 	return nil
 }
 
+func (r *Runtime) RegisterObserver(topicPrefix string, observer MessageObserver) (func(), error) {
+	topicPrefix = strings.TrimSpace(topicPrefix)
+	if observer == nil {
+		return nil, fmt.Errorf("forum bus observer is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextObserver++
+	entry := runtimeObserver{
+		id:          r.nextObserver,
+		topicPrefix: topicPrefix,
+		observer:    observer,
+	}
+	r.observers[entry.id] = entry
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		delete(r.observers, entry.id)
+	}, nil
+}
+
 func (r *Runtime) Publish(topic string, messageKey string, payload any) (string, error) {
 	topic = strings.TrimSpace(topic)
 	if topic == "" {
@@ -425,6 +456,7 @@ func (r *Runtime) consumeRedisMessages(ctx context.Context, limit int, handlers 
 					_ = r.store.MarkForumOutboxFailed(forumMsg.MessageID, err.Error())
 					msg.Nack()
 				} else {
+					r.notifyObservers(topic, forumMsg)
 					msg.Ack()
 				}
 				processed++
@@ -446,6 +478,35 @@ func (r *Runtime) consumeRedisMessages(ctx context.Context, limit int, handlers 
 		}
 	}
 	return processed, nil
+}
+
+func (r *Runtime) notifyObservers(topic string, message model.ForumOutboxMessage) {
+	observers := r.matchingObservers(topic)
+	for _, observer := range observers {
+		func(cb MessageObserver) {
+			defer func() {
+				_ = recover()
+			}()
+			cb(topic, message)
+		}(observer)
+	}
+}
+
+func (r *Runtime) matchingObservers(topic string) []MessageObserver {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]MessageObserver, 0, len(r.observers))
+	for _, entry := range r.observers {
+		prefix := strings.TrimSpace(entry.topicPrefix)
+		if prefix != "" && !strings.HasPrefix(topic, prefix) {
+			continue
+		}
+		if entry.observer == nil {
+			continue
+		}
+		out = append(out, entry.observer)
+	}
+	return out
 }
 
 func (r *Runtime) ensureSubscriptions(handlers map[string]MessageHandler) error {

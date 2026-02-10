@@ -4,8 +4,10 @@ import (
 	"context"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 
@@ -235,5 +237,61 @@ func TestRuntimeDebugSnapshotIncludesTopicDetails(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected debug topic to be present in snapshot topics")
+	}
+}
+
+func TestRuntimeObserverReceivesMatchingTopics(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	sqliteStore := store.NewSQLiteStore(dbPath)
+	if err := sqliteStore.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	redisServer := startTestRedis(t)
+	rt := NewRuntime(sqliteStore, testPolicyWithRedis(redisServer))
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.RegisterHandler("forum.events.post.added", func(context.Context, model.ForumOutboxMessage) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("register handler: %v", err)
+	}
+
+	received := make(chan model.ForumOutboxMessage, 1)
+	unsubscribe, err := rt.RegisterObserver("forum.events.", func(topic string, message model.ForumOutboxMessage) {
+		if !strings.HasPrefix(topic, "forum.events.") {
+			return
+		}
+		select {
+		case received <- message:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatalf("register observer: %v", err)
+	}
+	defer unsubscribe()
+
+	if _, err := rt.Publish("forum.events.post.added", "thread-observer-1", map[string]any{"ok": true}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if _, err := rt.ProcessOnce(context.Background(), 10); err != nil {
+		t.Fatalf("process once: %v", err)
+	}
+
+	select {
+	case message := <-received:
+		if message.Topic != "forum.events.post.added" {
+			t.Fatalf("unexpected observed topic %q", message.Topic)
+		}
+	case <-time.After(400 * time.Millisecond):
+		t.Fatalf("timed out waiting for observer notification")
 	}
 }

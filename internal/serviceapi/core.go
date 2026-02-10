@@ -22,6 +22,10 @@ type ForumMarkThreadSeenOptions = orchestrator.ForumMarkThreadSeenOptions
 type ForumThreadDetail = orchestrator.ForumThreadDetail
 type RunSnapshot = orchestrator.RunSnapshot
 
+type LiveForumEventSubscriber interface {
+	SubscribeForumEvents(callback func(model.ForumEvent)) (func(), error)
+}
+
 type Core interface {
 	Shutdown()
 
@@ -171,6 +175,10 @@ func (l *LocalCore) ForumListQueue(options ForumQueueOptions) ([]model.ForumThre
 
 func (l *LocalCore) ForumMarkThreadSeen(ctx context.Context, options ForumMarkThreadSeenOptions) (model.ForumThreadSeen, error) {
 	return l.service.ForumMarkThreadSeen(ctx, options)
+}
+
+func (l *LocalCore) SubscribeForumEvents(callback func(model.ForumEvent)) (func(), error) {
+	return l.service.SubscribeForumEvents(callback)
 }
 
 func snapshotHasTicket(snapshot RunSnapshot, ticket string) bool {

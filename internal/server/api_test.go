@@ -485,9 +485,10 @@ func readWebSocketFrame(reader *bufio.Reader) ([]byte, error) {
 
 func newTestRuntime(core serviceapi.Core) *Runtime {
 	return &Runtime{
-		service:   core,
-		worker:    NewForumWorker(core, time.Second, 10, time.Minute, nil),
-		startedAt: time.Now().UTC(),
+		service:     core,
+		worker:      NewForumWorker(core, time.Second, 10, time.Minute, nil),
+		startedAt:   time.Now().UTC(),
+		eventBroker: NewForumEventBroker(32),
 	}
 }
 
