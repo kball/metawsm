@@ -290,6 +290,14 @@ npm --prefix ui install
 make dev-frontend
 ```
 
+Single-command dev loop (backend + Vite with hot reload):
+
+```bash
+make dev-all
+```
+
+Use the Vite URL (default `http://127.0.0.1:3000`) for UI debugging; `/api` and WebSocket calls are proxied to `metawsm serve`.
+
 One-shot daemon startup with prerequisites (installs UI deps, builds assets, then runs server):
 
 ```bash
