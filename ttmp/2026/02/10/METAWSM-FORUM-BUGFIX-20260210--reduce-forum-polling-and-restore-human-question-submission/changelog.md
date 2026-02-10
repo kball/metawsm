@@ -69,3 +69,13 @@ Step 5: Reduced automatic debug refresh frequency by decoupling debug fetches fr
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Diary entry for task 5 cadence update
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.tsx — Split forum and debug refresh effects to lower diagnostics polling rate
 
+
+## 2026-02-10
+
+Step 6: Added Ask as Human composer UI (title/body/priority + submit gating) in forum detail panel (commit 5bfc0ad96c0d3b805e86101c86a93113e1ef3337).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Diary entry for task 6 UI addition
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.tsx — Introduced human question composer controls and local state
+

@@ -32,12 +32,14 @@ RelatedFiles:
       Note: |-
         Websocket onmessage now ignores heartbeat/no-event frames and debounces refreshes (commit afa77ed1d2bfbb0cc285cf168d62378bf6fe3e52)
         Separated debug refresh cadence from filter-driven data refresh and added 15s interval (commit 1a710380748f52260c553b46b35895ba428a9f85)
+        Added ask-question composer UI controls and submit gating state (commit 5bfc0ad96c0d3b805e86101c86a93113e1ef3337)
 ExternalSources: []
 Summary: Implementation diary for sequential task delivery and validation evidence for METAWSM-FORUM-BUGFIX-20260210.
-LastUpdated: 2026-02-10T13:02:00-08:00
+LastUpdated: 2026-02-10T13:04:00-08:00
 WhatFor: Capture what changed, why, test results, risks, and commit traceability for each completed task.
 WhenToUse: Use to review implementation history, reproduce verification, and continue work task-by-task.
 ---
+
 
 
 
@@ -409,3 +411,66 @@ This keeps diagnostics available while avoiding extra requests during routine se
 - Interval refresh every `15000ms`.
 - Task progress:
 - Marked Task 5 complete via `docmgr task check --ticket METAWSM-FORUM-BUGFIX-20260210 --id 5`.
+
+## Step 6: Add Ask-Question Composer UI
+
+This step introduced a visible "Ask as Human" composer in the forum detail panel. It includes title/body/priority inputs and submit button state controls.
+
+This was intentionally scoped to UI surface and local state only, with network submission wiring deferred to Task 7.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Go through and implement task by task, keeping a diary and commiting as you go"
+
+**Assistant interpretation:** Keep implementing each checklist item as a focused, committed slice.
+
+**Inferred user intent:** Make progress visibly and safely by separating UI and API behavior changes.
+
+**Commit (code):** `5bfc0ad96c0d3b805e86101c86a93113e1ef3337` — "Add Ask as Human composer UI in forum detail panel"
+
+### What I did
+- Updated `ui/src/App.tsx`:
+- Added state for ask form: `questionTitle`, `questionBody`, `questionPriority`, `savingQuestion`.
+- Added `canSubmitQuestion` gating.
+- Added `submitQuestion()` placeholder function.
+- Added "Ask as Human" composer UI block with title/priority/body controls and submit button.
+- Ran:
+- `npm --prefix ui run check`
+
+### Why
+- Task 6 specifically required adding the composer UI for human-originated questions.
+- Splitting UI scaffolding from API integration keeps change review focused.
+
+### What worked
+- New composer renders with expected fields and button state logic.
+- TypeScript check passed.
+
+### What didn't work
+- Submission intentionally not wired yet; function sets a temporary error message.
+
+### What I learned
+- The existing detail panel layout can host both ask and reply composers without structural refactors.
+
+### What was tricky to build
+- Ensuring new form state and button gating are ready for API wiring while keeping this step isolated.
+
+### What warrants a second pair of eyes
+- Placement of the ask composer in detail panel may be revisited for UX flow once end-to-end behavior is wired.
+
+### What should be done in the future
+- Complete Task 7 by wiring `submitQuestion()` to `POST /api/v1/forum/threads` and thread selection updates.
+
+### Code review instructions
+- Review ask composer state and rendering in `ui/src/App.tsx`.
+- Validate with:
+- `npm --prefix ui run check`
+
+### Technical details
+- Composer fields:
+- `title` (required)
+- `priority` (`urgent|high|normal|low`)
+- `body` (required)
+- Submit gating:
+- Requires selected ticket, viewer ID, non-empty title/body, and not currently submitting.
+- Task progress:
+- Marked Task 6 complete via `docmgr task check --ticket METAWSM-FORUM-BUGFIX-20260210 --id 6`.
