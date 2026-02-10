@@ -23,6 +23,9 @@ import (
 	"metawsm/internal/model"
 	"metawsm/internal/orchestrator"
 	"metawsm/internal/policy"
+	"metawsm/internal/web"
+	"metawsm/internal/webapi"
+	"net/http"
 )
 
 type multiValueFlag []string
@@ -89,6 +92,8 @@ func main() {
 		err = tuiCommand(args)
 	case "docs":
 		err = docsCommand(args)
+	case "web":
+		err = webCommand(args)
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -2986,6 +2991,41 @@ func docsCommand(args []string) error {
 	return nil
 }
 
+func webCommand(args []string) error {
+	fs := flag.NewFlagSet("web", flag.ContinueOnError)
+	var addr string
+	var dbPath string
+	fs.StringVar(&addr, "addr", ":3001", "HTTP listen address")
+	fs.StringVar(&dbPath, "db", ".metawsm/metawsm.db", "Path to SQLite DB")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	api, err := webapi.New(dbPath)
+	if err != nil {
+		return err
+	}
+
+	mux := http.NewServeMux()
+	api.Register(mux)
+	spaMounted := web.RegisterSPA(mux, web.PublicFS, web.SPAOptions{
+		APIPrefix: "/api",
+		WSPath:    "/ws",
+	})
+	if !spaMounted {
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/api") {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, "web ui assets are unavailable; run `go generate ./internal/web` for dev or build with `-tags embed`", http.StatusServiceUnavailable)
+		})
+	}
+
+	fmt.Printf("metawsm web listening on %s\n", addr)
+	return http.ListenAndServe(addr, mux)
+}
+
 func printTUIFrameHeader(runID string, intervalSeconds int) {
 	fmt.Print("\033[H\033[2J")
 	fmt.Printf("metawsm tui monitor  now=%s  interval=%ds\n", time.Now().Format(time.RFC3339), intervalSeconds)
@@ -3246,6 +3286,7 @@ func printUsage() {
 	fmt.Println("  metawsm policy-init")
 	fmt.Println("  metawsm tui [--run-id RUN_ID | --ticket T1] [--interval 2]")
 	fmt.Println("  metawsm docs [--policy PATH] [--refresh] [--endpoint NAME] [--ticket T1]")
+	fmt.Println("  metawsm web [--addr :3001] [--db .metawsm/metawsm.db]")
 }
 
 func federationEndpointsFromPolicy(cfg policy.Config) []docfederation.Endpoint {
