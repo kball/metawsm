@@ -11,6 +11,8 @@ Owners: []
 RelatedFiles:
     - Path: cmd/metawsm/glazed_grouped_commands.go
       Note: Added grouped command tree migration for auth/review/forum
+    - Path: cmd/metawsm/glazed_loop_commands.go
+      Note: Migrated watch/operator/tui registration to glazed wrappers
     - Path: cmd/metawsm/glazed_low_risk_commands.go
       Note: Migrated policy-init/docs/serve into glazed BareCommand implementations
     - Path: cmd/metawsm/glazed_run_selector_commands.go
@@ -30,6 +32,7 @@ RelatedFiles:
         Added cobra/glazed root registration with legacy passthrough adapters
         Switched run-selector commands from legacy passthrough to glazed registration
         Replaced auth/review/forum top-level passthrough with grouped tree registration
+        Registered loop commands as migrated glazed commands
     - Path: go.mod
       Note: Added glazed and cobra dependencies
     - Path: go.sum
@@ -38,12 +41,15 @@ RelatedFiles:
       Note: |-
         Recorded parser and command baseline metrics
         Recorded command family and parser metrics baseline
+    - Path: ttmp/2026/02/10/REWORK_CLI--rework-metawsm-cli-to-use-glazed/tasks.md
+      Note: All migration tasks marked complete
 ExternalSources: []
 Summary: Implementation diary for REWORK_CLI migration execution
 LastUpdated: 2026-02-10T09:20:00-08:00
 WhatFor: Track implementation steps, tradeoffs, failures, and validation for CLI migration.
 WhenToUse: During ticket execution and handoff/review.
 ---
+
 
 
 
@@ -368,3 +374,141 @@ This step removes manual top-level grouping logic for these families and makes h
 
 - `auth check` and `review sync` reuse shared selector layer (`run-id`, `ticket`, `db`) and command-specific default-layer flags.
 - Forum subcommands are currently compatibility wrappers to legacy handlers, preserving existing behavior while eliminating manual top-level dispatch.
+
+## Step 5: Migrate watch/operator/tui command registration to glazed
+
+I migrated `watch`, `operator`, and `tui` registration to glazed so all operator-loop entrypoints now run through the same root command construction path. To preserve runtime semantics, these wrappers parse via glazed and forward equivalent flags into existing loop implementations.
+
+This completes command-tree migration coverage across all command families in the ticket plan while minimizing behavioral risk in long-running control loops.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Use docmgr to pick up ticket REWORK_CLI. Read the plan, break it into tasks if it isn't already, then implement. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue execution through the loop-command migration phase with minimal behavior drift.
+
+**Inferred user intent:** Complete the CLI migration plan end-to-end with operationally safe transitions.
+
+**Commit (code):** 0b8ccdbae922888d1e88d11b44fce0443f9542be — "metawsm: migrate watch/operator/tui command registration to glazed"
+
+### What I did
+
+- Added `cmd/metawsm/glazed_loop_commands.go`.
+- Implemented glazed wrappers for:
+  - `watch`
+  - `operator`
+  - `tui`
+- Updated `cmd/metawsm/root_command.go` to register these commands as migrated glazed commands and remove legacy passthrough entries.
+- Kept runtime behavior stable by forwarding parsed settings into existing loop implementations (`watchCommand`, `operatorCommand`, `tuiCommand`).
+
+### Why
+
+- Loop commands are core operational surfaces and needed to be under the new registration architecture.
+- Wrapper migration allows architecture convergence now while deferring deeper loop internals refactor risk.
+
+### What worked
+
+- `go test ./cmd/metawsm -count=1` passed after migration.
+- Help output confirms glazed registration for all three commands:
+  - `go run ./cmd/metawsm watch --help`
+  - `go run ./cmd/metawsm operator --help`
+  - `go run ./cmd/metawsm tui --help`
+
+### What didn't work
+
+- No blockers during implementation.
+
+### What I learned
+
+- For long-running commands, registration/path migration can be decoupled from runtime-loop logic migration without changing behavior.
+
+### What was tricky to build
+
+- Preserving default/optional flag behavior required careful reconstruction of forwarded args so unchanged defaults do not introduce parser drift.
+
+### What warrants a second pair of eyes
+
+- Validate whether future cleanup should remove wrapper forwarding and parse directly into loop runtime options structs.
+
+### What should be done in the future
+
+- Finalize ticket closure workflow after regression validation and docs updates.
+
+### Code review instructions
+
+- Review `cmd/metawsm/glazed_loop_commands.go` for wrapper parsing and arg forwarding.
+- Review `cmd/metawsm/root_command.go` for command registration updates.
+- Validate with:
+  - `go test ./cmd/metawsm -count=1`
+  - `go run ./cmd/metawsm watch --help`
+  - `go run ./cmd/metawsm operator --help`
+  - `go run ./cmd/metawsm tui --help`
+
+### Technical details
+
+- Wrapper commands use shared `append*Flag` helpers to emit only non-default flags before delegating to legacy loop handlers.
+
+## Step 6: Remove legacy switch path and run full regression validation
+
+I verified the legacy top-level switch dispatch has been fully removed from `main.go` and closed out validation by running the full test suite and targeted CLI smoke checks. This completed tasks 7 and 8 of the migration plan.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Use docmgr to pick up ticket REWORK_CLI. Read the plan, break it into tasks if it isn't already, then implement. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Finish remaining plan tasks and validate end-to-end behavior before concluding.
+
+**Inferred user intent:** Ensure migration is complete and defensible with concrete test evidence.
+
+**Commit (code):** N/A (validation + ticket bookkeeping step)
+
+### What I did
+
+- Confirmed no legacy top-level switch dispatch remains in `cmd/metawsm/main.go`.
+- Ran full regression suite:
+  - `go test ./...`
+- Ran targeted smoke checks across migrated command families (help and guardrail paths).
+- Checked off tasks 7 and 8 in docmgr.
+
+### Why
+
+- Migration completion required both architecture change verification and full regression signal.
+
+### What worked
+
+- `go test ./...` passed.
+- Command smoke checks across grouped/run-selector/loop commands passed with expected behavior and guardrails.
+
+### What didn't work
+
+- No blockers in final validation.
+
+### What I learned
+
+- The phased migration strategy allowed continuous regression checks at each slice and simplified final verification.
+
+### What was tricky to build
+
+- Coordinating incremental commits with synchronized task/changelog/diary updates while avoiding unrelated dirty workspace files required careful staging discipline.
+
+### What warrants a second pair of eyes
+
+- Review whether any legacy `flag.NewFlagSet` command functions still used as compatibility wrappers should be removed or refactored in a cleanup ticket.
+
+### What should be done in the future
+
+- Optionally run `docmgr ticket close --ticket REWORK_CLI` after review sign-off.
+
+### Code review instructions
+
+- Validate completion markers in:
+  - `ttmp/2026/02/10/REWORK_CLI--rework-metawsm-cli-to-use-glazed/tasks.md`
+  - `ttmp/2026/02/10/REWORK_CLI--rework-metawsm-cli-to-use-glazed/changelog.md`
+- Re-run:
+  - `go test ./...`
+  - `go run ./cmd/metawsm help`
+  - `go run ./cmd/metawsm auth check --help`
+
+### Technical details
+
+- Final task completion state: tasks 1-8 all checked in ticket `REWORK_CLI`.
