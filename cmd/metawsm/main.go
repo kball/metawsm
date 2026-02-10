@@ -3464,31 +3464,45 @@ func cmdShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
+var usageCommandLines = []string{
+	"metawsm run --ticket T1 --ticket T2 --repos repo1,repo2 [--doc-home-repo repo1] [--doc-authority-mode workspace_active] [--doc-seed-mode copy_from_repo_on_start] [--agent planner --agent coder] [--base-branch main]",
+	"metawsm bootstrap --ticket T1 --repos repo1,repo2 [--doc-home-repo repo1] [--doc-authority-mode workspace_active] [--doc-seed-mode copy_from_repo_on_start] [--agent planner] [--base-branch main]",
+	"metawsm status [--run-id RUN_ID | --ticket T1]",
+	"metawsm auth check [--run-id RUN_ID | --ticket T1] [--policy PATH]",
+	"metawsm review sync [--run-id RUN_ID | --ticket T1] [--max-items N] [--dispatch] [--dry-run]",
+	"metawsm watch [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--notify-cmd \"...\"] [--bell=true]",
+	"metawsm operator [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--llm-mode off|assist|auto] [--dry-run]",
+	"metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch|signal|debug> [--server http://127.0.0.1:3001] [...]",
+	"metawsm resume [--run-id RUN_ID | --ticket T1]",
+	"metawsm stop [--run-id RUN_ID | --ticket T1]",
+	"metawsm restart [--run-id RUN_ID | --ticket T1] [--dry-run]",
+	"metawsm cleanup [--run-id RUN_ID | --ticket T1] [--keep-workspaces] [--dry-run]",
+	"metawsm commit [--run-id RUN_ID | --ticket T1] [--message \"...\"] [--actor USER] [--dry-run]",
+	"metawsm pr [--run-id RUN_ID | --ticket T1] [--title \"...\"] [--body \"...\"] [--actor USER] [--dry-run]",
+	"metawsm merge [--run-id RUN_ID | --ticket T1] [--dry-run] [--human]",
+	"metawsm iterate [--run-id RUN_ID | --ticket T1] --feedback \"...\" [--dry-run]",
+	"metawsm close [--run-id RUN_ID | --ticket T1] [--dry-run]",
+	"metawsm policy-init",
+	"metawsm tui [--run-id RUN_ID | --ticket T1] [--interval 2]",
+	"metawsm docs [--policy PATH] [--refresh] [--endpoint NAME] [--ticket T1]",
+	"metawsm serve [--addr :3001] [--db .metawsm/metawsm.db] [--worker-interval 500ms]",
+}
+
+func usageText() string {
+	var b strings.Builder
+	b.WriteString("metawsm - orchestrate multi-ticket multi-workspace agent runs\n")
+	b.WriteString("\n")
+	b.WriteString("Usage:\n")
+	for _, line := range usageCommandLines {
+		b.WriteString("  ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 func printUsage() {
-	fmt.Println("metawsm - orchestrate multi-ticket multi-workspace agent runs")
-	fmt.Println("")
-	fmt.Println("Usage:")
-	fmt.Println("  metawsm run --ticket T1 --ticket T2 --repos repo1,repo2 [--doc-home-repo repo1] [--doc-authority-mode workspace_active] [--doc-seed-mode copy_from_repo_on_start] [--agent planner --agent coder] [--base-branch main]")
-	fmt.Println("  metawsm bootstrap --ticket T1 --repos repo1,repo2 [--doc-home-repo repo1] [--doc-authority-mode workspace_active] [--doc-seed-mode copy_from_repo_on_start] [--agent planner] [--base-branch main]")
-	fmt.Println("  metawsm status [--run-id RUN_ID | --ticket T1]")
-	fmt.Println("  metawsm auth check [--run-id RUN_ID | --ticket T1] [--policy PATH]")
-	fmt.Println("  metawsm review sync [--run-id RUN_ID | --ticket T1] [--max-items N] [--dispatch] [--dry-run]")
-	fmt.Println("  metawsm watch [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--notify-cmd \"...\"] [--bell=true]")
-	fmt.Println("  metawsm operator [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--llm-mode off|assist|auto] [--dry-run]")
-	fmt.Println("  metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch|signal|debug> [--server http://127.0.0.1:3001] [...]")
-	fmt.Println("  metawsm resume [--run-id RUN_ID | --ticket T1]")
-	fmt.Println("  metawsm stop [--run-id RUN_ID | --ticket T1]")
-	fmt.Println("  metawsm restart [--run-id RUN_ID | --ticket T1] [--dry-run]")
-	fmt.Println("  metawsm cleanup [--run-id RUN_ID | --ticket T1] [--keep-workspaces] [--dry-run]")
-	fmt.Println("  metawsm commit [--run-id RUN_ID | --ticket T1] [--message \"...\"] [--actor USER] [--dry-run]")
-	fmt.Println("  metawsm pr [--run-id RUN_ID | --ticket T1] [--title \"...\"] [--body \"...\"] [--actor USER] [--dry-run]")
-	fmt.Println("  metawsm merge [--run-id RUN_ID | --ticket T1] [--dry-run] [--human]")
-	fmt.Println("  metawsm iterate [--run-id RUN_ID | --ticket T1] --feedback \"...\" [--dry-run]")
-	fmt.Println("  metawsm close [--run-id RUN_ID | --ticket T1] [--dry-run]")
-	fmt.Println("  metawsm policy-init")
-	fmt.Println("  metawsm tui [--run-id RUN_ID | --ticket T1] [--interval 2]")
-	fmt.Println("  metawsm docs [--policy PATH] [--refresh] [--endpoint NAME] [--ticket T1]")
-	fmt.Println("  metawsm serve [--addr :3001] [--db .metawsm/metawsm.db] [--worker-interval 500ms]")
+	fmt.Print(usageText())
 }
 
 func federationEndpointsFromPolicy(cfg policy.Config) []docfederation.Endpoint {

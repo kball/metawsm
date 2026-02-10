@@ -733,3 +733,25 @@ func TestVerifyStaleRuntimeEvidenceAcceptsExitedSessions(t *testing.T) {
 		t.Fatalf("expected no-active-session reason, got %q", reason)
 	}
 }
+
+func TestUsageTextIncludesExpectedCommandMatrix(t *testing.T) {
+	if len(usageCommandLines) != 21 {
+		t.Fatalf("expected 21 usage command lines, got %d", len(usageCommandLines))
+	}
+
+	usage := usageText()
+	expected := []string{
+		"metawsm run --ticket",
+		"metawsm bootstrap --ticket",
+		"metawsm auth check",
+		"metawsm review sync",
+		"metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch|signal|debug>",
+		"metawsm policy-init",
+		"metawsm serve [--addr :3001]",
+	}
+	for _, fragment := range expected {
+		if !strings.Contains(usage, fragment) {
+			t.Fatalf("expected usage text to include %q", fragment)
+		}
+	}
+}
