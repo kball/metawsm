@@ -132,6 +132,10 @@ export function App() {
 
   const [replyBody, setReplyBody] = useState("");
   const [savingReply, setSavingReply] = useState(false);
+  const [questionTitle, setQuestionTitle] = useState("");
+  const [questionBody, setQuestionBody] = useState("");
+  const [questionPriority, setQuestionPriority] = useState("normal");
+  const [savingQuestion, setSavingQuestion] = useState(false);
 
   const [debugSnapshot, setDebugSnapshot] = useState<ForumDebugSnapshot | null>(null);
   const [error, setError] = useState("");
@@ -159,6 +163,8 @@ export function App() {
     }
     return "";
   }, [debugSnapshot]);
+  const canSubmitQuestion =
+    !!selectedTicket && !!viewerID.trim() && !!questionTitle.trim() && !!questionBody.trim() && !savingQuestion;
 
   useEffect(() => {
     void refreshRuns();
@@ -418,6 +424,18 @@ export function App() {
     }
   }
 
+  async function submitQuestion() {
+    if (!canSubmitQuestion) {
+      return;
+    }
+    setSavingQuestion(true);
+    try {
+      setError("Question submit wiring in progress.");
+    } finally {
+      setSavingQuestion(false);
+    }
+  }
+
   async function refreshDebug(ticket: string, runID: string) {
     try {
       const query = new URLSearchParams();
@@ -614,6 +632,31 @@ export function App() {
 
         <section className="panel detail-panel">
           <h2>Thread Detail</h2>
+          <div className="composer">
+            <h3>Ask as Human</h3>
+            <input
+              type="text"
+              placeholder="Question title"
+              value={questionTitle}
+              onChange={(event) => setQuestionTitle(event.target.value)}
+            />
+            <select value={questionPriority} onChange={(event) => setQuestionPriority(event.target.value)}>
+              <option value="urgent">urgent</option>
+              <option value="high">high</option>
+              <option value="normal">normal</option>
+              <option value="low">low</option>
+            </select>
+            <textarea
+              value={questionBody}
+              onChange={(event) => setQuestionBody(event.target.value)}
+              placeholder="Describe the question for the forum..."
+              rows={4}
+            />
+            <button type="button" onClick={() => void submitQuestion()} disabled={!canSubmitQuestion}>
+              {savingQuestion ? "Asking..." : "Ask Question"}
+            </button>
+          </div>
+
           {!selectedDetail ? <p className="muted">Select a thread to inspect timeline and respond.</p> : null}
           {selectedDetail ? (
             <>
