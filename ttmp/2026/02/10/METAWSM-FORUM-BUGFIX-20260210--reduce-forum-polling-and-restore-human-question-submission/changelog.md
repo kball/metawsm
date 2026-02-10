@@ -49,3 +49,13 @@ Step 3: Added explicit websocket endpoint tests for catch-up events, idle heartb
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/server/runtime.go — Runtime now exposes heartbeat interval configuration for stream behavior
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Diary entry for task 3 test implementation
 
+
+## 2026-02-10
+
+Step 4: Updated UI websocket handling to ignore heartbeat/empty frames and debounce event-driven refreshes (commit afa77ed1d2bfbb0cc285cf168d62378bf6fe3e52).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Diary entry for task 4 implementation
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.tsx — Stream frame parsing and debounced refresh behavior
+

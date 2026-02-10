@@ -28,12 +28,15 @@ RelatedFiles:
         Added configurable stream heartbeat interval used by endpoint and tests (commit 071a080f8287a70c06d17a34b37f7ff51b457695)
     - Path: internal/server/websocket.go
       Note: Reworked stream endpoint to catch-up plus broker-driven live event push (commit 05d88afe3febf2fe85a3bdbfb775ca38ae891f8f)
+    - Path: ui/src/App.tsx
+      Note: Websocket onmessage now ignores heartbeat/no-event frames and debounces refreshes (commit afa77ed1d2bfbb0cc285cf168d62378bf6fe3e52)
 ExternalSources: []
 Summary: Implementation diary for sequential task delivery and validation evidence for METAWSM-FORUM-BUGFIX-20260210.
-LastUpdated: 2026-02-10T12:59:00-08:00
+LastUpdated: 2026-02-10T13:01:00-08:00
 WhatFor: Capture what changed, why, test results, risks, and commit traceability for each completed task.
 WhenToUse: Use to review implementation history, reproduce verification, and continue work task-by-task.
 ---
+
 
 
 
@@ -276,3 +279,69 @@ I also added a configurable stream heartbeat interval in runtime state so endpoi
 - Live push only (broker publish after subscribe).
 - Task progress:
 - Marked Task 3 complete via `docmgr task check --ticket METAWSM-FORUM-BUGFIX-20260210 --id 3`.
+
+## Step 4: Debounce UI Refresh and Ignore Heartbeats
+
+This step updated frontend websocket handling so refresh work is triggered only by non-empty `forum.events` frames. Heartbeat frames are ignored, and event-driven refreshes are debounced to collapse bursts.
+
+The change is intentionally narrow to satisfy Task 4 without mixing in debug-panel refresh policy changes (Task 5).
+
+### Prompt Context
+
+**User prompt (verbatim):** "Go through and implement task by task, keeping a diary and commiting as you go"
+
+**Assistant interpretation:** Continue sequential execution of checklist items with isolated commits and diary updates.
+
+**Inferred user intent:** Reduce noisy refresh behavior in measurable, auditable increments.
+
+**Commit (code):** `afa77ed1d2bfbb0cc285cf168d62378bf6fe3e52` — "Debounce websocket refresh and ignore heartbeat frames"
+
+### What I did
+- Updated `ui/src/App.tsx`:
+- Added websocket frame parser (`parseForumStreamFrame`).
+- Ignored frames that are not `type === "forum.events"` or have empty `events`.
+- Added `useRef` timer-based debounce (`150ms`) around refresh calls.
+- Used `selectedThreadRef` to avoid websocket reconnect churn when thread selection changes.
+- Removed per-frame debug refresh from websocket handler (debug refresh remains elsewhere).
+- Ran:
+- `npm --prefix ui run check`
+
+### Why
+- Heartbeat-triggered refreshes were causing unnecessary API churn.
+- Event bursts can trigger multiple back-to-back refreshes without debounce.
+
+### What worked
+- TypeScript check passed after changes.
+- Message-path logic now explicitly filters out heartbeat/no-op frames.
+- Debounced refresh preserves responsiveness while reducing request bursts.
+
+### What didn't work
+- No blocking issues in this step.
+
+### What I learned
+- Using refs for selected thread and timer control avoids stale closure behavior and unnecessary websocket reconnections.
+
+### What was tricky to build
+- Balancing effect dependencies to keep socket lifecycle stable while still refreshing the current thread detail correctly.
+
+### What warrants a second pair of eyes
+- Debounce interval choice (`150ms`) may need tuning under heavy event rates.
+- Potential interaction with future optimistic updates in the UI list/detail panels.
+
+### What should be done in the future
+- Task 5: reduce automatic debug refresh cadence in non-stream paths.
+
+### Code review instructions
+- Review websocket effect and frame parsing in `ui/src/App.tsx`.
+- Focus on `socket.onmessage` flow and `parseForumStreamFrame`.
+- Validate with:
+- `npm --prefix ui run check`
+
+### Technical details
+- UI stream gating now requires:
+- `frame.type === "forum.events"`
+- `Array.isArray(frame.events) && frame.events.length > 0`
+- Debounce implementation:
+- `window.setTimeout(..., 150)` with cancel-on-replace and cleanup-on-unmount.
+- Task progress:
+- Marked Task 4 complete via `docmgr task check --ticket METAWSM-FORUM-BUGFIX-20260210 --id 4`.
