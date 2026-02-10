@@ -11,6 +11,20 @@ const (
 	ForumActorSystem   ForumActorType = "system"
 )
 
+type ForumViewerType string
+
+const (
+	ForumViewerHuman ForumViewerType = "human"
+	ForumViewerAgent ForumViewerType = "agent"
+)
+
+type ForumQueueType string
+
+const (
+	ForumQueueUnseen     ForumQueueType = "unseen"
+	ForumQueueUnanswered ForumQueueType = "unanswered"
+)
+
 type ForumThreadState string
 
 const (
@@ -106,24 +120,28 @@ type ForumCloseThreadCommand struct {
 }
 
 type ForumThreadView struct {
-	ThreadID       string           `json:"thread_id"`
-	Ticket         string           `json:"ticket"`
-	RunID          string           `json:"run_id,omitempty"`
-	AgentName      string           `json:"agent_name,omitempty"`
-	Title          string           `json:"title"`
-	State          ForumThreadState `json:"state"`
-	Priority       ForumPriority    `json:"priority"`
-	AssigneeType   ForumActorType   `json:"assignee_type,omitempty"`
-	AssigneeName   string           `json:"assignee_name,omitempty"`
-	OpenedByType   ForumActorType   `json:"opened_by_type"`
-	OpenedByName   string           `json:"opened_by_name,omitempty"`
-	PostsCount     int              `json:"posts_count"`
-	LastPostAt     *time.Time       `json:"last_post_at,omitempty"`
-	LastPostByType ForumActorType   `json:"last_post_by_type,omitempty"`
-	LastPostByName string           `json:"last_post_by_name,omitempty"`
-	OpenedAt       time.Time        `json:"opened_at"`
-	UpdatedAt      time.Time        `json:"updated_at"`
-	ClosedAt       *time.Time       `json:"closed_at,omitempty"`
+	ThreadID          string           `json:"thread_id"`
+	Ticket            string           `json:"ticket"`
+	RunID             string           `json:"run_id,omitempty"`
+	AgentName         string           `json:"agent_name,omitempty"`
+	Title             string           `json:"title"`
+	State             ForumThreadState `json:"state"`
+	Priority          ForumPriority    `json:"priority"`
+	AssigneeType      ForumActorType   `json:"assignee_type,omitempty"`
+	AssigneeName      string           `json:"assignee_name,omitempty"`
+	OpenedByType      ForumActorType   `json:"opened_by_type"`
+	OpenedByName      string           `json:"opened_by_name,omitempty"`
+	PostsCount        int              `json:"posts_count"`
+	LastPostAt        *time.Time       `json:"last_post_at,omitempty"`
+	LastPostByType    ForumActorType   `json:"last_post_by_type,omitempty"`
+	LastPostByName    string           `json:"last_post_by_name,omitempty"`
+	LastEventSequence int64            `json:"last_event_sequence,omitempty"`
+	LastActorType     ForumActorType   `json:"last_actor_type,omitempty"`
+	IsUnseen          bool             `json:"is_unseen,omitempty"`
+	IsUnanswered      bool             `json:"is_unanswered,omitempty"`
+	OpenedAt          time.Time        `json:"opened_at"`
+	UpdatedAt         time.Time        `json:"updated_at"`
+	ClosedAt          *time.Time       `json:"closed_at,omitempty"`
 }
 
 type ForumPost struct {
@@ -158,4 +176,38 @@ type ForumThreadFilter struct {
 	Priority ForumPriority
 	Assignee string
 	Limit    int
+}
+
+type ForumThreadSearchFilter struct {
+	Query      string
+	Ticket     string
+	RunID      string
+	State      ForumThreadState
+	Priority   ForumPriority
+	Assignee   string
+	ViewerType ForumViewerType
+	ViewerID   string
+	Limit      int
+	Cursor     int64
+}
+
+type ForumQueueFilter struct {
+	QueueType  ForumQueueType
+	Ticket     string
+	RunID      string
+	State      ForumThreadState
+	Priority   ForumPriority
+	Assignee   string
+	ViewerType ForumViewerType
+	ViewerID   string
+	Limit      int
+	Cursor     int64
+}
+
+type ForumThreadSeen struct {
+	ThreadID              string          `json:"thread_id"`
+	ViewerType            ForumViewerType `json:"viewer_type"`
+	ViewerID              string          `json:"viewer_id"`
+	LastSeenEventSequence int64           `json:"last_seen_event_sequence"`
+	UpdatedAt             time.Time       `json:"updated_at"`
 }

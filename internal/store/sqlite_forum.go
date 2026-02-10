@@ -106,6 +106,9 @@ COMMIT;`,
 	if err := s.refreshForumThreadStats(cmd.Envelope.Ticket); err != nil {
 		return nil, err
 	}
+	if err := s.refreshForumThreadQueueView(cmd.Envelope.ThreadID); err != nil {
+		return nil, err
+	}
 	return s.GetForumThread(cmd.Envelope.ThreadID)
 }
 
@@ -183,6 +186,9 @@ COMMIT;`,
 		quote(cmd.Envelope.ThreadID),
 	)
 	if err := s.execSQL(sql); err != nil {
+		return nil, err
+	}
+	if err := s.refreshForumThreadQueueView(cmd.Envelope.ThreadID); err != nil {
 		return nil, err
 	}
 	return s.GetForumThread(cmd.Envelope.ThreadID)
@@ -270,6 +276,9 @@ COMMIT;`,
 		quote(cmd.Envelope.ThreadID),
 	)
 	if err := s.execSQL(sql); err != nil {
+		return nil, err
+	}
+	if err := s.refreshForumThreadQueueView(cmd.Envelope.ThreadID); err != nil {
 		return nil, err
 	}
 	return s.GetForumThread(cmd.Envelope.ThreadID)
@@ -376,6 +385,9 @@ COMMIT;`,
 	if err := s.refreshForumThreadStats(thread.Ticket); err != nil {
 		return nil, err
 	}
+	if err := s.refreshForumThreadQueueView(envelope.ThreadID); err != nil {
+		return nil, err
+	}
 	return s.GetForumThread(envelope.ThreadID)
 }
 
@@ -446,14 +458,38 @@ COMMIT;`,
 	if err := s.refreshForumThreadStats(thread.Ticket); err != nil {
 		return nil, err
 	}
+	if err := s.refreshForumThreadQueueView(cmd.Envelope.ThreadID); err != nil {
+		return nil, err
+	}
 	return s.GetForumThread(cmd.Envelope.ThreadID)
 }
 
 func (s *SQLiteStore) GetForumThread(threadID string) (*model.ForumThreadView, error) {
 	sql := fmt.Sprintf(
-		`SELECT thread_id, ticket, run_id, agent_name, title, state, priority, assignee_type, assignee_name, opened_by_type, opened_by_name, posts_count, last_post_at, last_post_by_type, last_post_by_name, opened_at, updated_at, closed_at
-FROM forum_thread_views
-WHERE thread_id=%s;`,
+		`SELECT
+  v.thread_id,
+  v.ticket,
+  v.run_id,
+  v.agent_name,
+  v.title,
+  v.state,
+  v.priority,
+  v.assignee_type,
+  v.assignee_name,
+  v.opened_by_type,
+  v.opened_by_name,
+  v.posts_count,
+  v.last_post_at,
+  v.last_post_by_type,
+  v.last_post_by_name,
+  v.opened_at,
+  v.updated_at,
+  v.closed_at,
+  COALESCE(q.last_event_sequence, 0) AS last_event_sequence,
+  COALESCE(q.last_non_system_actor_type, '') AS last_actor_type
+FROM forum_thread_views v
+LEFT JOIN forum_thread_queue_view q ON q.thread_id = v.thread_id
+WHERE v.thread_id=%s;`,
 		quote(threadID),
 	)
 	rows, err := s.queryJSON(sql)
@@ -473,37 +509,59 @@ WHERE thread_id=%s;`,
 func (s *SQLiteStore) ListForumThreads(filter model.ForumThreadFilter) ([]model.ForumThreadView, error) {
 	clauses := []string{"1=1"}
 	if v := strings.TrimSpace(filter.Ticket); v != "" {
-		clauses = append(clauses, fmt.Sprintf("ticket=%s", quote(v)))
+		clauses = append(clauses, fmt.Sprintf("v.ticket=%s", quote(v)))
 	}
 	if v := strings.TrimSpace(filter.RunID); v != "" {
-		clauses = append(clauses, fmt.Sprintf("run_id=%s", quote(v)))
+		clauses = append(clauses, fmt.Sprintf("v.run_id=%s", quote(v)))
 	}
 	if v := strings.TrimSpace(string(filter.State)); v != "" {
-		clauses = append(clauses, fmt.Sprintf("state=%s", quote(v)))
+		clauses = append(clauses, fmt.Sprintf("v.state=%s", quote(v)))
 	}
 	if v := strings.TrimSpace(string(filter.Priority)); v != "" {
-		clauses = append(clauses, fmt.Sprintf("priority=%s", quote(v)))
+		clauses = append(clauses, fmt.Sprintf("v.priority=%s", quote(v)))
 	}
 	if v := strings.TrimSpace(filter.Assignee); v != "" {
-		clauses = append(clauses, fmt.Sprintf("assignee_name=%s", quote(v)))
+		clauses = append(clauses, fmt.Sprintf("v.assignee_name=%s", quote(v)))
 	}
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 100
 	}
 	sql := fmt.Sprintf(
-		`SELECT thread_id, ticket, run_id, agent_name, title, state, priority, assignee_type, assignee_name, opened_by_type, opened_by_name, posts_count, last_post_at, last_post_by_type, last_post_by_name, opened_at, updated_at, closed_at
-FROM forum_thread_views
+		`SELECT
+  v.thread_id,
+  v.ticket,
+  v.run_id,
+  v.agent_name,
+  v.title,
+  v.state,
+  v.priority,
+  v.assignee_type,
+  v.assignee_name,
+  v.opened_by_type,
+  v.opened_by_name,
+  v.posts_count,
+  v.last_post_at,
+  v.last_post_by_type,
+  v.last_post_by_name,
+  v.opened_at,
+  v.updated_at,
+  v.closed_at,
+  COALESCE(q.last_event_sequence, 0) AS last_event_sequence,
+  COALESCE(q.last_non_system_actor_type, '') AS last_actor_type
+FROM forum_thread_views v
+LEFT JOIN forum_thread_queue_view q ON q.thread_id = v.thread_id
 WHERE %s
 ORDER BY
-  CASE priority
+  CASE v.priority
     WHEN 'urgent' THEN 1
     WHEN 'high' THEN 2
     WHEN 'normal' THEN 3
     WHEN 'low' THEN 4
     ELSE 5
   END,
-  updated_at DESC
+  COALESCE(q.last_event_sequence, 0) DESC,
+  v.updated_at DESC
 LIMIT %d;`,
 		strings.Join(clauses, " AND "),
 		limit,
@@ -521,6 +579,361 @@ LIMIT %d;`,
 		out = append(out, view)
 	}
 	return out, nil
+}
+
+func (s *SQLiteStore) SearchForumThreads(filter model.ForumThreadSearchFilter) ([]model.ForumThreadView, error) {
+	clauses := []string{"1=1"}
+	if v := strings.TrimSpace(filter.Ticket); v != "" {
+		clauses = append(clauses, fmt.Sprintf("v.ticket=%s", quote(v)))
+	}
+	if v := strings.TrimSpace(filter.RunID); v != "" {
+		clauses = append(clauses, fmt.Sprintf("v.run_id=%s", quote(v)))
+	}
+	if v := strings.TrimSpace(string(filter.State)); v != "" {
+		clauses = append(clauses, fmt.Sprintf("v.state=%s", quote(v)))
+	}
+	if v := strings.TrimSpace(string(filter.Priority)); v != "" {
+		clauses = append(clauses, fmt.Sprintf("v.priority=%s", quote(v)))
+	}
+	if v := strings.TrimSpace(filter.Assignee); v != "" {
+		clauses = append(clauses, fmt.Sprintf("v.assignee_name=%s", quote(v)))
+	}
+	if filter.Cursor > 0 {
+		clauses = append(clauses, fmt.Sprintf("COALESCE(q.last_event_sequence, 0) < %d", filter.Cursor))
+	}
+
+	viewerType := strings.TrimSpace(string(filter.ViewerType))
+	viewerID := strings.TrimSpace(filter.ViewerID)
+	viewerJoin := "LEFT JOIN forum_thread_reads r ON 1=0"
+	if viewerType != "" || viewerID != "" {
+		normalizedViewerType, err := normalizeForumViewerType(filter.ViewerType)
+		if err != nil {
+			return nil, err
+		}
+		if viewerID == "" {
+			return nil, fmt.Errorf("forum viewer_id is required")
+		}
+		viewerJoin = fmt.Sprintf(
+			"LEFT JOIN forum_thread_reads r ON r.thread_id = v.thread_id AND r.viewer_type = %s AND r.viewer_id = %s",
+			quote(string(normalizedViewerType)),
+			quote(viewerID),
+		)
+	}
+
+	query := strings.ToLower(strings.TrimSpace(filter.Query))
+	relevanceOrder := ""
+	if query != "" {
+		likePattern := "%" + query + "%"
+		queryPredicate := fmt.Sprintf(
+			"(LOWER(v.title) LIKE %s OR EXISTS (SELECT 1 FROM forum_posts p WHERE p.thread_id = v.thread_id AND LOWER(p.body_text) LIKE %s))",
+			quote(likePattern),
+			quote(likePattern),
+		)
+		relevanceOrder = fmt.Sprintf(
+			"(CASE WHEN LOWER(v.title) LIKE %s THEN 2 ELSE 0 END + CASE WHEN EXISTS (SELECT 1 FROM forum_posts p WHERE p.thread_id = v.thread_id AND LOWER(p.body_text) LIKE %s) THEN 1 ELSE 0 END) DESC,",
+			quote(likePattern),
+			quote(likePattern),
+		)
+		clauses = append(clauses, queryPredicate)
+	}
+
+	unansweredExpr := "CASE WHEN v.state IN ('new', 'waiting_human', 'waiting_operator') AND COALESCE(q.last_agent_sequence, 0) > COALESCE(q.last_human_or_operator_sequence, 0) AND COALESCE(q.last_non_system_actor_type, '') = 'agent' THEN 1 ELSE 0 END"
+	seenExpr := "CASE WHEN COALESCE(q.last_event_sequence, 0) > COALESCE(r.last_seen_event_sequence, 0) THEN 1 ELSE 0 END"
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+
+	sql := fmt.Sprintf(
+		`SELECT
+  v.thread_id,
+  v.ticket,
+  v.run_id,
+  v.agent_name,
+  v.title,
+  v.state,
+  v.priority,
+  v.assignee_type,
+  v.assignee_name,
+  v.opened_by_type,
+  v.opened_by_name,
+  v.posts_count,
+  v.last_post_at,
+  v.last_post_by_type,
+  v.last_post_by_name,
+  v.opened_at,
+  v.updated_at,
+  v.closed_at,
+  COALESCE(q.last_event_sequence, 0) AS last_event_sequence,
+  COALESCE(q.last_non_system_actor_type, '') AS last_actor_type,
+  %s AS is_unseen,
+  %s AS is_unanswered
+FROM forum_thread_views v
+LEFT JOIN forum_thread_queue_view q ON q.thread_id = v.thread_id
+%s
+WHERE %s
+ORDER BY
+  %s
+  CASE v.priority
+    WHEN 'urgent' THEN 1
+    WHEN 'high' THEN 2
+    WHEN 'normal' THEN 3
+    WHEN 'low' THEN 4
+    ELSE 5
+  END,
+  COALESCE(q.last_event_sequence, 0) DESC,
+  v.updated_at DESC
+LIMIT %d;`,
+		seenExpr,
+		unansweredExpr,
+		viewerJoin,
+		strings.Join(clauses, " AND "),
+		relevanceOrder,
+		limit,
+	)
+
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.ForumThreadView, 0, len(rows))
+	for _, row := range rows {
+		view, err := parseForumThreadView(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, view)
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) ListForumQueue(filter model.ForumQueueFilter) ([]model.ForumThreadView, error) {
+	queueType, err := normalizeForumQueueType(filter.QueueType)
+	if err != nil {
+		return nil, err
+	}
+
+	clauses := []string{"1=1"}
+	if v := strings.TrimSpace(filter.Ticket); v != "" {
+		clauses = append(clauses, fmt.Sprintf("v.ticket=%s", quote(v)))
+	}
+	if v := strings.TrimSpace(filter.RunID); v != "" {
+		clauses = append(clauses, fmt.Sprintf("v.run_id=%s", quote(v)))
+	}
+	if v := strings.TrimSpace(string(filter.State)); v != "" {
+		clauses = append(clauses, fmt.Sprintf("v.state=%s", quote(v)))
+	}
+	if v := strings.TrimSpace(string(filter.Priority)); v != "" {
+		clauses = append(clauses, fmt.Sprintf("v.priority=%s", quote(v)))
+	}
+	if v := strings.TrimSpace(filter.Assignee); v != "" {
+		clauses = append(clauses, fmt.Sprintf("v.assignee_name=%s", quote(v)))
+	}
+	if filter.Cursor > 0 {
+		clauses = append(clauses, fmt.Sprintf("COALESCE(q.last_event_sequence, 0) < %d", filter.Cursor))
+	}
+
+	viewerType := strings.TrimSpace(string(filter.ViewerType))
+	viewerID := strings.TrimSpace(filter.ViewerID)
+	viewerJoin := "LEFT JOIN forum_thread_reads r ON 1=0"
+	if queueType == model.ForumQueueUnseen || viewerType != "" || viewerID != "" {
+		normalizedViewerType, err := normalizeForumViewerType(filter.ViewerType)
+		if err != nil {
+			return nil, err
+		}
+		if viewerID == "" {
+			return nil, fmt.Errorf("forum viewer_id is required")
+		}
+		viewerJoin = fmt.Sprintf(
+			"LEFT JOIN forum_thread_reads r ON r.thread_id = v.thread_id AND r.viewer_type = %s AND r.viewer_id = %s",
+			quote(string(normalizedViewerType)),
+			quote(viewerID),
+		)
+	}
+
+	unansweredExpr := "CASE WHEN v.state IN ('new', 'waiting_human', 'waiting_operator') AND COALESCE(q.last_agent_sequence, 0) > COALESCE(q.last_human_or_operator_sequence, 0) AND COALESCE(q.last_non_system_actor_type, '') = 'agent' THEN 1 ELSE 0 END"
+	seenExpr := "CASE WHEN COALESCE(q.last_event_sequence, 0) > COALESCE(r.last_seen_event_sequence, 0) THEN 1 ELSE 0 END"
+	switch queueType {
+	case model.ForumQueueUnseen:
+		clauses = append(clauses, "COALESCE(q.last_event_sequence, 0) > COALESCE(r.last_seen_event_sequence, 0)")
+	case model.ForumQueueUnanswered:
+		clauses = append(clauses, "v.state IN ('new', 'waiting_human', 'waiting_operator')")
+		clauses = append(clauses, "COALESCE(q.last_agent_sequence, 0) > COALESCE(q.last_human_or_operator_sequence, 0)")
+		clauses = append(clauses, "COALESCE(q.last_non_system_actor_type, '') = 'agent'")
+	}
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	sql := fmt.Sprintf(
+		`SELECT
+  v.thread_id,
+  v.ticket,
+  v.run_id,
+  v.agent_name,
+  v.title,
+  v.state,
+  v.priority,
+  v.assignee_type,
+  v.assignee_name,
+  v.opened_by_type,
+  v.opened_by_name,
+  v.posts_count,
+  v.last_post_at,
+  v.last_post_by_type,
+  v.last_post_by_name,
+  v.opened_at,
+  v.updated_at,
+  v.closed_at,
+  COALESCE(q.last_event_sequence, 0) AS last_event_sequence,
+  COALESCE(q.last_non_system_actor_type, '') AS last_actor_type,
+  %s AS is_unseen,
+  %s AS is_unanswered
+FROM forum_thread_views v
+LEFT JOIN forum_thread_queue_view q ON q.thread_id = v.thread_id
+%s
+WHERE %s
+ORDER BY
+  CASE v.priority
+    WHEN 'urgent' THEN 1
+    WHEN 'high' THEN 2
+    WHEN 'normal' THEN 3
+    WHEN 'low' THEN 4
+    ELSE 5
+  END,
+  COALESCE(q.last_event_sequence, 0) DESC,
+  v.updated_at DESC
+LIMIT %d;`,
+		seenExpr,
+		unansweredExpr,
+		viewerJoin,
+		strings.Join(clauses, " AND "),
+		limit,
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.ForumThreadView, 0, len(rows))
+	for _, row := range rows {
+		view, err := parseForumThreadView(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, view)
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) MarkForumThreadSeen(threadID string, viewerType model.ForumViewerType, viewerID string, lastSeenEventSequence int64) (*model.ForumThreadSeen, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return nil, fmt.Errorf("forum thread id is required")
+	}
+	normalizedViewerType, err := normalizeForumViewerType(viewerType)
+	if err != nil {
+		return nil, err
+	}
+	viewerID = strings.TrimSpace(viewerID)
+	if viewerID == "" {
+		return nil, fmt.Errorf("forum viewer_id is required")
+	}
+	thread, err := s.GetForumThread(threadID)
+	if err != nil {
+		return nil, err
+	}
+	if thread == nil {
+		return nil, fmt.Errorf("forum thread %s not found", threadID)
+	}
+	if lastSeenEventSequence <= 0 {
+		resolvedSequence, err := s.latestForumThreadEventSequence(threadID)
+		if err != nil {
+			return nil, err
+		}
+		lastSeenEventSequence = resolvedSequence
+	}
+	now := time.Now().Format(time.RFC3339)
+	sql := fmt.Sprintf(
+		`INSERT INTO forum_thread_reads
+  (thread_id, viewer_type, viewer_id, last_seen_event_sequence, updated_at)
+VALUES
+  (%s, %s, %s, %d, %s)
+ON CONFLICT(thread_id, viewer_type, viewer_id) DO UPDATE SET
+  last_seen_event_sequence=MAX(forum_thread_reads.last_seen_event_sequence, excluded.last_seen_event_sequence),
+  updated_at=CASE
+    WHEN excluded.last_seen_event_sequence > forum_thread_reads.last_seen_event_sequence THEN excluded.updated_at
+    ELSE forum_thread_reads.updated_at
+  END;`,
+		quote(threadID),
+		quote(string(normalizedViewerType)),
+		quote(viewerID),
+		lastSeenEventSequence,
+		quote(now),
+	)
+	if err := s.execSQL(sql); err != nil {
+		return nil, err
+	}
+	rows, err := s.queryJSON(fmt.Sprintf(
+		`SELECT thread_id, viewer_type, viewer_id, last_seen_event_sequence, updated_at
+FROM forum_thread_reads
+WHERE thread_id=%s AND viewer_type=%s AND viewer_id=%s
+LIMIT 1;`,
+		quote(threadID),
+		quote(string(normalizedViewerType)),
+		quote(viewerID),
+	))
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("forum seen row missing after upsert")
+	}
+	row := rows[0]
+	updatedAt, err := time.Parse(time.RFC3339, asString(row["updated_at"]))
+	if err != nil {
+		return nil, fmt.Errorf("parse forum_thread_reads updated_at: %w", err)
+	}
+	return &model.ForumThreadSeen{
+		ThreadID:              asString(row["thread_id"]),
+		ViewerType:            model.ForumViewerType(asString(row["viewer_type"])),
+		ViewerID:              asString(row["viewer_id"]),
+		LastSeenEventSequence: int64(asInt(row["last_seen_event_sequence"])),
+		UpdatedAt:             updatedAt,
+	}, nil
+}
+
+func (s *SQLiteStore) latestForumThreadEventSequence(threadID string) (int64, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return 0, fmt.Errorf("forum thread id is required")
+	}
+	rows, err := s.queryJSON(fmt.Sprintf(
+		`SELECT COALESCE(last_event_sequence, 0) AS sequence
+FROM forum_thread_queue_view
+WHERE thread_id=%s
+LIMIT 1;`,
+		quote(threadID),
+	))
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) > 0 {
+		return int64(asInt(rows[0]["sequence"])), nil
+	}
+	rows, err = s.queryJSON(fmt.Sprintf(
+		`SELECT COALESCE(MAX(sequence), 0) AS sequence
+FROM forum_events
+WHERE thread_id=%s;`,
+		quote(threadID),
+	))
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return int64(asInt(rows[0]["sequence"])), nil
 }
 
 func (s *SQLiteStore) ListForumPosts(threadID string, limit int) ([]model.ForumPost, error) {
@@ -554,6 +967,55 @@ LIMIT %d;`,
 			AuthorName: asString(row["author_name"]),
 			Body:       asString(row["body_text"]),
 			CreatedAt:  createdAt,
+		})
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) ListForumThreadEvents(threadID string, limit int) ([]model.ForumEvent, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return nil, fmt.Errorf("forum thread id is required")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	sql := fmt.Sprintf(
+		`SELECT sequence, event_id, event_type, event_version, occurred_at, thread_id, run_id, ticket, agent_name, actor_type, actor_name, correlation_id, causation_id, payload_json
+FROM forum_events
+WHERE thread_id=%s
+ORDER BY sequence
+LIMIT %d;`,
+		quote(threadID),
+		limit,
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.ForumEvent, 0, len(rows))
+	for _, row := range rows {
+		occurredAt, err := time.Parse(time.RFC3339, asString(row["occurred_at"]))
+		if err != nil {
+			return nil, fmt.Errorf("parse forum event occurred_at: %w", err)
+		}
+		out = append(out, model.ForumEvent{
+			Sequence: int64(asInt(row["sequence"])),
+			Envelope: model.ForumEnvelope{
+				EventID:       asString(row["event_id"]),
+				EventType:     asString(row["event_type"]),
+				EventVersion:  asInt(row["event_version"]),
+				OccurredAt:    occurredAt,
+				ThreadID:      asString(row["thread_id"]),
+				RunID:         asString(row["run_id"]),
+				Ticket:        asString(row["ticket"]),
+				AgentName:     asString(row["agent_name"]),
+				ActorType:     model.ForumActorType(asString(row["actor_type"])),
+				ActorName:     asString(row["actor_name"]),
+				CorrelationID: asString(row["correlation_id"]),
+				CausationID:   asString(row["causation_id"]),
+			},
+			PayloadJSON: asString(row["payload_json"]),
 		})
 	}
 	return out, nil
@@ -762,6 +1224,11 @@ func (s *SQLiteStore) ApplyForumEventProjections(event model.ForumEvent) error {
 	}); err != nil {
 		return err
 	}
+	if err := s.applyForumProjectionEvent("forum_thread_queue_view_v1", eventID, func() error {
+		return s.refreshForumThreadQueueView(threadID)
+	}); err != nil {
+		return err
+	}
 	return s.applyForumProjectionEvent("forum_thread_stats_v1", eventID, func() error {
 		return s.refreshForumThreadStats(ticket)
 	})
@@ -942,6 +1409,46 @@ ON CONFLICT(thread_id) DO UPDATE SET
   opened_at=excluded.opened_at,
   updated_at=excluded.updated_at,
   closed_at=excluded.closed_at;`,
+		quote(threadID),
+	)
+	return s.execSQL(sql)
+}
+
+func (s *SQLiteStore) refreshForumThreadQueueView(threadID string) error {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return fmt.Errorf("forum thread id is required")
+	}
+	sql := fmt.Sprintf(
+		`INSERT INTO forum_thread_queue_view
+  (thread_id, ticket, run_id, state, priority, assignee_name, last_event_sequence, last_actor_type, last_non_system_actor_type, last_human_or_operator_sequence, last_agent_sequence, updated_at)
+SELECT
+  t.thread_id,
+  t.ticket,
+  t.run_id,
+  t.state,
+  t.priority,
+  t.assignee_name,
+  COALESCE((SELECT e.sequence FROM forum_events e WHERE e.thread_id=t.thread_id ORDER BY e.sequence DESC LIMIT 1), 0),
+  COALESCE((SELECT e.actor_type FROM forum_events e WHERE e.thread_id=t.thread_id ORDER BY e.sequence DESC LIMIT 1), ''),
+  COALESCE((SELECT e.actor_type FROM forum_events e WHERE e.thread_id=t.thread_id AND e.actor_type != 'system' ORDER BY e.sequence DESC LIMIT 1), ''),
+  COALESCE((SELECT MAX(e.sequence) FROM forum_events e WHERE e.thread_id=t.thread_id AND e.actor_type IN ('human', 'operator')), 0),
+  COALESCE((SELECT MAX(e.sequence) FROM forum_events e WHERE e.thread_id=t.thread_id AND e.actor_type='agent'), 0),
+  t.updated_at
+FROM forum_threads t
+WHERE t.thread_id=%s
+ON CONFLICT(thread_id) DO UPDATE SET
+  ticket=excluded.ticket,
+  run_id=excluded.run_id,
+  state=excluded.state,
+  priority=excluded.priority,
+  assignee_name=excluded.assignee_name,
+  last_event_sequence=excluded.last_event_sequence,
+  last_actor_type=excluded.last_actor_type,
+  last_non_system_actor_type=excluded.last_non_system_actor_type,
+  last_human_or_operator_sequence=excluded.last_human_or_operator_sequence,
+  last_agent_sequence=excluded.last_agent_sequence,
+  updated_at=excluded.updated_at;`,
 		quote(threadID),
 	)
 	return s.execSQL(sql)
@@ -1360,23 +1867,47 @@ func parseForumThreadView(row map[string]any) (model.ForumThreadView, error) {
 		return model.ForumThreadView{}, fmt.Errorf("parse forum thread updated_at: %w", err)
 	}
 	return model.ForumThreadView{
-		ThreadID:       asString(row["thread_id"]),
-		Ticket:         asString(row["ticket"]),
-		RunID:          asString(row["run_id"]),
-		AgentName:      asString(row["agent_name"]),
-		Title:          asString(row["title"]),
-		State:          model.ForumThreadState(asString(row["state"])),
-		Priority:       model.ForumPriority(asString(row["priority"])),
-		AssigneeType:   model.ForumActorType(asString(row["assignee_type"])),
-		AssigneeName:   asString(row["assignee_name"]),
-		OpenedByType:   model.ForumActorType(asString(row["opened_by_type"])),
-		OpenedByName:   asString(row["opened_by_name"]),
-		PostsCount:     asInt(row["posts_count"]),
-		LastPostAt:     parseTimePtr(asString(row["last_post_at"])),
-		LastPostByType: model.ForumActorType(asString(row["last_post_by_type"])),
-		LastPostByName: asString(row["last_post_by_name"]),
-		OpenedAt:       openedAt,
-		UpdatedAt:      updatedAt,
-		ClosedAt:       parseTimePtr(asString(row["closed_at"])),
+		ThreadID:          asString(row["thread_id"]),
+		Ticket:            asString(row["ticket"]),
+		RunID:             asString(row["run_id"]),
+		AgentName:         asString(row["agent_name"]),
+		Title:             asString(row["title"]),
+		State:             model.ForumThreadState(asString(row["state"])),
+		Priority:          model.ForumPriority(asString(row["priority"])),
+		AssigneeType:      model.ForumActorType(asString(row["assignee_type"])),
+		AssigneeName:      asString(row["assignee_name"]),
+		OpenedByType:      model.ForumActorType(asString(row["opened_by_type"])),
+		OpenedByName:      asString(row["opened_by_name"]),
+		PostsCount:        asInt(row["posts_count"]),
+		LastPostAt:        parseTimePtr(asString(row["last_post_at"])),
+		LastPostByType:    model.ForumActorType(asString(row["last_post_by_type"])),
+		LastPostByName:    asString(row["last_post_by_name"]),
+		LastEventSequence: int64(asInt(row["last_event_sequence"])),
+		LastActorType:     model.ForumActorType(asString(row["last_actor_type"])),
+		IsUnseen:          asInt(row["is_unseen"]) == 1,
+		IsUnanswered:      asInt(row["is_unanswered"]) == 1,
+		OpenedAt:          openedAt,
+		UpdatedAt:         updatedAt,
+		ClosedAt:          parseTimePtr(asString(row["closed_at"])),
 	}, nil
+}
+
+func normalizeForumViewerType(viewerType model.ForumViewerType) (model.ForumViewerType, error) {
+	normalized := model.ForumViewerType(strings.ToLower(strings.TrimSpace(string(viewerType))))
+	switch normalized {
+	case model.ForumViewerHuman, model.ForumViewerAgent:
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("forum viewer_type must be human or agent")
+	}
+}
+
+func normalizeForumQueueType(queueType model.ForumQueueType) (model.ForumQueueType, error) {
+	normalized := model.ForumQueueType(strings.ToLower(strings.TrimSpace(string(queueType))))
+	switch normalized {
+	case model.ForumQueueUnseen, model.ForumQueueUnanswered:
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("forum queue type must be unseen or unanswered")
+	}
 }

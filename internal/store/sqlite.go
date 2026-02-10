@@ -215,6 +215,32 @@ CREATE TABLE IF NOT EXISTS forum_thread_views (
 );
 CREATE INDEX IF NOT EXISTS idx_forum_thread_views_ticket_filters
   ON forum_thread_views (ticket, state, priority, updated_at);
+CREATE TABLE IF NOT EXISTS forum_thread_reads (
+  thread_id TEXT NOT NULL,
+  viewer_type TEXT NOT NULL,
+  viewer_id TEXT NOT NULL,
+  last_seen_event_sequence INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (thread_id, viewer_type, viewer_id)
+);
+CREATE INDEX IF NOT EXISTS idx_forum_thread_reads_viewer
+  ON forum_thread_reads (viewer_type, viewer_id, updated_at);
+CREATE TABLE IF NOT EXISTS forum_thread_queue_view (
+  thread_id TEXT PRIMARY KEY,
+  ticket TEXT NOT NULL,
+  run_id TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  assignee_name TEXT NOT NULL DEFAULT '',
+  last_event_sequence INTEGER NOT NULL DEFAULT 0,
+  last_actor_type TEXT NOT NULL DEFAULT '',
+  last_non_system_actor_type TEXT NOT NULL DEFAULT '',
+  last_human_or_operator_sequence INTEGER NOT NULL DEFAULT 0,
+  last_agent_sequence INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_forum_thread_queue_view_filters
+  ON forum_thread_queue_view (ticket, run_id, state, priority, last_event_sequence DESC);
 CREATE TABLE IF NOT EXISTS forum_thread_stats (
   ticket TEXT NOT NULL,
   run_id TEXT NOT NULL DEFAULT '',

@@ -320,6 +320,104 @@ func (r *RemoteCore) ForumWatchEvents(ticket string, cursor int64, limit int) ([
 	return response.Events, nil
 }
 
+func (r *RemoteCore) ForumSearchThreads(options ForumSearchThreadsOptions) ([]model.ForumThreadView, error) {
+	query := map[string]string{}
+	if strings.TrimSpace(options.Query) != "" {
+		query["query"] = strings.TrimSpace(options.Query)
+	}
+	if strings.TrimSpace(options.Ticket) != "" {
+		query["ticket"] = strings.TrimSpace(options.Ticket)
+	}
+	if strings.TrimSpace(options.RunID) != "" {
+		query["run_id"] = strings.TrimSpace(options.RunID)
+	}
+	if strings.TrimSpace(string(options.State)) != "" {
+		query["state"] = strings.TrimSpace(string(options.State))
+	}
+	if strings.TrimSpace(string(options.Priority)) != "" {
+		query["priority"] = strings.TrimSpace(string(options.Priority))
+	}
+	if strings.TrimSpace(options.Assignee) != "" {
+		query["assignee"] = strings.TrimSpace(options.Assignee)
+	}
+	if strings.TrimSpace(string(options.ViewerType)) != "" {
+		query["viewer_type"] = strings.TrimSpace(string(options.ViewerType))
+	}
+	if strings.TrimSpace(options.ViewerID) != "" {
+		query["viewer_id"] = strings.TrimSpace(options.ViewerID)
+	}
+	if options.Cursor > 0 {
+		query["cursor"] = strconv.FormatInt(options.Cursor, 10)
+	}
+	if options.Limit > 0 {
+		query["limit"] = strconv.Itoa(options.Limit)
+	}
+	var response struct {
+		Threads []model.ForumThreadView `json:"threads"`
+	}
+	if err := r.doJSON(context.Background(), http.MethodGet, "/api/v1/forum/search", query, nil, &response); err != nil {
+		return nil, err
+	}
+	return response.Threads, nil
+}
+
+func (r *RemoteCore) ForumListQueue(options ForumQueueOptions) ([]model.ForumThreadView, error) {
+	query := map[string]string{}
+	if strings.TrimSpace(string(options.QueueType)) != "" {
+		query["type"] = strings.TrimSpace(string(options.QueueType))
+	}
+	if strings.TrimSpace(options.Ticket) != "" {
+		query["ticket"] = strings.TrimSpace(options.Ticket)
+	}
+	if strings.TrimSpace(options.RunID) != "" {
+		query["run_id"] = strings.TrimSpace(options.RunID)
+	}
+	if strings.TrimSpace(string(options.State)) != "" {
+		query["state"] = strings.TrimSpace(string(options.State))
+	}
+	if strings.TrimSpace(string(options.Priority)) != "" {
+		query["priority"] = strings.TrimSpace(string(options.Priority))
+	}
+	if strings.TrimSpace(options.Assignee) != "" {
+		query["assignee"] = strings.TrimSpace(options.Assignee)
+	}
+	if strings.TrimSpace(string(options.ViewerType)) != "" {
+		query["viewer_type"] = strings.TrimSpace(string(options.ViewerType))
+	}
+	if strings.TrimSpace(options.ViewerID) != "" {
+		query["viewer_id"] = strings.TrimSpace(options.ViewerID)
+	}
+	if options.Cursor > 0 {
+		query["cursor"] = strconv.FormatInt(options.Cursor, 10)
+	}
+	if options.Limit > 0 {
+		query["limit"] = strconv.Itoa(options.Limit)
+	}
+	var response struct {
+		Threads []model.ForumThreadView `json:"threads"`
+	}
+	if err := r.doJSON(context.Background(), http.MethodGet, "/api/v1/forum/queues", query, nil, &response); err != nil {
+		return nil, err
+	}
+	return response.Threads, nil
+}
+
+func (r *RemoteCore) ForumMarkThreadSeen(ctx context.Context, options ForumMarkThreadSeenOptions) (model.ForumThreadSeen, error) {
+	payload := map[string]any{
+		"viewer_type":              strings.TrimSpace(string(options.ViewerType)),
+		"viewer_id":                strings.TrimSpace(options.ViewerID),
+		"last_seen_event_sequence": options.LastSeenEventSequence,
+	}
+	var response struct {
+		Seen model.ForumThreadSeen `json:"seen"`
+	}
+	path := "/api/v1/forum/threads/" + url.PathEscape(strings.TrimSpace(options.ThreadID)) + "/seen"
+	if err := r.doJSON(ctx, http.MethodPost, path, nil, payload, &response); err != nil {
+		return model.ForumThreadSeen{}, err
+	}
+	return response.Seen, nil
+}
+
 func (r *RemoteCore) doJSON(ctx context.Context, method string, path string, query map[string]string, body any, out any) error {
 	if ctx == nil {
 		ctx = context.Background()

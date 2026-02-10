@@ -22,15 +22,20 @@ type ForumThread = {
   assignee_name: string;
   posts_count: number;
   updated_at: string;
+  opened_at: string;
+  last_event_sequence?: number;
+  last_actor_type?: string;
+  is_unseen?: boolean;
+  is_unanswered?: boolean;
 };
 
-type ForumOutboxMessage = {
-  message_id: string;
-  topic: string;
-  status: string;
-  attempt_count: number;
-  last_error?: string;
-  updated_at: string;
+type ForumPost = {
+  post_id: string;
+  event_id: string;
+  author_type: string;
+  author_name: string;
+  body: string;
+  created_at: string;
 };
 
 type ForumEvent = {
@@ -41,8 +46,26 @@ type ForumEvent = {
     thread_id: string;
     ticket: string;
     run_id?: string;
+    actor_type?: string;
+    actor_name?: string;
     occurred_at: string;
   };
+  payload_json?: string;
+};
+
+type ForumThreadDetail = {
+  thread: ForumThread;
+  posts: ForumPost[];
+  events: ForumEvent[];
+};
+
+type ForumOutboxMessage = {
+  message_id: string;
+  topic: string;
+  status: string;
+  attempt_count: number;
+  last_error?: string;
+  updated_at: string;
 };
 
 type ForumBusTopicDebug = {
@@ -82,11 +105,31 @@ type ForumDebugSnapshot = {
   };
 };
 
+type QueueTab = "all" | "unseen" | "unanswered";
+
 export function App() {
   const [runs, setRuns] = useState<RunSnapshot[]>([]);
-  const [threads, setThreads] = useState<ForumThread[]>([]);
-  const [debugSnapshot, setDebugSnapshot] = useState<ForumDebugSnapshot | null>(null);
   const [selectedRunID, setSelectedRunID] = useState("");
+
+  const [threads, setThreads] = useState<ForumThread[]>([]);
+  const [selectedThreadID, setSelectedThreadID] = useState("");
+  const [selectedDetail, setSelectedDetail] = useState<ForumThreadDetail | null>(null);
+
+  const [queueTab, setQueueTab] = useState<QueueTab>("all");
+  const [queueCounts, setQueueCounts] = useState({ unseen: 0, unanswered: 0 });
+
+  const [queryText, setQueryText] = useState("");
+  const [stateFilter, setStateFilter] = useState("");
+  const [priorityFilter, setPriorityFilter] = useState("");
+  const [assigneeFilter, setAssigneeFilter] = useState("");
+
+  const [viewerType, setViewerType] = useState("human");
+  const [viewerID, setViewerID] = useState("human:operator");
+
+  const [replyBody, setReplyBody] = useState("");
+  const [savingReply, setSavingReply] = useState(false);
+
+  const [debugSnapshot, setDebugSnapshot] = useState<ForumDebugSnapshot | null>(null);
   const [error, setError] = useState("");
 
   const selectedRun = useMemo(
@@ -95,18 +138,49 @@ export function App() {
   );
   const selectedTicket = selectedRun?.tickets?.[0] ?? "";
 
+  const diagnosticsWarning = useMemo(() => {
+    if (!debugSnapshot) {
+      return "";
+    }
+    if (!debugSnapshot.bus.healthy) {
+      return "Forum bus is unhealthy; queue/search freshness may lag.";
+    }
+    if (debugSnapshot.outbox.failed_count > 0) {
+      return `Forum outbox has ${debugSnapshot.outbox.failed_count} failed message(s).`;
+    }
+    if (debugSnapshot.outbox.pending_count > 50) {
+      return `Forum outbox backlog is elevated (${debugSnapshot.outbox.pending_count} pending).`;
+    }
+    return "";
+  }, [debugSnapshot]);
+
   useEffect(() => {
     void refreshRuns();
   }, []);
 
   useEffect(() => {
-    if (selectedTicket) {
-      void refreshThreads(selectedTicket, selectedRunID);
-    } else {
-      setThreads([]);
-    }
+    void refreshForumData();
     void refreshDebug(selectedTicket, selectedRunID);
-  }, [selectedTicket, selectedRunID]);
+  }, [
+    selectedTicket,
+    selectedRunID,
+    queueTab,
+    queryText,
+    stateFilter,
+    priorityFilter,
+    assigneeFilter,
+    viewerType,
+    viewerID,
+  ]);
+
+  useEffect(() => {
+    if (!selectedThreadID) {
+      setSelectedDetail(null);
+      return;
+    }
+    void refreshThreadDetail(selectedThreadID);
+    void markThreadSeen(selectedThreadID);
+  }, [selectedThreadID, viewerType, viewerID]);
 
   useEffect(() => {
     if (!selectedTicket) {
@@ -118,7 +192,10 @@ export function App() {
 
     const socket = new WebSocket(socketURL);
     socket.onmessage = () => {
-      void refreshThreads(selectedTicket, selectedRunID);
+      void refreshForumData();
+      if (selectedThreadID) {
+        void refreshThreadDetail(selectedThreadID);
+      }
       void refreshDebug(selectedTicket, selectedRunID);
     };
     socket.onerror = () => {
@@ -127,7 +204,7 @@ export function App() {
     return () => {
       socket.close();
     };
-  }, [selectedTicket, selectedRunID]);
+  }, [selectedTicket, selectedRunID, selectedThreadID]);
 
   async function refreshRuns() {
     try {
@@ -143,31 +220,169 @@ export function App() {
             .filter((item): item is RunSnapshot => item !== null)
         : [];
       setRuns(normalizedRuns);
-      if (!selectedRunID && normalizedRuns.length > 0) {
-        setSelectedRunID(normalizedRuns[0].run_id);
+      if (normalizedRuns.length > 0) {
+        const hasSelected = normalizedRuns.some((run) => run.run_id === selectedRunID);
+        if (!selectedRunID || !hasSelected) {
+          setSelectedRunID(normalizedRuns[0].run_id);
+        }
       }
     } catch (err) {
       setError(toErrorString(err));
     }
   }
 
-  async function refreshThreads(ticket: string, runID: string) {
+  async function refreshForumData() {
+    if (!selectedTicket) {
+      setThreads([]);
+      setQueueCounts({ unseen: 0, unanswered: 0 });
+      return;
+    }
     try {
       setError("");
-      const query = new URLSearchParams();
-      query.set("ticket", ticket);
-      if (runID) {
-        query.set("run_id", runID);
+      const [threadRows, counts] = await Promise.all([loadThreadRows(), loadQueueCounts()]);
+      setThreads(threadRows);
+      setQueueCounts(counts);
+      if (selectedThreadID && !threadRows.some((thread) => thread.thread_id === selectedThreadID)) {
+        setSelectedThreadID("");
       }
-      query.set("limit", "200");
-      const response = await fetch(`/api/v1/forum/threads?${query.toString()}`);
-      if (!response.ok) {
-        throw new Error(`threads request failed (${response.status})`);
-      }
-      const payload = (await response.json()) as { threads: ForumThread[] };
-      setThreads(payload.threads);
     } catch (err) {
       setError(toErrorString(err));
+    }
+  }
+
+  async function loadThreadRows(): Promise<ForumThread[]> {
+    const query = new URLSearchParams();
+    query.set("ticket", selectedTicket);
+    if (selectedRunID) {
+      query.set("run_id", selectedRunID);
+    }
+    if (stateFilter) {
+      query.set("state", stateFilter);
+    }
+    if (priorityFilter) {
+      query.set("priority", priorityFilter);
+    }
+    if (assigneeFilter) {
+      query.set("assignee", assigneeFilter);
+    }
+    if (viewerType) {
+      query.set("viewer_type", viewerType);
+    }
+    if (viewerID) {
+      query.set("viewer_id", viewerID);
+    }
+    query.set("limit", "200");
+
+    let path = "/api/v1/forum/search";
+    if (queueTab === "all") {
+      if (queryText.trim()) {
+        query.set("query", queryText.trim());
+      }
+    } else {
+      path = "/api/v1/forum/queues";
+      query.set("type", queueTab);
+    }
+
+    const response = await fetch(`${path}?${query.toString()}`);
+    if (!response.ok) {
+      throw new Error(`forum request failed (${response.status})`);
+    }
+    const payload = (await response.json()) as { threads?: ForumThread[] };
+    return Array.isArray(payload.threads) ? payload.threads : [];
+  }
+
+  async function loadQueueCounts(): Promise<{ unseen: number; unanswered: number }> {
+    if (!selectedTicket || !viewerID) {
+      return { unseen: 0, unanswered: 0 };
+    }
+    const base = new URLSearchParams();
+    base.set("ticket", selectedTicket);
+    if (selectedRunID) {
+      base.set("run_id", selectedRunID);
+    }
+    base.set("viewer_type", viewerType);
+    base.set("viewer_id", viewerID);
+    base.set("limit", "200");
+
+    const unseenParams = new URLSearchParams(base);
+    unseenParams.set("type", "unseen");
+    const unansweredParams = new URLSearchParams(base);
+    unansweredParams.set("type", "unanswered");
+
+    const [unseenResponse, unansweredResponse] = await Promise.all([
+      fetch(`/api/v1/forum/queues?${unseenParams.toString()}`),
+      fetch(`/api/v1/forum/queues?${unansweredParams.toString()}`),
+    ]);
+    if (!unseenResponse.ok || !unansweredResponse.ok) {
+      throw new Error("queue counters request failed");
+    }
+    const unseenPayload = (await unseenResponse.json()) as { threads?: unknown[] };
+    const unansweredPayload = (await unansweredResponse.json()) as { threads?: unknown[] };
+    return {
+      unseen: Array.isArray(unseenPayload.threads) ? unseenPayload.threads.length : 0,
+      unanswered: Array.isArray(unansweredPayload.threads) ? unansweredPayload.threads.length : 0,
+    };
+  }
+
+  async function refreshThreadDetail(threadID: string) {
+    try {
+      const response = await fetch(`/api/v1/forum/threads/${encodeURIComponent(threadID)}`);
+      if (!response.ok) {
+        throw new Error(`thread detail request failed (${response.status})`);
+      }
+      const payload = (await response.json()) as ForumThreadDetail;
+      setSelectedDetail(payload);
+    } catch (err) {
+      setError(toErrorString(err));
+    }
+  }
+
+  async function markThreadSeen(threadID: string) {
+    if (!viewerType || !viewerID) {
+      return;
+    }
+    try {
+      await fetch(`/api/v1/forum/threads/${encodeURIComponent(threadID)}/seen`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          viewer_type: viewerType,
+          viewer_id: viewerID,
+          last_seen_event_sequence: selectedDetail?.thread?.last_event_sequence ?? 0,
+        }),
+      });
+      void refreshForumData();
+    } catch {
+      // best effort in v1
+    }
+  }
+
+  async function submitReply() {
+    if (!selectedThreadID || !replyBody.trim()) {
+      return;
+    }
+    setSavingReply(true);
+    try {
+      setError("");
+      const response = await fetch(`/api/v1/forum/threads/${encodeURIComponent(selectedThreadID)}/posts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          body: replyBody.trim(),
+          actor_type: "human",
+          actor_name: viewerID,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`reply request failed (${response.status})`);
+      }
+      setReplyBody("");
+      await Promise.all([refreshForumData(), refreshThreadDetail(selectedThreadID)]);
+      await markThreadSeen(selectedThreadID);
+    } catch (err) {
+      setError(toErrorString(err));
+    } finally {
+      setSavingReply(false);
     }
   }
 
@@ -192,19 +407,60 @@ export function App() {
     }
   }
 
+  const timelineRows = useMemo(() => {
+    if (!selectedDetail) {
+      return [];
+    }
+    const postsByEventID = new Map(selectedDetail.posts.map((post) => [post.event_id, post]));
+    return [...selectedDetail.events]
+      .sort((a, b) => a.sequence - b.sequence)
+      .map((event) => {
+        const matchedPost = postsByEventID.get(event.envelope.event_id);
+        return {
+          id: `${event.sequence}-${event.envelope.event_id}`,
+          sequence: event.sequence,
+          eventType: event.envelope.event_type,
+          actorType: event.envelope.actor_type || matchedPost?.author_type || "-",
+          actorName: event.envelope.actor_name || matchedPost?.author_name || "-",
+          occurredAt: event.envelope.occurred_at,
+          body: matchedPost?.body || summarizePayload(event.payload_json),
+        };
+      });
+  }, [selectedDetail]);
+
   return (
     <div className="layout">
       <header className="topbar">
-        <h1>metawsm daemon dashboard</h1>
-        <button onClick={() => void refreshRuns()} type="button">
-          Refresh
-        </button>
+        <h1>metawsm forum explorer</h1>
+        <div className="toolbar">
+          <button onClick={() => void refreshRuns()} type="button">
+            Refresh Runs
+          </button>
+          <button
+            onClick={() => {
+              void refreshForumData();
+              void refreshDebug(selectedTicket, selectedRunID);
+              if (selectedThreadID) {
+                void refreshThreadDetail(selectedThreadID);
+              }
+            }}
+            type="button"
+          >
+            Refresh Forum
+          </button>
+        </div>
       </header>
 
       {error ? <div className="error">{error}</div> : null}
 
+      {diagnosticsWarning ? (
+        <div className="warning">
+          <strong>Diagnostics Warning:</strong> {diagnosticsWarning} <a href="#debug-panel">Open debug health</a>
+        </div>
+      ) : null}
+
       <div className="grid">
-        <section className="panel">
+        <section className="panel runs-panel">
           <h2>Runs</h2>
           {runs.length === 0 ? <p className="muted">No runs available.</p> : null}
           <ul className="list">
@@ -224,26 +480,158 @@ export function App() {
           </ul>
         </section>
 
-        <section className="panel">
-          <h2>Forum Threads {selectedTicket ? `(${selectedTicket})` : ""}</h2>
-          {threads.length === 0 ? <p className="muted">No threads for selection.</p> : null}
+        <section className="panel explorer-panel">
+          <div className="explorer-header">
+            <h2>Threads Explorer {selectedTicket ? `(${selectedTicket})` : ""}</h2>
+            <div className="queue-tabs">
+              <button
+                type="button"
+                className={queueTab === "all" ? "chip active" : "chip"}
+                onClick={() => setQueueTab("all")}
+              >
+                All
+              </button>
+              <button
+                type="button"
+                className={queueTab === "unseen" ? "chip active" : "chip"}
+                onClick={() => setQueueTab("unseen")}
+              >
+                Unseen ({queueCounts.unseen})
+              </button>
+              <button
+                type="button"
+                className={queueTab === "unanswered" ? "chip active" : "chip"}
+                onClick={() => setQueueTab("unanswered")}
+              >
+                Unanswered ({queueCounts.unanswered})
+              </button>
+            </div>
+          </div>
+
+          <div className="filters">
+            <input
+              type="text"
+              placeholder="Search title/body"
+              value={queryText}
+              onChange={(event) => setQueryText(event.target.value)}
+              disabled={queueTab !== "all"}
+            />
+            <select value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}>
+              <option value="">All states</option>
+              <option value="new">new</option>
+              <option value="triaged">triaged</option>
+              <option value="waiting_operator">waiting_operator</option>
+              <option value="waiting_human">waiting_human</option>
+              <option value="answered">answered</option>
+              <option value="closed">closed</option>
+            </select>
+            <select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value)}>
+              <option value="">All priorities</option>
+              <option value="urgent">urgent</option>
+              <option value="high">high</option>
+              <option value="normal">normal</option>
+              <option value="low">low</option>
+            </select>
+            <input
+              type="text"
+              placeholder="assignee"
+              value={assigneeFilter}
+              onChange={(event) => setAssigneeFilter(event.target.value)}
+            />
+          </div>
+
+          <div className="viewer-row">
+            <select value={viewerType} onChange={(event) => setViewerType(event.target.value)}>
+              <option value="human">human viewer</option>
+              <option value="agent">agent viewer</option>
+            </select>
+            <input
+              type="text"
+              value={viewerID}
+              placeholder="viewer identity"
+              onChange={(event) => setViewerID(event.target.value)}
+            />
+          </div>
+
+          {threads.length === 0 ? <p className="muted">No threads for current filters.</p> : null}
           <ul className="list">
             {threads.map((thread) => (
-              <li key={thread.thread_id} className="thread">
-                <strong>{thread.title}</strong>
-                <span>
-                  {thread.state} · {thread.priority} · posts={thread.posts_count}
-                </span>
-                <small>
-                  thread={thread.thread_id} assignee={thread.assignee_name || "-"}
-                </small>
+              <li key={thread.thread_id}>
+                <button
+                  type="button"
+                  className={thread.thread_id === selectedThreadID ? "item selected" : "item"}
+                  onClick={() => setSelectedThreadID(thread.thread_id)}
+                >
+                  <strong>{thread.title}</strong>
+                  <span>
+                    {thread.state} · {thread.priority} · posts={thread.posts_count}
+                  </span>
+                  <div className="badges">
+                    {thread.is_unseen ? <span className="badge unseen">unseen</span> : null}
+                    {thread.is_unanswered ? <span className="badge unanswered">unanswered</span> : null}
+                    {thread.last_actor_type ? <span className="badge actor">last={thread.last_actor_type}</span> : null}
+                  </div>
+                  <small>
+                    thread={thread.thread_id} assignee={thread.assignee_name || "-"} updated={formatShortTime(thread.updated_at)}
+                  </small>
+                </button>
               </li>
             ))}
           </ul>
         </section>
 
-        <section className="panel span-2">
-          <h2>Stream Debug</h2>
+        <section className="panel detail-panel">
+          <h2>Thread Detail</h2>
+          {!selectedDetail ? <p className="muted">Select a thread to inspect timeline and respond.</p> : null}
+          {selectedDetail ? (
+            <>
+              <div className="detail-meta">
+                <strong>{selectedDetail.thread.title}</strong>
+                <span>
+                  {selectedDetail.thread.state} · {selectedDetail.thread.priority} · ticket={selectedDetail.thread.ticket}
+                </span>
+                <small>
+                  thread={selectedDetail.thread.thread_id} run={selectedDetail.thread.run_id || "-"} assignee={
+                    selectedDetail.thread.assignee_name || "-"
+                  }
+                </small>
+              </div>
+
+              <div className="timeline">
+                {timelineRows.map((row) => (
+                  <div key={row.id} className="timeline-row">
+                    <div className="timeline-head">
+                      <span>
+                        #{row.sequence} {row.eventType}
+                      </span>
+                      <small>{formatShortTime(row.occurredAt)}</small>
+                    </div>
+                    <small>
+                      {row.actorType}:{row.actorName}
+                    </small>
+                    {row.body ? <p>{row.body}</p> : <p className="muted">No payload preview</p>}
+                  </div>
+                ))}
+              </div>
+
+              <div className="composer">
+                <h3>Respond as Human</h3>
+                <textarea
+                  value={replyBody}
+                  onChange={(event) => setReplyBody(event.target.value)}
+                  placeholder="Write a response to this thread..."
+                  rows={5}
+                />
+                <button type="button" onClick={() => void submitReply()} disabled={savingReply || !replyBody.trim()}>
+                  {savingReply ? "Sending..." : "Send Reply"}
+                </button>
+              </div>
+            </>
+          ) : null}
+        </section>
+
+        <section id="debug-panel" className="panel span-3">
+          <h2>Forum Debug Health</h2>
           {!debugSnapshot ? <p className="muted">No debug snapshot available.</p> : null}
           {debugSnapshot ? (
             <div className="debug-grid">
@@ -253,18 +641,19 @@ export function App() {
                   running={String(debugSnapshot.bus.running)} healthy={String(debugSnapshot.bus.healthy)}
                 </span>
                 <small>
-                  stream={debugSnapshot.bus.stream_name || "-"} group={debugSnapshot.bus.consumer_group || "-"} consumer=
-                  {debugSnapshot.bus.consumer_name || "-"}
+                  stream={debugSnapshot.bus.stream_name || "-"} group={debugSnapshot.bus.consumer_group || "-"} consumer={
+                    debugSnapshot.bus.consumer_name || "-"
+                  }
                 </small>
-                <small>redis={debugSnapshot.bus.redis_url || "-"}</small>
                 {debugSnapshot.bus.health_error ? <small className="error-inline">{debugSnapshot.bus.health_error}</small> : null}
               </div>
 
               <div className="debug-card">
                 <strong>Outbox</strong>
                 <span>
-                  pending={debugSnapshot.outbox.pending_count} processing={debugSnapshot.outbox.processing_count} failed=
-                  {debugSnapshot.outbox.failed_count}
+                  pending={debugSnapshot.outbox.pending_count} processing={debugSnapshot.outbox.processing_count} failed={
+                    debugSnapshot.outbox.failed_count
+                  }
                 </span>
                 <small>oldest_pending_age={debugSnapshot.outbox.oldest_pending_age_seconds}s</small>
               </div>
@@ -278,45 +667,11 @@ export function App() {
                         {topic.topic} stream={topic.stream}
                       </span>
                       <small>
-                        handler={String(topic.handler_registered)} subscribed={String(topic.subscribed)} exists=
-                        {String(topic.stream_exists)} len={topic.stream_length} group={String(topic.consumer_group_present)} pending=
-                        {topic.consumer_group_pending} lag={topic.consumer_group_lag}
+                        handler={String(topic.handler_registered)} subscribed={String(topic.subscribed)} exists={
+                          String(topic.stream_exists)
+                        } len={topic.stream_length} lag={topic.consumer_group_lag}
                       </small>
                       {topic.topic_error ? <small className="error-inline">{topic.topic_error}</small> : null}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              <div className="debug-card">
-                <strong>Recent Outbox ({debugSnapshot.outbox_messages.length})</strong>
-                <ul className="list compact">
-                  {debugSnapshot.outbox_messages.map((message) => (
-                    <li key={message.message_id} className="thread">
-                      <span>
-                        {message.status} {message.topic}
-                      </span>
-                      <small>
-                        id={message.message_id} attempts={message.attempt_count} updated={formatShortTime(message.updated_at)}
-                      </small>
-                      {message.last_error ? <small className="error-inline">{message.last_error}</small> : null}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              <div className="debug-card">
-                <strong>Recent Events ({debugSnapshot.events.length})</strong>
-                <ul className="list compact">
-                  {debugSnapshot.events.map((event) => (
-                    <li key={`${event.sequence}-${event.envelope.event_id}`} className="thread">
-                      <span>
-                        #{event.sequence} {event.envelope.event_type}
-                      </span>
-                      <small>
-                        thread={event.envelope.thread_id} ticket={event.envelope.ticket} run={event.envelope.run_id || "-"}
-                      </small>
-                      <small>{formatShortTime(event.envelope.occurred_at)}</small>
                     </li>
                   ))}
                 </ul>
@@ -327,6 +682,21 @@ export function App() {
       </div>
     </div>
   );
+}
+
+function summarizePayload(raw?: string): string {
+  if (!raw) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object") {
+      return JSON.stringify(parsed);
+    }
+    return String(parsed);
+  } catch {
+    return raw;
+  }
 }
 
 function toErrorString(err: unknown): string {
@@ -381,7 +751,7 @@ function normalizeGuidanceArray(
   if (!Array.isArray(value)) {
     return [];
   }
-  const normalized = value
+  return value
     .map((item) => {
       if (!item || typeof item !== "object") {
         return null;
@@ -411,7 +781,6 @@ function normalizeGuidanceArray(
         question: string;
       } => item !== null,
     );
-  return normalized;
 }
 
 function formatShortTime(raw: string): string {

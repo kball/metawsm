@@ -19,6 +19,8 @@ func (r *Runtime) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/runs/", r.handleRunByID)
 	mux.HandleFunc("/api/v1/forum/threads", r.handleForumThreads)
 	mux.HandleFunc("/api/v1/forum/threads/", r.handleForumThreadAction)
+	mux.HandleFunc("/api/v1/forum/search", r.handleForumSearch)
+	mux.HandleFunc("/api/v1/forum/queues", r.handleForumQueues)
 	mux.HandleFunc("/api/v1/forum/control/signal", r.handleForumControlSignal)
 	mux.HandleFunc("/api/v1/forum/events", r.handleForumEvents)
 	mux.HandleFunc("/api/v1/forum/stats", r.handleForumStats)
@@ -234,9 +236,62 @@ func (r *Runtime) handleForumThreadAction(w http.ResponseWriter, req *http.Reque
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"thread": thread})
+	case "seen":
+		var payload forumMarkSeenRequest
+		if err := decodeJSON(req, &payload); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_json", err.Error())
+			return
+		}
+		seen, err := r.service.ForumMarkThreadSeen(req.Context(), serviceapi.ForumMarkThreadSeenOptions{
+			ThreadID:              threadID,
+			ViewerType:            model.ForumViewerType(strings.TrimSpace(payload.ViewerType)),
+			ViewerID:              strings.TrimSpace(payload.ViewerID),
+			LastSeenEventSequence: payload.LastSeenEventSequence,
+		})
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "forum_mark_seen_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"seen": seen})
 	default:
 		writeAPIError(w, http.StatusNotFound, "unknown_action", "unsupported forum thread action")
 	}
+}
+
+func (r *Runtime) handleForumSearch(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET is supported")
+		return
+	}
+	options, err := parseForumSearchOptions(req)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_filter", err.Error())
+		return
+	}
+	threads, err := r.service.ForumSearchThreads(options)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "forum_search_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"threads": threads})
+}
+
+func (r *Runtime) handleForumQueues(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET is supported")
+		return
+	}
+	options, err := parseForumQueueOptions(req)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_filter", err.Error())
+		return
+	}
+	threads, err := r.service.ForumListQueue(options)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "forum_queue_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"threads": threads})
 }
 
 func (r *Runtime) handleForumControlSignal(w http.ResponseWriter, req *http.Request) {
@@ -356,6 +411,54 @@ func parseForumThreadFilter(req *http.Request) (model.ForumThreadFilter, error) 
 	}, nil
 }
 
+func parseForumSearchOptions(req *http.Request) (serviceapi.ForumSearchThreadsOptions, error) {
+	query := req.URL.Query()
+	limit, err := parseIntQuery(query.Get("limit"), 50)
+	if err != nil {
+		return serviceapi.ForumSearchThreadsOptions{}, err
+	}
+	cursor, err := parseInt64Query(query.Get("cursor"), 0)
+	if err != nil {
+		return serviceapi.ForumSearchThreadsOptions{}, err
+	}
+	return serviceapi.ForumSearchThreadsOptions{
+		Query:      strings.TrimSpace(query.Get("query")),
+		Ticket:     strings.TrimSpace(query.Get("ticket")),
+		RunID:      strings.TrimSpace(query.Get("run_id")),
+		State:      model.ForumThreadState(strings.TrimSpace(query.Get("state"))),
+		Priority:   model.ForumPriority(strings.TrimSpace(query.Get("priority"))),
+		Assignee:   strings.TrimSpace(query.Get("assignee")),
+		ViewerType: model.ForumViewerType(strings.TrimSpace(query.Get("viewer_type"))),
+		ViewerID:   strings.TrimSpace(query.Get("viewer_id")),
+		Limit:      limit,
+		Cursor:     cursor,
+	}, nil
+}
+
+func parseForumQueueOptions(req *http.Request) (serviceapi.ForumQueueOptions, error) {
+	query := req.URL.Query()
+	limit, err := parseIntQuery(query.Get("limit"), 50)
+	if err != nil {
+		return serviceapi.ForumQueueOptions{}, err
+	}
+	cursor, err := parseInt64Query(query.Get("cursor"), 0)
+	if err != nil {
+		return serviceapi.ForumQueueOptions{}, err
+	}
+	return serviceapi.ForumQueueOptions{
+		QueueType:  model.ForumQueueType(strings.TrimSpace(query.Get("type"))),
+		Ticket:     strings.TrimSpace(query.Get("ticket")),
+		RunID:      strings.TrimSpace(query.Get("run_id")),
+		State:      model.ForumThreadState(strings.TrimSpace(query.Get("state"))),
+		Priority:   model.ForumPriority(strings.TrimSpace(query.Get("priority"))),
+		Assignee:   strings.TrimSpace(query.Get("assignee")),
+		ViewerType: model.ForumViewerType(strings.TrimSpace(query.Get("viewer_type"))),
+		ViewerID:   strings.TrimSpace(query.Get("viewer_id")),
+		Limit:      limit,
+		Cursor:     cursor,
+	}, nil
+}
+
 func parseIntQuery(raw string, fallback int) (int, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
@@ -471,6 +574,12 @@ type forumControlSignalRequest struct {
 	CorrelationID string                      `json:"correlation_id"`
 	CausationID   string                      `json:"causation_id"`
 	Payload       model.ForumControlPayloadV1 `json:"payload"`
+}
+
+type forumMarkSeenRequest struct {
+	ViewerType            string `json:"viewer_type"`
+	ViewerID              string `json:"viewer_id"`
+	LastSeenEventSequence int64  `json:"last_seen_event_sequence"`
 }
 
 func contextWithTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {

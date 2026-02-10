@@ -200,6 +200,171 @@ func TestHandleForumDebug(t *testing.T) {
 	}
 }
 
+func TestHandleForumSearch(t *testing.T) {
+	core := &mockCore{
+		forumSearchThreadsFn: func(options serviceapi.ForumSearchThreadsOptions) ([]model.ForumThreadView, error) {
+			if options.Query != "validation mismatch" {
+				t.Fatalf("unexpected query %q", options.Query)
+			}
+			if options.Ticket != "METAWSM-011" {
+				t.Fatalf("unexpected ticket %q", options.Ticket)
+			}
+			if options.RunID != "run-123" {
+				t.Fatalf("unexpected run_id %q", options.RunID)
+			}
+			if options.State != model.ForumThreadStateWaitingHuman {
+				t.Fatalf("unexpected state %q", options.State)
+			}
+			if options.Priority != model.ForumPriorityHigh {
+				t.Fatalf("unexpected priority %q", options.Priority)
+			}
+			if options.Assignee != "kball" {
+				t.Fatalf("unexpected assignee %q", options.Assignee)
+			}
+			if options.ViewerType != model.ForumViewerHuman {
+				t.Fatalf("unexpected viewer type %q", options.ViewerType)
+			}
+			if options.ViewerID != "human:kball" {
+				t.Fatalf("unexpected viewer id %q", options.ViewerID)
+			}
+			if options.Limit != 15 {
+				t.Fatalf("unexpected limit %d", options.Limit)
+			}
+			if options.Cursor != 22 {
+				t.Fatalf("unexpected cursor %d", options.Cursor)
+			}
+			return []model.ForumThreadView{{
+				ThreadID:     "fthr-search-1",
+				Ticket:       "METAWSM-011",
+				Title:        "Validation mismatch in parser",
+				State:        model.ForumThreadStateWaitingHuman,
+				Priority:     model.ForumPriorityHigh,
+				IsUnseen:     true,
+				IsUnanswered: true,
+				OpenedAt:     time.Now().UTC(),
+				UpdatedAt:    time.Now().UTC(),
+			}}, nil
+		},
+	}
+	runtime := newTestRuntime(core)
+	mux := http.NewServeMux()
+	runtime.registerRoutes(mux)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/forum/search?query=validation+mismatch&ticket=METAWSM-011&run_id=run-123&state=waiting_human&priority=high&assignee=kball&viewer_type=human&viewer_id=human:kball&limit=15&cursor=22", nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Threads []model.ForumThreadView `json:"threads"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal search response: %v", err)
+	}
+	if len(payload.Threads) != 1 {
+		t.Fatalf("expected 1 thread, got %d", len(payload.Threads))
+	}
+	if !payload.Threads[0].IsUnseen {
+		t.Fatalf("expected unseen badge in response")
+	}
+}
+
+func TestHandleForumQueues(t *testing.T) {
+	core := &mockCore{
+		forumListQueueFn: func(options serviceapi.ForumQueueOptions) ([]model.ForumThreadView, error) {
+			if options.QueueType != model.ForumQueueUnseen {
+				t.Fatalf("unexpected queue type %q", options.QueueType)
+			}
+			if options.ViewerType != model.ForumViewerHuman {
+				t.Fatalf("unexpected viewer type %q", options.ViewerType)
+			}
+			if options.ViewerID != "human:kball" {
+				t.Fatalf("unexpected viewer id %q", options.ViewerID)
+			}
+			if options.Limit != 25 {
+				t.Fatalf("unexpected limit %d", options.Limit)
+			}
+			return []model.ForumThreadView{{
+				ThreadID:     "fthr-queue-1",
+				Ticket:       "METAWSM-011",
+				Title:        "Queue item",
+				State:        model.ForumThreadStateWaitingHuman,
+				Priority:     model.ForumPriorityNormal,
+				IsUnseen:     true,
+				IsUnanswered: true,
+				OpenedAt:     time.Now().UTC(),
+				UpdatedAt:    time.Now().UTC(),
+			}}, nil
+		},
+	}
+	runtime := newTestRuntime(core)
+	mux := http.NewServeMux()
+	runtime.registerRoutes(mux)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/forum/queues?type=unseen&ticket=METAWSM-011&viewer_type=human&viewer_id=human:kball&limit=25", nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Threads []model.ForumThreadView `json:"threads"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal queue response: %v", err)
+	}
+	if len(payload.Threads) != 1 {
+		t.Fatalf("expected 1 queue thread, got %d", len(payload.Threads))
+	}
+}
+
+func TestHandleForumMarkSeen(t *testing.T) {
+	core := &mockCore{
+		forumMarkThreadSeenFn: func(_ context.Context, options serviceapi.ForumMarkThreadSeenOptions) (model.ForumThreadSeen, error) {
+			if options.ThreadID != "fthr-1" {
+				t.Fatalf("unexpected thread id %q", options.ThreadID)
+			}
+			if options.ViewerType != model.ForumViewerHuman {
+				t.Fatalf("unexpected viewer type %q", options.ViewerType)
+			}
+			if options.ViewerID != "human:kball" {
+				t.Fatalf("unexpected viewer id %q", options.ViewerID)
+			}
+			if options.LastSeenEventSequence != 12 {
+				t.Fatalf("unexpected seen sequence %d", options.LastSeenEventSequence)
+			}
+			return model.ForumThreadSeen{
+				ThreadID:              options.ThreadID,
+				ViewerType:            options.ViewerType,
+				ViewerID:              options.ViewerID,
+				LastSeenEventSequence: options.LastSeenEventSequence,
+				UpdatedAt:             time.Now().UTC(),
+			}, nil
+		},
+	}
+	runtime := newTestRuntime(core)
+	mux := http.NewServeMux()
+	runtime.registerRoutes(mux)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/forum/threads/fthr-1/seen", strings.NewReader(`{"viewer_type":"human","viewer_id":"human:kball","last_seen_event_sequence":12}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Seen model.ForumThreadSeen `json:"seen"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal seen response: %v", err)
+	}
+	if payload.Seen.ThreadID != "fthr-1" {
+		t.Fatalf("unexpected seen thread id %q", payload.Seen.ThreadID)
+	}
+}
+
 func TestHandleForumStreamRejectsInvalidUpgrade(t *testing.T) {
 	core := &mockCore{}
 	runtime := newTestRuntime(core)
@@ -343,6 +508,9 @@ type mockCore struct {
 	forumGetThreadFn           func(string) (*serviceapi.ForumThreadDetail, error)
 	forumListStatsFn           func(string, string) ([]model.ForumThreadStats, error)
 	forumWatchEventsFn         func(string, int64, int) ([]model.ForumEvent, error)
+	forumSearchThreadsFn       func(serviceapi.ForumSearchThreadsOptions) ([]model.ForumThreadView, error)
+	forumListQueueFn           func(serviceapi.ForumQueueOptions) ([]model.ForumThreadView, error)
+	forumMarkThreadSeenFn      func(context.Context, serviceapi.ForumMarkThreadSeenOptions) (model.ForumThreadSeen, error)
 }
 
 func (m *mockCore) Shutdown() {}
@@ -441,4 +609,25 @@ func (m *mockCore) ForumWatchEvents(ticket string, cursor int64, limit int) ([]m
 		return []model.ForumEvent{}, nil
 	}
 	return m.forumWatchEventsFn(ticket, cursor, limit)
+}
+
+func (m *mockCore) ForumSearchThreads(options serviceapi.ForumSearchThreadsOptions) ([]model.ForumThreadView, error) {
+	if m.forumSearchThreadsFn == nil {
+		return []model.ForumThreadView{}, nil
+	}
+	return m.forumSearchThreadsFn(options)
+}
+
+func (m *mockCore) ForumListQueue(options serviceapi.ForumQueueOptions) ([]model.ForumThreadView, error) {
+	if m.forumListQueueFn == nil {
+		return []model.ForumThreadView{}, nil
+	}
+	return m.forumListQueueFn(options)
+}
+
+func (m *mockCore) ForumMarkThreadSeen(ctx context.Context, options serviceapi.ForumMarkThreadSeenOptions) (model.ForumThreadSeen, error) {
+	if m.forumMarkThreadSeenFn == nil {
+		return model.ForumThreadSeen{}, nil
+	}
+	return m.forumMarkThreadSeenFn(ctx, options)
 }

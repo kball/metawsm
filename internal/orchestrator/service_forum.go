@@ -67,6 +67,40 @@ type ForumSetPriorityOptions struct {
 type ForumThreadDetail struct {
 	Thread model.ForumThreadView `json:"thread"`
 	Posts  []model.ForumPost     `json:"posts"`
+	Events []model.ForumEvent    `json:"events"`
+}
+
+type ForumSearchThreadsOptions struct {
+	Query      string
+	Ticket     string
+	RunID      string
+	State      model.ForumThreadState
+	Priority   model.ForumPriority
+	Assignee   string
+	ViewerType model.ForumViewerType
+	ViewerID   string
+	Limit      int
+	Cursor     int64
+}
+
+type ForumQueueOptions struct {
+	QueueType  model.ForumQueueType
+	Ticket     string
+	RunID      string
+	State      model.ForumThreadState
+	Priority   model.ForumPriority
+	Assignee   string
+	ViewerType model.ForumViewerType
+	ViewerID   string
+	Limit      int
+	Cursor     int64
+}
+
+type ForumMarkThreadSeenOptions struct {
+	ThreadID              string
+	ViewerType            model.ForumViewerType
+	ViewerID              string
+	LastSeenEventSequence int64
 }
 
 type ForumControlSignalOptions struct {
@@ -691,7 +725,11 @@ func (s *Service) ForumGetThread(threadID string) (*ForumThreadDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ForumThreadDetail{Thread: *thread, Posts: posts}, nil
+	events, err := s.store.ListForumThreadEvents(thread.ThreadID, 500)
+	if err != nil {
+		return nil, err
+	}
+	return &ForumThreadDetail{Thread: *thread, Posts: posts, Events: events}, nil
 }
 
 func (s *Service) ForumListStats(ticket string, runID string) ([]model.ForumThreadStats, error) {
@@ -700,6 +738,53 @@ func (s *Service) ForumListStats(ticket string, runID string) ([]model.ForumThre
 
 func (s *Service) ForumWatchEvents(ticket string, cursor int64, limit int) ([]model.ForumEvent, error) {
 	return s.store.WatchForumEvents(strings.TrimSpace(ticket), cursor, limit)
+}
+
+func (s *Service) ForumSearchThreads(options ForumSearchThreadsOptions) ([]model.ForumThreadView, error) {
+	return s.store.SearchForumThreads(model.ForumThreadSearchFilter{
+		Query:      strings.TrimSpace(options.Query),
+		Ticket:     strings.TrimSpace(options.Ticket),
+		RunID:      strings.TrimSpace(options.RunID),
+		State:      options.State,
+		Priority:   options.Priority,
+		Assignee:   strings.TrimSpace(options.Assignee),
+		ViewerType: options.ViewerType,
+		ViewerID:   strings.TrimSpace(options.ViewerID),
+		Limit:      options.Limit,
+		Cursor:     options.Cursor,
+	})
+}
+
+func (s *Service) ForumListQueue(options ForumQueueOptions) ([]model.ForumThreadView, error) {
+	return s.store.ListForumQueue(model.ForumQueueFilter{
+		QueueType:  options.QueueType,
+		Ticket:     strings.TrimSpace(options.Ticket),
+		RunID:      strings.TrimSpace(options.RunID),
+		State:      options.State,
+		Priority:   options.Priority,
+		Assignee:   strings.TrimSpace(options.Assignee),
+		ViewerType: options.ViewerType,
+		ViewerID:   strings.TrimSpace(options.ViewerID),
+		Limit:      options.Limit,
+		Cursor:     options.Cursor,
+	})
+}
+
+func (s *Service) ForumMarkThreadSeen(ctx context.Context, options ForumMarkThreadSeenOptions) (model.ForumThreadSeen, error) {
+	_ = ctx
+	seen, err := s.store.MarkForumThreadSeen(
+		strings.TrimSpace(options.ThreadID),
+		options.ViewerType,
+		strings.TrimSpace(options.ViewerID),
+		options.LastSeenEventSequence,
+	)
+	if err != nil {
+		return model.ForumThreadSeen{}, err
+	}
+	if seen == nil {
+		return model.ForumThreadSeen{}, fmt.Errorf("forum seen write returned nil result")
+	}
+	return *seen, nil
 }
 
 func (s *Service) ForumBusHealth() error {

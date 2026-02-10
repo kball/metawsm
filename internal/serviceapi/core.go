@@ -16,6 +16,9 @@ type ForumChangeStateOptions = orchestrator.ForumChangeStateOptions
 type ForumSetPriorityOptions = orchestrator.ForumSetPriorityOptions
 type ForumControlSignalOptions = orchestrator.ForumControlSignalOptions
 type ForumDebugOptions = orchestrator.ForumDebugOptions
+type ForumSearchThreadsOptions = orchestrator.ForumSearchThreadsOptions
+type ForumQueueOptions = orchestrator.ForumQueueOptions
+type ForumMarkThreadSeenOptions = orchestrator.ForumMarkThreadSeenOptions
 type ForumThreadDetail = orchestrator.ForumThreadDetail
 type RunSnapshot = orchestrator.RunSnapshot
 
@@ -43,6 +46,9 @@ type Core interface {
 	ForumGetThread(threadID string) (*ForumThreadDetail, error)
 	ForumListStats(ticket string, runID string) ([]model.ForumThreadStats, error)
 	ForumWatchEvents(ticket string, cursor int64, limit int) ([]model.ForumEvent, error)
+	ForumSearchThreads(options ForumSearchThreadsOptions) ([]model.ForumThreadView, error)
+	ForumListQueue(options ForumQueueOptions) ([]model.ForumThreadView, error)
+	ForumMarkThreadSeen(ctx context.Context, options ForumMarkThreadSeenOptions) (model.ForumThreadSeen, error)
 }
 
 type LocalCore struct {
@@ -153,6 +159,18 @@ func (l *LocalCore) ForumListStats(ticket string, runID string) ([]model.ForumTh
 
 func (l *LocalCore) ForumWatchEvents(ticket string, cursor int64, limit int) ([]model.ForumEvent, error) {
 	return l.service.ForumWatchEvents(ticket, cursor, limit)
+}
+
+func (l *LocalCore) ForumSearchThreads(options ForumSearchThreadsOptions) ([]model.ForumThreadView, error) {
+	return l.service.ForumSearchThreads(options)
+}
+
+func (l *LocalCore) ForumListQueue(options ForumQueueOptions) ([]model.ForumThreadView, error) {
+	return l.service.ForumListQueue(options)
+}
+
+func (l *LocalCore) ForumMarkThreadSeen(ctx context.Context, options ForumMarkThreadSeenOptions) (model.ForumThreadSeen, error) {
+	return l.service.ForumMarkThreadSeen(ctx, options)
 }
 
 func snapshotHasTicket(snapshot RunSnapshot, ticket string) bool {

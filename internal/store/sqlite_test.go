@@ -737,6 +737,200 @@ func TestForumThreadLifecycleRoundTrip(t *testing.T) {
 	}
 }
 
+func TestForumSearchQueueAndSeenSemantics(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	s := NewSQLiteStore(dbPath)
+	if err := s.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	openThread := func(threadID string, title string, body string) {
+		if _, err := s.ForumOpenThread(model.ForumOpenThreadCommand{
+			Envelope: model.ForumEnvelope{
+				EventID:      "evt-open-" + threadID,
+				EventType:    "forum.thread.opened",
+				EventVersion: 1,
+				OccurredAt:   time.Now().UTC(),
+				ThreadID:     threadID,
+				RunID:        "run-queue-1",
+				Ticket:       "METAWSM-011",
+				AgentName:    "agent-a",
+				ActorType:    model.ForumActorAgent,
+				ActorName:    "agent-a",
+			},
+			Title:    title,
+			Body:     body,
+			Priority: model.ForumPriorityNormal,
+		}); err != nil {
+			t.Fatalf("open thread %s: %v", threadID, err)
+		}
+	}
+
+	openThread("thread-queue-1", "Validation mismatch", "Agent asks for validation review.")
+	if _, err := s.ForumChangeState(model.ForumChangeStateCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:      "evt-state-thread-queue-1",
+			EventType:    "forum.state.changed",
+			EventVersion: 1,
+			OccurredAt:   time.Now().UTC(),
+			ThreadID:     "thread-queue-1",
+			ActorType:    model.ForumActorOperator,
+			ActorName:    "operator-a",
+		},
+		ToState: model.ForumThreadStateWaitingHuman,
+	}); err != nil {
+		t.Fatalf("set waiting_human for thread-queue-1: %v", err)
+	}
+
+	openThread("thread-queue-2", "Already answered", "Agent asks a question that gets answered.")
+	if _, err := s.ForumChangeState(model.ForumChangeStateCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:      "evt-state-thread-queue-2",
+			EventType:    "forum.state.changed",
+			EventVersion: 1,
+			OccurredAt:   time.Now().UTC(),
+			ThreadID:     "thread-queue-2",
+			ActorType:    model.ForumActorOperator,
+			ActorName:    "operator-a",
+		},
+		ToState: model.ForumThreadStateWaitingHuman,
+	}); err != nil {
+		t.Fatalf("set waiting_human for thread-queue-2: %v", err)
+	}
+	if _, err := s.ForumAddPost(model.ForumAddPostCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:      "evt-post-thread-queue-2",
+			EventType:    "forum.post.added",
+			EventVersion: 1,
+			OccurredAt:   time.Now().UTC(),
+			ThreadID:     "thread-queue-2",
+			ActorType:    model.ForumActorHuman,
+			ActorName:    "kball",
+		},
+		Body: "Human answered this question.",
+	}); err != nil {
+		t.Fatalf("add human post for thread-queue-2: %v", err)
+	}
+
+	openThread("thread-queue-3", "Needs operator triage", "Operator should choose next action.")
+	if _, err := s.ForumChangeState(model.ForumChangeStateCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:      "evt-state-thread-queue-3",
+			EventType:    "forum.state.changed",
+			EventVersion: 1,
+			OccurredAt:   time.Now().UTC(),
+			ThreadID:     "thread-queue-3",
+			ActorType:    model.ForumActorAgent,
+			ActorName:    "agent-a",
+		},
+		ToState: model.ForumThreadStateWaitingOperator,
+	}); err != nil {
+		t.Fatalf("set waiting_operator for thread-queue-3: %v", err)
+	}
+
+	firstSeen, err := s.MarkForumThreadSeen("thread-queue-1", model.ForumViewerHuman, "human:kball", 0)
+	if err != nil {
+		t.Fatalf("mark thread-queue-1 seen: %v", err)
+	}
+	if firstSeen.LastSeenEventSequence <= 0 {
+		t.Fatalf("expected positive seen sequence, got %d", firstSeen.LastSeenEventSequence)
+	}
+
+	downgradeSeen, err := s.MarkForumThreadSeen("thread-queue-1", model.ForumViewerHuman, "human:kball", 1)
+	if err != nil {
+		t.Fatalf("mark thread-queue-1 seen with lower sequence: %v", err)
+	}
+	if downgradeSeen.LastSeenEventSequence != firstSeen.LastSeenEventSequence {
+		t.Fatalf("expected idempotent monotonic seen sequence %d, got %d", firstSeen.LastSeenEventSequence, downgradeSeen.LastSeenEventSequence)
+	}
+
+	if _, err := s.ForumAddPost(model.ForumAddPostCommand{
+		Envelope: model.ForumEnvelope{
+			EventID:      "evt-post-thread-queue-1-agent-followup",
+			EventType:    "forum.post.added",
+			EventVersion: 1,
+			OccurredAt:   time.Now().UTC(),
+			ThreadID:     "thread-queue-1",
+			ActorType:    model.ForumActorAgent,
+			ActorName:    "agent-a",
+		},
+		Body: "Agent follow-up requiring human response.",
+	}); err != nil {
+		t.Fatalf("add agent follow-up for thread-queue-1: %v", err)
+	}
+
+	searchResults, err := s.SearchForumThreads(model.ForumThreadSearchFilter{
+		Query:      "validation",
+		Ticket:     "METAWSM-011",
+		ViewerType: model.ForumViewerHuman,
+		ViewerID:   "human:kball",
+		Limit:      20,
+	})
+	if err != nil {
+		t.Fatalf("search forum threads: %v", err)
+	}
+	searchByID := map[string]model.ForumThreadView{}
+	for _, thread := range searchResults {
+		searchByID[thread.ThreadID] = thread
+	}
+	thread1, ok := searchByID["thread-queue-1"]
+	if !ok {
+		t.Fatalf("expected thread-queue-1 in search results")
+	}
+	if !thread1.IsUnseen {
+		t.Fatalf("expected thread-queue-1 to be unseen after agent follow-up")
+	}
+	if !thread1.IsUnanswered {
+		t.Fatalf("expected thread-queue-1 to be unanswered after agent follow-up")
+	}
+
+	unseenQueue, err := s.ListForumQueue(model.ForumQueueFilter{
+		QueueType:  model.ForumQueueUnseen,
+		Ticket:     "METAWSM-011",
+		ViewerType: model.ForumViewerHuman,
+		ViewerID:   "human:kball",
+		Limit:      20,
+	})
+	if err != nil {
+		t.Fatalf("list unseen queue: %v", err)
+	}
+	unseenIDs := map[string]bool{}
+	for _, thread := range unseenQueue {
+		unseenIDs[thread.ThreadID] = true
+	}
+	if !unseenIDs["thread-queue-1"] {
+		t.Fatalf("expected thread-queue-1 to appear in unseen queue")
+	}
+
+	unansweredQueue, err := s.ListForumQueue(model.ForumQueueFilter{
+		QueueType:  model.ForumQueueUnanswered,
+		Ticket:     "METAWSM-011",
+		ViewerType: model.ForumViewerHuman,
+		ViewerID:   "human:kball",
+		Limit:      20,
+	})
+	if err != nil {
+		t.Fatalf("list unanswered queue: %v", err)
+	}
+	unansweredIDs := map[string]bool{}
+	for _, thread := range unansweredQueue {
+		unansweredIDs[thread.ThreadID] = true
+	}
+	if !unansweredIDs["thread-queue-1"] {
+		t.Fatalf("expected thread-queue-1 in unanswered queue")
+	}
+	if !unansweredIDs["thread-queue-3"] {
+		t.Fatalf("expected thread-queue-3 in unanswered queue")
+	}
+	if unansweredIDs["thread-queue-2"] {
+		t.Fatalf("did not expect thread-queue-2 in unanswered queue after human response")
+	}
+}
+
 func TestForumControlThreadMappingUpsertAndLookup(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 not available")
@@ -853,8 +1047,8 @@ func TestApplyForumEventProjectionsIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list projection events: %v", err)
 	}
-	if len(projectionRows) != 2 {
-		t.Fatalf("expected two projection markers (views+stats), got %d", len(projectionRows))
+	if len(projectionRows) != 3 {
+		t.Fatalf("expected three projection markers (views+queue+stats), got %d", len(projectionRows))
 	}
 }
 
