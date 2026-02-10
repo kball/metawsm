@@ -164,7 +164,12 @@ export function App() {
     return "";
   }, [debugSnapshot]);
   const canSubmitQuestion =
-    !!selectedTicket && !!viewerID.trim() && !!questionTitle.trim() && !!questionBody.trim() && !savingQuestion;
+    viewerType === "human" &&
+    !!selectedTicket &&
+    !!viewerID.trim() &&
+    !!questionTitle.trim() &&
+    !!questionBody.trim() &&
+    !savingQuestion;
 
   useEffect(() => {
     void refreshRuns();
@@ -430,7 +435,40 @@ export function App() {
     }
     setSavingQuestion(true);
     try {
-      setError("Question submit wiring in progress.");
+      setError("");
+      const response = await fetch("/api/v1/forum/threads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticket: selectedTicket,
+          run_id: selectedRunID || "",
+          title: questionTitle.trim(),
+          body: questionBody.trim(),
+          priority: questionPriority,
+          actor_type: "human",
+          actor_name: viewerID.trim(),
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`question request failed (${response.status})`);
+      }
+      const payload = (await response.json()) as { thread?: ForumThread };
+      const createdThreadID = payload.thread?.thread_id ?? "";
+
+      setQuestionTitle("");
+      setQuestionBody("");
+      setQuestionPriority("normal");
+      setQueueTab("all");
+
+      await refreshForumData();
+      if (createdThreadID) {
+        setSelectedThreadID(createdThreadID);
+        await refreshThreadDetail(createdThreadID);
+        await markThreadSeen(createdThreadID);
+      }
+      void refreshDebug(selectedTicket, selectedRunID);
+    } catch (err) {
+      setError(toErrorString(err));
     } finally {
       setSavingQuestion(false);
     }
@@ -655,6 +693,7 @@ export function App() {
             <button type="button" onClick={() => void submitQuestion()} disabled={!canSubmitQuestion}>
               {savingQuestion ? "Asking..." : "Ask Question"}
             </button>
+            {viewerType !== "human" ? <small className="muted">Set viewer type to human to open a question.</small> : null}
           </div>
 
           {!selectedDetail ? <p className="muted">Select a thread to inspect timeline and respond.</p> : null}
