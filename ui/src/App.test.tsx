@@ -130,12 +130,16 @@ describe("App ask-question flow", () => {
 
   it("keeps Ask Question disabled until required fields are populated", async () => {
     render(<App />);
-    await screen.findByText("Threads Explorer (METAWSM-011)");
+    await screen.findByText("Threads Explorer");
 
     const askButton = screen.getByRole("button", { name: "Ask Question" });
+    const ticketInput = screen.getByPlaceholderText("Question ticket (e.g. METAWSM-011)");
     const titleInput = screen.getByPlaceholderText("Question title");
     const bodyInput = screen.getByPlaceholderText("Describe the question for the forum...");
 
+    expect(askButton).toBeDisabled();
+
+    fireEvent.change(ticketInput, { target: { value: "METAWSM-011" } });
     expect(askButton).toBeDisabled();
 
     fireEvent.change(titleInput, { target: { value: "Need direction" } });
@@ -147,12 +151,14 @@ describe("App ask-question flow", () => {
 
   it("submits ask-question payload and clears inputs on success", async () => {
     render(<App />);
-    await screen.findByText("Threads Explorer (METAWSM-011)");
+    await screen.findByText("Threads Explorer");
 
+    const ticketInput = screen.getByPlaceholderText("Question ticket (e.g. METAWSM-011)");
     const titleInput = screen.getByPlaceholderText("Question title");
     const bodyInput = screen.getByPlaceholderText("Describe the question for the forum...");
     const askButton = screen.getByRole("button", { name: "Ask Question" });
 
+    fireEvent.change(ticketInput, { target: { value: "METAWSM-011" } });
     fireEvent.change(titleInput, { target: { value: "Need decision on retry policy" } });
     fireEvent.change(bodyInput, { target: { value: "Should retries cap at 3 attempts?" } });
     fireEvent.click(askButton);
@@ -179,12 +185,13 @@ describe("App ask-question flow", () => {
       priority: string;
     };
     expect(payload.ticket).toBe("METAWSM-011");
-    expect(payload.run_id).toBe("run-1");
+    expect(payload.run_id).toBe("");
     expect(payload.actor_type).toBe("human");
     expect(payload.actor_name).toBe("human:operator");
     expect(payload.priority).toBe("normal");
 
     await waitFor(() => {
+      expect(ticketInput).toHaveValue("METAWSM-011");
       expect(titleInput).toHaveValue("");
       expect(bodyInput).toHaveValue("");
     });

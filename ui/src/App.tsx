@@ -136,7 +136,8 @@ const EMPTY_BUCKETS: BoardBuckets = {
 
 export function App() {
   const [runs, setRuns] = useState<RunSnapshot[]>([]);
-  const [selectedRunID, setSelectedRunID] = useState("");
+  const [runFilter, setRunFilter] = useState("");
+  const [ticketFilter, setTicketFilter] = useState("");
 
   const [activeBoard, setActiveBoard] = useState<BoardKey>("in_progress");
   const [topicMode, setTopicMode] = useState<TopicMode>("ticket");
@@ -154,6 +155,7 @@ export function App() {
 
   const [replyBody, setReplyBody] = useState("");
   const [savingReply, setSavingReply] = useState(false);
+  const [questionTicket, setQuestionTicket] = useState("");
   const [questionTitle, setQuestionTitle] = useState("");
   const [questionBody, setQuestionBody] = useState("");
   const [questionPriority, setQuestionPriority] = useState("normal");
@@ -164,12 +166,6 @@ export function App() {
   const [error, setError] = useState("");
   const streamRefreshTimer = useRef<number | null>(null);
   const selectedThreadRef = useRef("");
-
-  const selectedRun = useMemo(
-    () => runs.find((item) => item.run_id === selectedRunID) ?? null,
-    [runs, selectedRunID],
-  );
-  const selectedTicket = selectedRun?.tickets?.[0] ?? "";
 
   const boardThreads = useMemo(
     () => [
@@ -212,6 +208,19 @@ export function App() {
     };
   }, [boardBuckets]);
 
+  const knownTickets = useMemo(() => {
+    const set = new Set<string>();
+    for (const run of runs) {
+      for (const ticket of run.tickets) {
+        const normalized = ticket.trim();
+        if (normalized) {
+          set.add(normalized);
+        }
+      }
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [runs]);
+
   const diagnosticsWarning = useMemo(() => {
     if (!debugSnapshot) {
       return "";
@@ -230,24 +239,25 @@ export function App() {
 
   const canSubmitQuestion =
     viewerType === "human" &&
-    !!selectedTicket &&
+    !!questionTicket.trim() &&
     !!viewerID.trim() &&
     !!questionTitle.trim() &&
     !!questionBody.trim() &&
     !savingQuestion;
 
   const boardScopeLabel = useMemo(() => {
-    if (topicMode === "ticket") {
-      return selectedTicket ? `ticket:${selectedTicket}` : "ticket:unselected";
+    const parts: string[] = [];
+    if (ticketFilter.trim()) {
+      parts.push(`ticket:${ticketFilter.trim()}`);
     }
-    if (topicMode === "run") {
-      return selectedRunID ? `run:${selectedRunID}` : "run:unselected";
+    if (runFilter.trim()) {
+      parts.push(`run:${runFilter.trim()}`);
     }
-    if (selectedAgentName) {
-      return `agent:${selectedAgentName}`;
+    if (topicMode === "agent") {
+      parts.push(selectedAgentName ? `agent:${selectedAgentName}` : "agent:all");
     }
-    return "agent:all";
-  }, [topicMode, selectedTicket, selectedRunID, selectedAgentName]);
+    return parts.length > 0 ? parts.join(" · ") : "global";
+  }, [ticketFilter, runFilter, topicMode, selectedAgentName]);
 
   useEffect(() => {
     void refreshRuns();
@@ -255,7 +265,7 @@ export function App() {
 
   useEffect(() => {
     void refreshForumData();
-  }, [selectedTicket, selectedRunID, topicMode, selectedAgentName, queryText, priorityFilter, viewerType, viewerID]);
+  }, [ticketFilter, runFilter, topicMode, selectedAgentName, queryText, priorityFilter, viewerType, viewerID]);
 
   useEffect(() => {
     if (topicMode !== "agent") {
@@ -270,14 +280,20 @@ export function App() {
   }, [topicMode, selectedAgentName, availableAgents]);
 
   useEffect(() => {
-    void refreshDebug(selectedTicket, selectedRunID);
+    if (!questionTicket.trim() && ticketFilter.trim()) {
+      setQuestionTicket(ticketFilter.trim());
+    }
+  }, [questionTicket, ticketFilter]);
+
+  useEffect(() => {
+    void refreshDebug(ticketFilter, runFilter);
     const interval = window.setInterval(() => {
-      void refreshDebug(selectedTicket, selectedRunID);
+      void refreshDebug(questionTicket.trim(), runFilter);
     }, 15000);
     return () => {
       window.clearInterval(interval);
     };
-  }, [selectedTicket, selectedRunID]);
+  }, [ticketFilter, runFilter]);
 
   useEffect(() => {
     if (!selectedThreadID) {
@@ -293,12 +309,14 @@ export function App() {
   }, [selectedThreadID]);
 
   useEffect(() => {
-    if (!selectedTicket) {
-      return;
-    }
     const socketURL = new URL("/api/v1/forum/stream", window.location.origin);
     socketURL.protocol = socketURL.protocol.replace("http", "ws");
-    socketURL.searchParams.set("ticket", selectedTicket);
+    if (ticketFilter.trim()) {
+      socketURL.searchParams.set("ticket", ticketFilter.trim());
+    }
+    if (runFilter.trim()) {
+      socketURL.searchParams.set("run_id", runFilter.trim());
+    }
 
     const socket = new WebSocket(socketURL);
     socket.onmessage = (event) => {
@@ -327,7 +345,7 @@ export function App() {
       }
       socket.close();
     };
-  }, [selectedTicket]);
+  }, [ticketFilter, runFilter]);
 
   async function refreshRuns() {
     try {
@@ -343,26 +361,13 @@ export function App() {
             .filter((item): item is RunSnapshot => item !== null)
         : [];
       setRuns(normalizedRuns);
-      if (normalizedRuns.length > 0) {
-        const hasSelected = normalizedRuns.some((run) => run.run_id === selectedRunID);
-        if (!selectedRunID || !hasSelected) {
-          setSelectedRunID(normalizedRuns[0].run_id);
-        }
-      }
     } catch (err) {
       setError(toErrorString(err));
     }
   }
 
   async function refreshForumData() {
-    const scope = resolveScope(topicMode, selectedTicket, selectedRunID);
-    if (!scope) {
-      setBoardBuckets(EMPTY_BUCKETS);
-      if (selectedThreadID) {
-        setSelectedThreadID("");
-      }
-      return;
-    }
+    const scope = resolveScope(ticketFilter, runFilter);
 
     try {
       setError("");
@@ -597,8 +602,8 @@ export function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ticket: selectedTicket,
-          run_id: selectedRunID || "",
+          ticket: questionTicket.trim(),
+          run_id: runFilter.trim(),
           title: questionTitle.trim(),
           body: questionBody.trim(),
           priority: questionPriority,
@@ -612,6 +617,7 @@ export function App() {
       const payload = (await response.json()) as { thread?: ForumThread };
       const createdThreadID = payload.thread?.thread_id ?? "";
 
+      setTicketFilter(questionTicket.trim());
       setQuestionTitle("");
       setQuestionBody("");
       setQuestionPriority("normal");
@@ -623,7 +629,7 @@ export function App() {
         await refreshThreadDetail(createdThreadID);
         await markThreadSeen(createdThreadID);
       }
-      void refreshDebug(selectedTicket, selectedRunID);
+      void refreshDebug(ticketFilter, runFilter);
     } catch (err) {
       setError(toErrorString(err));
     } finally {
@@ -684,7 +690,7 @@ export function App() {
           <button
             onClick={() => {
               void refreshForumData();
-              void refreshDebug(selectedTicket, selectedRunID);
+              void refreshDebug(ticketFilter, runFilter);
               if (selectedThreadID) {
                 void refreshThreadDetail(selectedThreadID);
               }
@@ -717,29 +723,9 @@ export function App() {
       ) : null}
 
       <div className="grid">
-        <section className="panel runs-panel">
-          <h2>Runs</h2>
-          {runs.length === 0 ? <p className="muted">No runs available.</p> : null}
-          <ul className="list">
-            {runs.map((run) => (
-              <li key={run.run_id}>
-                <button
-                  type="button"
-                  className={run.run_id === selectedRunID ? "item selected" : "item"}
-                  onClick={() => setSelectedRunID(run.run_id)}
-                >
-                  <strong>{run.run_id}</strong>
-                  <span>{run.status}</span>
-                  <small>{run.tickets.length > 0 ? run.tickets.join(", ") : "No tickets"}</small>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-
         <section className="panel explorer-panel">
           <div className="explorer-header">
-            <h2>Threads Explorer {selectedTicket ? `(${selectedTicket})` : ""}</h2>
+            <h2>Threads Explorer</h2>
             <span className="scope">scope: {boardScopeLabel}</span>
           </div>
 
@@ -765,6 +751,25 @@ export function App() {
             >
               Recently Completed ({boardCounts.recentlyCompleted})
             </button>
+          </div>
+
+          <div className="scope-filters">
+            <select value={ticketFilter} onChange={(event) => setTicketFilter(event.target.value)}>
+              <option value="">All tickets</option>
+              {knownTickets.map((ticket) => (
+                <option key={ticket} value={ticket}>
+                  {ticket}
+                </option>
+              ))}
+            </select>
+            <select value={runFilter} onChange={(event) => setRunFilter(event.target.value)}>
+              <option value="">All runs</option>
+              {runs.map((run) => (
+                <option key={run.run_id} value={run.run_id}>
+                  {run.run_id}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="topic-tabs">
@@ -903,6 +908,12 @@ export function App() {
           <h2>Thread Detail</h2>
           <div className="composer">
             <h3>Ask as Human</h3>
+            <input
+              type="text"
+              placeholder="Question ticket (e.g. METAWSM-011)"
+              value={questionTicket}
+              onChange={(event) => setQuestionTicket(event.target.value)}
+            />
             <input
               type="text"
               placeholder="Question title"
@@ -1087,37 +1098,13 @@ function BoardLane({ title, rows, selectedThreadID, onSelectThread, emptyLabel }
   );
 }
 
-function resolveScope(topicMode: TopicMode, selectedTicket: string, selectedRunID: string) {
-  switch (topicMode) {
-    case "ticket": {
-      if (!selectedTicket) {
-        return null;
-      }
-      return {
-        ticket: selectedTicket,
-        run_id: selectedRunID || undefined,
-      };
-    }
-    case "run": {
-      if (!selectedRunID) {
-        return null;
-      }
-      return {
-        run_id: selectedRunID,
-      };
-    }
-    case "agent": {
-      if (!selectedTicket) {
-        return null;
-      }
-      return {
-        ticket: selectedTicket,
-        run_id: selectedRunID || undefined,
-      };
-    }
-    default:
-      return null;
-  }
+function resolveScope(ticketFilter: string, runFilter: string) {
+  const ticket = ticketFilter.trim();
+  const runID = runFilter.trim();
+  return {
+    ticket: ticket || undefined,
+    run_id: runID || undefined,
+  };
 }
 
 function isState(value: string, expected: string[]): boolean {
