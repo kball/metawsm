@@ -38,3 +38,13 @@ Step 2-3: Added glazed root scaffolding and migrated low-risk commands policy-in
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/main_test.go — Root command registration test
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/root_command.go — Root command registration via cobra and glazed
 
+
+## 2026-02-10
+
+Step 4: Migrated run-selector family to glazed with shared selector layer (commit d94292e2b5b17d9255a8c339b8b89190e2f49b04)
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/glazed_run_selector_commands.go — Implemented status/resume/stop/restart/cleanup/merge/commit/pr/iterate/close as glazed commands
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/root_command.go — Registered run-selector glazed commands in root
+

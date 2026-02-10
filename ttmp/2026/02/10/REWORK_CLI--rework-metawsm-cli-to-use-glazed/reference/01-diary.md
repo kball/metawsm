@@ -11,6 +11,8 @@ Owners: []
 RelatedFiles:
     - Path: cmd/metawsm/glazed_low_risk_commands.go
       Note: Migrated policy-init/docs/serve into glazed BareCommand implementations
+    - Path: cmd/metawsm/glazed_run_selector_commands.go
+      Note: Migrated run-selector command family to glazed with shared selector layer
     - Path: cmd/metawsm/main.go
       Note: |-
         Added testable usage matrix source of truth
@@ -22,7 +24,9 @@ RelatedFiles:
         Added usage matrix regression test
         Added root command registration coverage
     - Path: cmd/metawsm/root_command.go
-      Note: Added cobra/glazed root registration with legacy passthrough adapters
+      Note: |-
+        Added cobra/glazed root registration with legacy passthrough adapters
+        Switched run-selector commands from legacy passthrough to glazed registration
     - Path: go.mod
       Note: Added glazed and cobra dependencies
     - Path: go.sum
@@ -37,6 +41,7 @@ LastUpdated: 2026-02-10T09:20:00-08:00
 WhatFor: Track implementation steps, tradeoffs, failures, and validation for CLI migration.
 WhenToUse: During ticket execution and handoff/review.
 ---
+
 
 
 
@@ -206,3 +211,79 @@ This step establishes the new command registration architecture and proves mixed
 
 - Migrated commands currently use `cmds.BareCommand` and keep existing output contract.
 - Remaining commands are registered as passthrough wrappers to existing functions, preserving behavior until each family is migrated.
+
+## Step 3: Migrate run-selector command family with shared selector layer
+
+I migrated the run-selector command set (`status`, `resume`, `stop`, `restart`, `cleanup`, `merge`, `commit`, `pr`, `iterate`, `close`) into glazed `BareCommand` implementations and registered them through the new root. I introduced a shared `run-selector` parameter layer (`run-id`, `ticket`, `db`) so these commands use one centralized selector definition.
+
+This step removes a large amount of duplicated command flag plumbing from future maintenance scope while preserving command semantics and output contracts.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Use docmgr to pick up ticket REWORK_CLI. Read the plan, break it into tasks if it isn't already, then implement. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue phased implementation by migrating the next major command family and documenting each checkpoint.
+
+**Inferred user intent:** Land meaningful architecture progress in each commit while keeping behavior stable.
+
+**Commit (code):** d94292e2b5b17d9255a8c339b8b89190e2f49b04 — "metawsm: migrate run-selector command family to glazed"
+
+### What I did
+
+- Added `cmd/metawsm/glazed_run_selector_commands.go` with glazed commands for:
+  - `status`, `resume`, `stop`, `restart`, `cleanup`, `merge`, `commit`, `pr`, `iterate`, `close`
+- Added shared selector layer (`run-selector`) and shared parsing helpers:
+  - `run-id`, `ticket`, `db`
+- Updated `cmd/metawsm/root_command.go` to register these commands as migrated glazed commands and remove legacy passthrough routing for them.
+- Verified behavior and guardrails with:
+  - `go test ./cmd/metawsm -count=1`
+  - `go run ./cmd/metawsm status --help`
+  - `go run ./cmd/metawsm merge --run-id run-1` (expected `--human` guardrail)
+  - `go run ./cmd/metawsm iterate --run-id run-1` (expected `--feedback` requirement)
+
+### Why
+
+- This command family had high selector duplication and is central to daily operator workflows.
+- Shared selector layer is the core architectural gain expected from the migration plan.
+
+### What worked
+
+- All migrated commands compile and run through glazed/cobra registration.
+- Existing command tests remained green after migration.
+- Required-option guardrails (`merge --human`, `iterate --feedback`) continue to work.
+
+### What didn't work
+
+- No implementation blockers in this step.
+
+### What I learned
+
+- Using a dedicated shared layer for selectors (`run-id`/`ticket`/`db`) cleanly decouples repeated selector plumbing from command-specific logic.
+
+### What was tricky to build
+
+- Preserving detailed output/formatting consistency for commit and PR workflows while moving to new command constructors required careful parity with existing print paths.
+
+### What warrants a second pair of eyes
+
+- Verify that command help/usage text differences introduced by glazed (extra parser/debug flags) are acceptable for operator UX.
+
+### What should be done in the future
+
+- Proceed with grouped command-tree migration (`auth check`, `review sync`, `forum ...`).
+
+### Code review instructions
+
+- Start with `cmd/metawsm/glazed_run_selector_commands.go`:
+  - shared layer (`run-selector`)
+  - per-command constructors and Run methods
+- Review `cmd/metawsm/root_command.go` command registration changes.
+- Validate with:
+  - `go test ./cmd/metawsm -count=1`
+  - `go run ./cmd/metawsm status --help`
+  - `go run ./cmd/metawsm merge --run-id run-1`
+
+### Technical details
+
+- Selector parsing now uses `parsedLayers.InitializeStruct("run-selector", ...)` across the migrated family.
+- Commands with additional flags parse command-specific settings from the default layer.
