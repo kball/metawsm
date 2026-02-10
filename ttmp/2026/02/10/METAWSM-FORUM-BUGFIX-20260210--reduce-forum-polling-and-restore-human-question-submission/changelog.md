@@ -79,3 +79,13 @@ Step 6: Added Ask as Human composer UI (title/body/priority + submit gating) in 
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Diary entry for task 6 UI addition
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.tsx — Introduced human question composer controls and local state
 
+
+## 2026-02-10
+
+Step 7: Wired Ask as Human composer to POST /api/v1/forum/threads using viewer-backed actor identity and post-create thread selection flow (commit e41f9f2040bdf3e7d0d7072c14c2cbe64cf97cf0).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Diary entry for task 7 wiring
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.tsx — Implemented ask-thread API submit and created-thread focus behavior
+

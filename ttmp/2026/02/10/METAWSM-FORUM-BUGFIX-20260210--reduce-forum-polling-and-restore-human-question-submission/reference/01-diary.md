@@ -33,12 +33,14 @@ RelatedFiles:
         Websocket onmessage now ignores heartbeat/no-event frames and debounces refreshes (commit afa77ed1d2bfbb0cc285cf168d62378bf6fe3e52)
         Separated debug refresh cadence from filter-driven data refresh and added 15s interval (commit 1a710380748f52260c553b46b35895ba428a9f85)
         Added ask-question composer UI controls and submit gating state (commit 5bfc0ad96c0d3b805e86101c86a93113e1ef3337)
+        Ask composer submit now posts to /api/v1/forum/threads and selects created thread (commit e41f9f2040bdf3e7d0d7072c14c2cbe64cf97cf0)
 ExternalSources: []
 Summary: Implementation diary for sequential task delivery and validation evidence for METAWSM-FORUM-BUGFIX-20260210.
-LastUpdated: 2026-02-10T13:04:00-08:00
+LastUpdated: 2026-02-10T13:05:00-08:00
 WhatFor: Capture what changed, why, test results, risks, and commit traceability for each completed task.
 WhenToUse: Use to review implementation history, reproduce verification, and continue work task-by-task.
 ---
+
 
 
 
@@ -474,3 +476,74 @@ This was intentionally scoped to UI surface and local state only, with network s
 - Requires selected ticket, viewer ID, non-empty title/body, and not currently submitting.
 - Task progress:
 - Marked Task 6 complete via `docmgr task check --ticket METAWSM-FORUM-BUGFIX-20260210 --id 6`.
+
+## Step 7: Wire Ask Composer To Thread Creation API
+
+This step connected the ask composer to `POST /api/v1/forum/threads` and completed the human-originated question flow. Successful submissions now create a thread, refresh list/detail, and focus the new thread.
+
+I kept actor identity tied to the viewer input (`actor_name=<viewerID>`) with fixed `actor_type=human` for this composer.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Go through and implement task by task, keeping a diary and commiting as you go"
+
+**Assistant interpretation:** Continue executing each task in order and record implementation outcomes per commit.
+
+**Inferred user intent:** Fully restore human question submission in the forum UI, not only visually but functionally.
+
+**Commit (code):** `e41f9f2040bdf3e7d0d7072c14c2cbe64cf97cf0` — "Wire human ask composer to forum thread create API"
+
+### What I did
+- Updated `ui/src/App.tsx`:
+- Implemented `submitQuestion()` network flow:
+- `POST /api/v1/forum/threads`
+- Payload includes: `ticket`, `run_id`, `title`, `body`, `priority`, `actor_type: "human"`, `actor_name: viewerID`.
+- On success:
+- Clears ask fields.
+- Resets priority to `normal`.
+- Sets queue tab to `all`.
+- Refreshes forum data.
+- Selects and loads created thread detail.
+- Marks created thread seen.
+- Added `viewerType === "human"` requirement in `canSubmitQuestion`.
+- Added inline UI hint when viewer type is not human.
+- Ran:
+- `npm --prefix ui run check`
+
+### Why
+- Task 7 required real API submission using viewer-backed identity.
+- Human submission bug remains unresolved without this wiring.
+
+### What worked
+- TypeScript check passed.
+- Ask composer now performs end-to-end thread creation workflow on success.
+- Created thread becomes selected in UI when the API returns thread ID.
+
+### What didn't work
+- No blockers in this step.
+
+### What I learned
+- Reusing existing thread refresh/detail/seen functions minimized additional state complexity.
+
+### What was tricky to build
+- Keeping button gating and viewer role constraints consistent while preserving a straightforward UX.
+
+### What warrants a second pair of eyes
+- Whether forcing `actor_type="human"` in this composer is always desired, even if viewer mode changes in future UX.
+- Potential duplicate refresh work from both manual refresh and stream-driven updates right after create.
+
+### What should be done in the future
+- Add UI tests for the ask flow (Task 8) to lock behavior.
+
+### Code review instructions
+- Review `submitQuestion()` and `canSubmitQuestion` in `ui/src/App.tsx`.
+- Validate with:
+- `npm --prefix ui run check`
+
+### Technical details
+- Ask submit payload keys:
+- `ticket`, `run_id`, `title`, `body`, `priority`, `actor_type`, `actor_name`
+- Post-success sequence:
+- `refreshForumData` -> `setSelectedThreadID` -> `refreshThreadDetail` -> `markThreadSeen`
+- Task progress:
+- Marked Task 7 complete via `docmgr task check --ticket METAWSM-FORUM-BUGFIX-20260210 --id 7`.
