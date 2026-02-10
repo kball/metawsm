@@ -62,6 +62,14 @@ button:disabled {
   color: #fde68a;
 }
 
+.link-button {
+  background: transparent;
+  border: 0;
+  color: #fde68a;
+  padding: 0;
+  text-decoration: underline;
+}
+
 .grid {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr) minmax(0, 1fr);
@@ -139,6 +147,25 @@ button:disabled {
   margin-bottom: 0.75rem;
 }
 
+.scope {
+  color: #94a3b8;
+  font-size: 0.9rem;
+}
+
+.board-tabs,
+.topic-tabs {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.65rem;
+}
+
+.topic-label {
+  color: #94a3b8;
+  align-self: center;
+  font-size: 0.9rem;
+}
+
 .queue-tabs {
   display: flex;
   gap: 0.45rem;
@@ -163,6 +190,10 @@ button:disabled {
 
 .filters {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.filters.single {
+  grid-template-columns: 1fr;
 }
 
 .viewer-row {
@@ -250,6 +281,41 @@ textarea {
   align-items: baseline;
 }
 
+.board-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.board-columns.single {
+  grid-template-columns: 1fr;
+}
+
+.board-lane {
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 0.55rem;
+  background: #0a1323;
+}
+
+.lane-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.lane-header h3 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.lane-count {
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
 .composer {
   border-top: 1px solid #334155;
   padding-top: 0.75rem;
@@ -302,7 +368,8 @@ textarea {
 
   .filters,
   .viewer-row,
-  .debug-grid {
+  .debug-grid,
+  .board-columns {
     grid-template-columns: 1fr;
   }
 

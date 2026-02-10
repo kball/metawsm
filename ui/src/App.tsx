@@ -16,6 +16,7 @@ type ForumThread = {
   thread_id: string;
   ticket: string;
   run_id: string;
+  agent_name?: string;
   title: string;
   state: string;
   priority: string;
@@ -105,27 +106,48 @@ type ForumDebugSnapshot = {
   };
 };
 
-type QueueTab = "all" | "unseen" | "unanswered";
 type ForumStreamFrame = {
   type?: string;
   events?: unknown[];
+};
+
+type BoardKey = "in_progress" | "needs_me" | "recently_completed";
+type TopicMode = "ticket" | "run" | "agent";
+
+type BoardBuckets = {
+  inProgressNew: ForumThread[];
+  inProgressActive: ForumThread[];
+  inProgressAwaitingClose: ForumThread[];
+  needsMeUnseen: ForumThread[];
+  needsMeUnanswered: ForumThread[];
+  needsMeAssigned: ForumThread[];
+  recentlyClosed: ForumThread[];
+};
+
+const EMPTY_BUCKETS: BoardBuckets = {
+  inProgressNew: [],
+  inProgressActive: [],
+  inProgressAwaitingClose: [],
+  needsMeUnseen: [],
+  needsMeUnanswered: [],
+  needsMeAssigned: [],
+  recentlyClosed: [],
 };
 
 export function App() {
   const [runs, setRuns] = useState<RunSnapshot[]>([]);
   const [selectedRunID, setSelectedRunID] = useState("");
 
-  const [threads, setThreads] = useState<ForumThread[]>([]);
+  const [activeBoard, setActiveBoard] = useState<BoardKey>("in_progress");
+  const [topicMode, setTopicMode] = useState<TopicMode>("ticket");
+  const [selectedAgentName, setSelectedAgentName] = useState("");
+
+  const [boardBuckets, setBoardBuckets] = useState<BoardBuckets>(EMPTY_BUCKETS);
   const [selectedThreadID, setSelectedThreadID] = useState("");
   const [selectedDetail, setSelectedDetail] = useState<ForumThreadDetail | null>(null);
 
-  const [queueTab, setQueueTab] = useState<QueueTab>("all");
-  const [queueCounts, setQueueCounts] = useState({ unseen: 0, unanswered: 0 });
-
   const [queryText, setQueryText] = useState("");
-  const [stateFilter, setStateFilter] = useState("");
   const [priorityFilter, setPriorityFilter] = useState("");
-  const [assigneeFilter, setAssigneeFilter] = useState("");
 
   const [viewerType, setViewerType] = useState("human");
   const [viewerID, setViewerID] = useState("human:operator");
@@ -137,6 +159,7 @@ export function App() {
   const [questionPriority, setQuestionPriority] = useState("normal");
   const [savingQuestion, setSavingQuestion] = useState(false);
 
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [debugSnapshot, setDebugSnapshot] = useState<ForumDebugSnapshot | null>(null);
   const [error, setError] = useState("");
   const streamRefreshTimer = useRef<number | null>(null);
@@ -147,6 +170,47 @@ export function App() {
     [runs, selectedRunID],
   );
   const selectedTicket = selectedRun?.tickets?.[0] ?? "";
+
+  const boardThreads = useMemo(
+    () => [
+      ...boardBuckets.inProgressNew,
+      ...boardBuckets.inProgressActive,
+      ...boardBuckets.inProgressAwaitingClose,
+      ...boardBuckets.needsMeUnseen,
+      ...boardBuckets.needsMeUnanswered,
+      ...boardBuckets.needsMeAssigned,
+      ...boardBuckets.recentlyClosed,
+    ],
+    [boardBuckets],
+  );
+
+  const availableAgents = useMemo(() => {
+    const values = new Set<string>();
+    for (const thread of boardThreads) {
+      const agentName = (thread.agent_name || "").trim();
+      if (agentName) {
+        values.add(agentName);
+      }
+    }
+    return [...values].sort((a, b) => a.localeCompare(b));
+  }, [boardThreads]);
+
+  const boardCounts = useMemo(() => {
+    const inProgress =
+      boardBuckets.inProgressNew.length +
+      boardBuckets.inProgressActive.length +
+      boardBuckets.inProgressAwaitingClose.length;
+    const needsMeUnique = new Set<string>([
+      ...boardBuckets.needsMeUnseen.map((thread) => thread.thread_id),
+      ...boardBuckets.needsMeUnanswered.map((thread) => thread.thread_id),
+      ...boardBuckets.needsMeAssigned.map((thread) => thread.thread_id),
+    ]);
+    return {
+      inProgress,
+      needsMe: needsMeUnique.size,
+      recentlyCompleted: boardBuckets.recentlyClosed.length,
+    };
+  }, [boardBuckets]);
 
   const diagnosticsWarning = useMemo(() => {
     if (!debugSnapshot) {
@@ -163,6 +227,7 @@ export function App() {
     }
     return "";
   }, [debugSnapshot]);
+
   const canSubmitQuestion =
     viewerType === "human" &&
     !!selectedTicket &&
@@ -171,23 +236,38 @@ export function App() {
     !!questionBody.trim() &&
     !savingQuestion;
 
+  const boardScopeLabel = useMemo(() => {
+    if (topicMode === "ticket") {
+      return selectedTicket ? `ticket:${selectedTicket}` : "ticket:unselected";
+    }
+    if (topicMode === "run") {
+      return selectedRunID ? `run:${selectedRunID}` : "run:unselected";
+    }
+    if (selectedAgentName) {
+      return `agent:${selectedAgentName}`;
+    }
+    return "agent:all";
+  }, [topicMode, selectedTicket, selectedRunID, selectedAgentName]);
+
   useEffect(() => {
     void refreshRuns();
   }, []);
 
   useEffect(() => {
     void refreshForumData();
-  }, [
-    selectedTicket,
-    selectedRunID,
-    queueTab,
-    queryText,
-    stateFilter,
-    priorityFilter,
-    assigneeFilter,
-    viewerType,
-    viewerID,
-  ]);
+  }, [selectedTicket, selectedRunID, topicMode, selectedAgentName, queryText, priorityFilter, viewerType, viewerID]);
+
+  useEffect(() => {
+    if (topicMode !== "agent") {
+      return;
+    }
+    if (!selectedAgentName) {
+      return;
+    }
+    if (!availableAgents.includes(selectedAgentName)) {
+      setSelectedAgentName("");
+    }
+  }, [topicMode, selectedAgentName, availableAgents]);
 
   useEffect(() => {
     void refreshDebug(selectedTicket, selectedRunID);
@@ -247,7 +327,7 @@ export function App() {
       }
       socket.close();
     };
-  }, [selectedTicket, selectedRunID]);
+  }, [selectedTicket]);
 
   async function refreshRuns() {
     try {
@@ -275,96 +355,173 @@ export function App() {
   }
 
   async function refreshForumData() {
-    if (!selectedTicket) {
-      setThreads([]);
-      setQueueCounts({ unseen: 0, unanswered: 0 });
+    const scope = resolveScope(topicMode, selectedTicket, selectedRunID);
+    if (!scope) {
+      setBoardBuckets(EMPTY_BUCKETS);
+      if (selectedThreadID) {
+        setSelectedThreadID("");
+      }
       return;
     }
+
     try {
       setError("");
-      const [threadRows, counts] = await Promise.all([loadThreadRows(), loadQueueCounts()]);
-      setThreads(threadRows);
-      setQueueCounts(counts);
-      if (selectedThreadID && !threadRows.some((thread) => thread.thread_id === selectedThreadID)) {
-        setSelectedThreadID("");
+
+      const [allRows, closedRows, unseenRows, unansweredRows] = await Promise.all([
+        fetchSearchThreads(scope, {
+          queryText,
+          priorityFilter,
+          viewerType,
+          viewerID,
+        }),
+        fetchSearchThreads(scope, {
+          state: "closed",
+          queryText,
+          priorityFilter,
+          viewerType,
+          viewerID,
+        }),
+        fetchQueueThreads(scope, {
+          queueType: "unseen",
+          priorityFilter,
+          viewerType,
+          viewerID,
+        }),
+        fetchQueueThreads(scope, {
+          queueType: "unanswered",
+          priorityFilter,
+          viewerType,
+          viewerID,
+        }),
+      ]);
+
+      const scopedAllRows = applyTopicAgentFilter(allRows, topicMode, selectedAgentName);
+      const scopedClosedRows = applyTopicAgentFilter(closedRows, topicMode, selectedAgentName);
+      const scopedUnseenRows = applyTopicAgentFilter(applyQueryFilter(unseenRows, queryText), topicMode, selectedAgentName);
+      const scopedUnansweredRows = applyTopicAgentFilter(
+        applyQueryFilter(unansweredRows, queryText),
+        topicMode,
+        selectedAgentName,
+      );
+
+      const openRows = scopedAllRows.filter((thread) => !isClosedState(thread.state));
+      const inProgressNew = openRows.filter((thread) => isState(thread.state, ["new"]));
+      const inProgressActive = openRows.filter((thread) =>
+        isState(thread.state, ["triaged", "waiting_operator", "waiting_human"]),
+      );
+      const inProgressAwaitingClose = openRows.filter((thread) => isState(thread.state, ["answered"]));
+
+      const inferredAssigneeIDs = inferViewerAssigneeIDs(viewerID);
+      const needsMeAssigned = scopedAllRows.filter((thread) => assigneeMatchesViewer(thread.assignee_name, inferredAssigneeIDs));
+
+      const nextBuckets: BoardBuckets = {
+        inProgressNew,
+        inProgressActive,
+        inProgressAwaitingClose,
+        needsMeUnseen: scopedUnseenRows,
+        needsMeUnanswered: scopedUnansweredRows,
+        needsMeAssigned,
+        recentlyClosed: scopedClosedRows,
+      };
+      setBoardBuckets(nextBuckets);
+
+      if (selectedThreadID) {
+        const visibleIDs = new Set(
+          [
+            ...nextBuckets.inProgressNew,
+            ...nextBuckets.inProgressActive,
+            ...nextBuckets.inProgressAwaitingClose,
+            ...nextBuckets.needsMeUnseen,
+            ...nextBuckets.needsMeUnanswered,
+            ...nextBuckets.needsMeAssigned,
+            ...nextBuckets.recentlyClosed,
+          ].map((thread) => thread.thread_id),
+        );
+        if (!visibleIDs.has(selectedThreadID)) {
+          setSelectedThreadID("");
+        }
       }
     } catch (err) {
       setError(toErrorString(err));
     }
   }
 
-  async function loadThreadRows(): Promise<ForumThread[]> {
+  async function fetchSearchThreads(
+    scope: { ticket?: string; run_id?: string },
+    options: {
+      state?: string;
+      queryText: string;
+      priorityFilter: string;
+      viewerType: string;
+      viewerID: string;
+    },
+  ): Promise<ForumThread[]> {
     const query = new URLSearchParams();
-    query.set("ticket", selectedTicket);
-    if (selectedRunID) {
-      query.set("run_id", selectedRunID);
+    if (scope.ticket) {
+      query.set("ticket", scope.ticket);
     }
-    if (stateFilter) {
-      query.set("state", stateFilter);
+    if (scope.run_id) {
+      query.set("run_id", scope.run_id);
     }
-    if (priorityFilter) {
-      query.set("priority", priorityFilter);
+    if (options.state) {
+      query.set("state", options.state);
     }
-    if (assigneeFilter) {
-      query.set("assignee", assigneeFilter);
+    if (options.queryText.trim()) {
+      query.set("query", options.queryText.trim());
     }
-    if (viewerType) {
-      query.set("viewer_type", viewerType);
+    if (options.priorityFilter) {
+      query.set("priority", options.priorityFilter);
     }
-    if (viewerID) {
-      query.set("viewer_id", viewerID);
+    if (options.viewerType) {
+      query.set("viewer_type", options.viewerType);
     }
-    query.set("limit", "200");
+    if (options.viewerID) {
+      query.set("viewer_id", options.viewerID);
+    }
+    query.set("limit", "300");
 
-    let path = "/api/v1/forum/search";
-    if (queueTab === "all") {
-      if (queryText.trim()) {
-        query.set("query", queryText.trim());
-      }
-    } else {
-      path = "/api/v1/forum/queues";
-      query.set("type", queueTab);
-    }
-
-    const response = await fetch(`${path}?${query.toString()}`);
+    const response = await fetch(`/api/v1/forum/search?${query.toString()}`);
     if (!response.ok) {
-      throw new Error(`forum request failed (${response.status})`);
+      throw new Error(`forum search request failed (${response.status})`);
     }
     const payload = (await response.json()) as { threads?: ForumThread[] };
     return Array.isArray(payload.threads) ? payload.threads : [];
   }
 
-  async function loadQueueCounts(): Promise<{ unseen: number; unanswered: number }> {
-    if (!selectedTicket || !viewerID) {
-      return { unseen: 0, unanswered: 0 };
+  async function fetchQueueThreads(
+    scope: { ticket?: string; run_id?: string },
+    options: {
+      queueType: "unseen" | "unanswered";
+      priorityFilter: string;
+      viewerType: string;
+      viewerID: string;
+    },
+  ): Promise<ForumThread[]> {
+    const query = new URLSearchParams();
+    if (scope.ticket) {
+      query.set("ticket", scope.ticket);
     }
-    const base = new URLSearchParams();
-    base.set("ticket", selectedTicket);
-    if (selectedRunID) {
-      base.set("run_id", selectedRunID);
+    if (scope.run_id) {
+      query.set("run_id", scope.run_id);
     }
-    base.set("viewer_type", viewerType);
-    base.set("viewer_id", viewerID);
-    base.set("limit", "200");
+    query.set("type", options.queueType);
+    if (options.priorityFilter) {
+      query.set("priority", options.priorityFilter);
+    }
+    if (options.viewerType) {
+      query.set("viewer_type", options.viewerType);
+    }
+    if (options.viewerID) {
+      query.set("viewer_id", options.viewerID);
+    }
+    query.set("limit", "300");
 
-    const unseenParams = new URLSearchParams(base);
-    unseenParams.set("type", "unseen");
-    const unansweredParams = new URLSearchParams(base);
-    unansweredParams.set("type", "unanswered");
-
-    const [unseenResponse, unansweredResponse] = await Promise.all([
-      fetch(`/api/v1/forum/queues?${unseenParams.toString()}`),
-      fetch(`/api/v1/forum/queues?${unansweredParams.toString()}`),
-    ]);
-    if (!unseenResponse.ok || !unansweredResponse.ok) {
-      throw new Error("queue counters request failed");
+    const response = await fetch(`/api/v1/forum/queues?${query.toString()}`);
+    if (!response.ok) {
+      throw new Error(`forum queue request failed (${response.status})`);
     }
-    const unseenPayload = (await unseenResponse.json()) as { threads?: unknown[] };
-    const unansweredPayload = (await unansweredResponse.json()) as { threads?: unknown[] };
-    return {
-      unseen: Array.isArray(unseenPayload.threads) ? unseenPayload.threads.length : 0,
-      unanswered: Array.isArray(unansweredPayload.threads) ? unansweredPayload.threads.length : 0,
-    };
+    const payload = (await response.json()) as { threads?: ForumThread[] };
+    return Array.isArray(payload.threads) ? payload.threads : [];
   }
 
   async function refreshThreadDetail(threadID: string) {
@@ -458,7 +615,7 @@ export function App() {
       setQuestionTitle("");
       setQuestionBody("");
       setQuestionPriority("normal");
-      setQueueTab("all");
+      setActiveBoard("in_progress");
 
       await refreshForumData();
       if (createdThreadID) {
@@ -536,6 +693,9 @@ export function App() {
           >
             Refresh Forum
           </button>
+          <button type="button" onClick={() => setShowDiagnostics((value) => !value)}>
+            {showDiagnostics ? "Hide System Health" : "Show System Health"}
+          </button>
         </div>
       </header>
 
@@ -543,7 +703,16 @@ export function App() {
 
       {diagnosticsWarning ? (
         <div className="warning">
-          <strong>Diagnostics Warning:</strong> {diagnosticsWarning} <a href="#debug-panel">Open debug health</a>
+          <strong>Diagnostics Warning:</strong> {diagnosticsWarning}{" "}
+          <button
+            type="button"
+            className="link-button"
+            onClick={() => {
+              setShowDiagnostics(true);
+            }}
+          >
+            Open system health
+          </button>
         </div>
       ) : null}
 
@@ -571,30 +740,70 @@ export function App() {
         <section className="panel explorer-panel">
           <div className="explorer-header">
             <h2>Threads Explorer {selectedTicket ? `(${selectedTicket})` : ""}</h2>
-            <div className="queue-tabs">
-              <button
-                type="button"
-                className={queueTab === "all" ? "chip active" : "chip"}
-                onClick={() => setQueueTab("all")}
-              >
-                All
-              </button>
-              <button
-                type="button"
-                className={queueTab === "unseen" ? "chip active" : "chip"}
-                onClick={() => setQueueTab("unseen")}
-              >
-                Unseen ({queueCounts.unseen})
-              </button>
-              <button
-                type="button"
-                className={queueTab === "unanswered" ? "chip active" : "chip"}
-                onClick={() => setQueueTab("unanswered")}
-              >
-                Unanswered ({queueCounts.unanswered})
-              </button>
-            </div>
+            <span className="scope">scope: {boardScopeLabel}</span>
           </div>
+
+          <div className="board-tabs">
+            <button
+              type="button"
+              className={activeBoard === "in_progress" ? "chip active" : "chip"}
+              onClick={() => setActiveBoard("in_progress")}
+            >
+              In Progress ({boardCounts.inProgress})
+            </button>
+            <button
+              type="button"
+              className={activeBoard === "needs_me" ? "chip active" : "chip"}
+              onClick={() => setActiveBoard("needs_me")}
+            >
+              Needs Me ({boardCounts.needsMe})
+            </button>
+            <button
+              type="button"
+              className={activeBoard === "recently_completed" ? "chip active" : "chip"}
+              onClick={() => setActiveBoard("recently_completed")}
+            >
+              Recently Completed ({boardCounts.recentlyCompleted})
+            </button>
+          </div>
+
+          <div className="topic-tabs">
+            <span className="topic-label">Topic area:</span>
+            <button
+              type="button"
+              className={topicMode === "ticket" ? "chip active" : "chip"}
+              onClick={() => setTopicMode("ticket")}
+            >
+              Ticket first
+            </button>
+            <button
+              type="button"
+              className={topicMode === "run" ? "chip active" : "chip"}
+              onClick={() => setTopicMode("run")}
+            >
+              Run
+            </button>
+            <button
+              type="button"
+              className={topicMode === "agent" ? "chip active" : "chip"}
+              onClick={() => setTopicMode("agent")}
+            >
+              Agent
+            </button>
+          </div>
+
+          {topicMode === "agent" ? (
+            <div className="filters single">
+              <select value={selectedAgentName} onChange={(event) => setSelectedAgentName(event.target.value)}>
+                <option value="">All agents</option>
+                {availableAgents.map((agentName) => (
+                  <option value={agentName} key={agentName}>
+                    {agentName}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
 
           <div className="filters">
             <input
@@ -602,17 +811,7 @@ export function App() {
               placeholder="Search title/body"
               value={queryText}
               onChange={(event) => setQueryText(event.target.value)}
-              disabled={queueTab !== "all"}
             />
-            <select value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}>
-              <option value="">All states</option>
-              <option value="new">new</option>
-              <option value="triaged">triaged</option>
-              <option value="waiting_operator">waiting_operator</option>
-              <option value="waiting_human">waiting_human</option>
-              <option value="answered">answered</option>
-              <option value="closed">closed</option>
-            </select>
             <select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value)}>
               <option value="">All priorities</option>
               <option value="urgent">urgent</option>
@@ -620,12 +819,6 @@ export function App() {
               <option value="normal">normal</option>
               <option value="low">low</option>
             </select>
-            <input
-              type="text"
-              placeholder="assignee"
-              value={assigneeFilter}
-              onChange={(event) => setAssigneeFilter(event.target.value)}
-            />
           </div>
 
           <div className="viewer-row">
@@ -641,31 +834,69 @@ export function App() {
             />
           </div>
 
-          {threads.length === 0 ? <p className="muted">No threads for current filters.</p> : null}
-          <ul className="list">
-            {threads.map((thread) => (
-              <li key={thread.thread_id}>
-                <button
-                  type="button"
-                  className={thread.thread_id === selectedThreadID ? "item selected" : "item"}
-                  onClick={() => setSelectedThreadID(thread.thread_id)}
-                >
-                  <strong>{thread.title}</strong>
-                  <span>
-                    {thread.state} · {thread.priority} · posts={thread.posts_count}
-                  </span>
-                  <div className="badges">
-                    {thread.is_unseen ? <span className="badge unseen">unseen</span> : null}
-                    {thread.is_unanswered ? <span className="badge unanswered">unanswered</span> : null}
-                    {thread.last_actor_type ? <span className="badge actor">last={thread.last_actor_type}</span> : null}
-                  </div>
-                  <small>
-                    thread={thread.thread_id} assignee={thread.assignee_name || "-"} updated={formatShortTime(thread.updated_at)}
-                  </small>
-                </button>
-              </li>
-            ))}
-          </ul>
+          {activeBoard === "in_progress" ? (
+            <div className="board-columns">
+              <BoardLane
+                title="New / Triage"
+                rows={boardBuckets.inProgressNew}
+                selectedThreadID={selectedThreadID}
+                onSelectThread={setSelectedThreadID}
+                emptyLabel="No new threads."
+              />
+              <BoardLane
+                title="Active"
+                rows={boardBuckets.inProgressActive}
+                selectedThreadID={selectedThreadID}
+                onSelectThread={setSelectedThreadID}
+                emptyLabel="No active threads."
+              />
+              <BoardLane
+                title="Awaiting Close"
+                rows={boardBuckets.inProgressAwaitingClose}
+                selectedThreadID={selectedThreadID}
+                onSelectThread={setSelectedThreadID}
+                emptyLabel="No answered threads awaiting close."
+              />
+            </div>
+          ) : null}
+
+          {activeBoard === "needs_me" ? (
+            <div className="board-columns">
+              <BoardLane
+                title="Unseen for Me"
+                rows={boardBuckets.needsMeUnseen}
+                selectedThreadID={selectedThreadID}
+                onSelectThread={setSelectedThreadID}
+                emptyLabel="No unseen threads."
+              />
+              <BoardLane
+                title="Needs Human/Operator Response"
+                rows={boardBuckets.needsMeUnanswered}
+                selectedThreadID={selectedThreadID}
+                onSelectThread={setSelectedThreadID}
+                emptyLabel="No unanswered threads."
+              />
+              <BoardLane
+                title="Assigned to Me"
+                rows={boardBuckets.needsMeAssigned}
+                selectedThreadID={selectedThreadID}
+                onSelectThread={setSelectedThreadID}
+                emptyLabel="No threads assigned to current viewer."
+              />
+            </div>
+          ) : null}
+
+          {activeBoard === "recently_completed" ? (
+            <div className="board-columns single">
+              <BoardLane
+                title="Recently Closed"
+                rows={boardBuckets.recentlyClosed}
+                selectedThreadID={selectedThreadID}
+                onSelectThread={setSelectedThreadID}
+                emptyLabel="No recently closed threads."
+              />
+            </div>
+          ) : null}
         </section>
 
         <section className="panel detail-panel">
@@ -745,57 +976,220 @@ export function App() {
         </section>
 
         <section id="debug-panel" className="panel span-3">
-          <h2>Forum Debug Health</h2>
-          {!debugSnapshot ? <p className="muted">No debug snapshot available.</p> : null}
-          {debugSnapshot ? (
-            <div className="debug-grid">
-              <div className="debug-card">
-                <strong>Bus</strong>
-                <span>
-                  running={String(debugSnapshot.bus.running)} healthy={String(debugSnapshot.bus.healthy)}
-                </span>
-                <small>
-                  stream={debugSnapshot.bus.stream_name || "-"} group={debugSnapshot.bus.consumer_group || "-"} consumer={
-                    debugSnapshot.bus.consumer_name || "-"
-                  }
-                </small>
-                {debugSnapshot.bus.health_error ? <small className="error-inline">{debugSnapshot.bus.health_error}</small> : null}
-              </div>
+          <div className="explorer-header">
+            <h2>System Health</h2>
+            <button type="button" onClick={() => setShowDiagnostics((value) => !value)}>
+              {showDiagnostics ? "Collapse" : "Expand"}
+            </button>
+          </div>
 
-              <div className="debug-card">
-                <strong>Outbox</strong>
-                <span>
-                  pending={debugSnapshot.outbox.pending_count} processing={debugSnapshot.outbox.processing_count} failed={
-                    debugSnapshot.outbox.failed_count
-                  }
-                </span>
-                <small>oldest_pending_age={debugSnapshot.outbox.oldest_pending_age_seconds}s</small>
-              </div>
+          {!showDiagnostics ? <p className="muted">Diagnostics are collapsed by default.</p> : null}
 
-              <div className="debug-card full">
-                <strong>Topic Streams ({debugSnapshot.bus.topics.length})</strong>
-                <ul className="list compact">
-                  {debugSnapshot.bus.topics.map((topic) => (
-                    <li key={topic.topic} className="thread">
-                      <span>
-                        {topic.topic} stream={topic.stream}
-                      </span>
-                      <small>
-                        handler={String(topic.handler_registered)} subscribed={String(topic.subscribed)} exists={
-                          String(topic.stream_exists)
-                        } len={topic.stream_length} lag={topic.consumer_group_lag}
-                      </small>
-                      {topic.topic_error ? <small className="error-inline">{topic.topic_error}</small> : null}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
+          {showDiagnostics ? (
+            <>
+              {!debugSnapshot ? <p className="muted">No debug snapshot available.</p> : null}
+              {debugSnapshot ? (
+                <div className="debug-grid">
+                  <div className="debug-card">
+                    <strong>Bus</strong>
+                    <span>
+                      running={String(debugSnapshot.bus.running)} healthy={String(debugSnapshot.bus.healthy)}
+                    </span>
+                    <small>
+                      stream={debugSnapshot.bus.stream_name || "-"} group={debugSnapshot.bus.consumer_group || "-"} consumer={
+                        debugSnapshot.bus.consumer_name || "-"
+                      }
+                    </small>
+                    {debugSnapshot.bus.health_error ? (
+                      <small className="error-inline">{debugSnapshot.bus.health_error}</small>
+                    ) : null}
+                  </div>
+
+                  <div className="debug-card">
+                    <strong>Outbox</strong>
+                    <span>
+                      pending={debugSnapshot.outbox.pending_count} processing={debugSnapshot.outbox.processing_count} failed={
+                        debugSnapshot.outbox.failed_count
+                      }
+                    </span>
+                    <small>oldest_pending_age={debugSnapshot.outbox.oldest_pending_age_seconds}s</small>
+                  </div>
+
+                  <div className="debug-card full">
+                    <strong>Topic Streams ({debugSnapshot.bus.topics.length})</strong>
+                    <ul className="list compact">
+                      {debugSnapshot.bus.topics.map((topic) => (
+                        <li key={topic.topic} className="thread">
+                          <span>
+                            {topic.topic} stream={topic.stream}
+                          </span>
+                          <small>
+                            handler={String(topic.handler_registered)} subscribed={String(topic.subscribed)} exists={
+                              String(topic.stream_exists)
+                            } len={topic.stream_length} lag={topic.consumer_group_lag}
+                          </small>
+                          {topic.topic_error ? <small className="error-inline">{topic.topic_error}</small> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              ) : null}
+            </>
           ) : null}
         </section>
       </div>
     </div>
   );
+}
+
+type BoardLaneProps = {
+  title: string;
+  rows: ForumThread[];
+  selectedThreadID: string;
+  onSelectThread: (threadID: string) => void;
+  emptyLabel: string;
+};
+
+function BoardLane({ title, rows, selectedThreadID, onSelectThread, emptyLabel }: BoardLaneProps) {
+  return (
+    <section className="board-lane">
+      <div className="lane-header">
+        <h3>{title}</h3>
+        <span className="lane-count">{rows.length}</span>
+      </div>
+      {rows.length === 0 ? <p className="muted">{emptyLabel}</p> : null}
+      <ul className="list">
+        {rows.map((thread) => (
+          <li key={thread.thread_id}>
+            <button
+              type="button"
+              className={thread.thread_id === selectedThreadID ? "item selected" : "item"}
+              onClick={() => onSelectThread(thread.thread_id)}
+            >
+              <strong>{thread.title}</strong>
+              <span>
+                {thread.state} · {thread.priority} · posts={thread.posts_count}
+              </span>
+              <div className="badges">
+                {thread.is_unseen ? <span className="badge unseen">unseen</span> : null}
+                {thread.is_unanswered ? <span className="badge unanswered">unanswered</span> : null}
+                {thread.last_actor_type ? <span className="badge actor">last={thread.last_actor_type}</span> : null}
+              </div>
+              <small>
+                thread={thread.thread_id} assignee={thread.assignee_name || "-"} updated={formatShortTime(thread.updated_at)}
+              </small>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function resolveScope(topicMode: TopicMode, selectedTicket: string, selectedRunID: string) {
+  switch (topicMode) {
+    case "ticket": {
+      if (!selectedTicket) {
+        return null;
+      }
+      return {
+        ticket: selectedTicket,
+        run_id: selectedRunID || undefined,
+      };
+    }
+    case "run": {
+      if (!selectedRunID) {
+        return null;
+      }
+      return {
+        run_id: selectedRunID,
+      };
+    }
+    case "agent": {
+      if (!selectedTicket) {
+        return null;
+      }
+      return {
+        ticket: selectedTicket,
+        run_id: selectedRunID || undefined,
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+function isState(value: string, expected: string[]): boolean {
+  const normalized = value.trim().toLowerCase();
+  return expected.some((candidate) => candidate === normalized);
+}
+
+function isClosedState(value: string): boolean {
+  return isState(value, ["closed"]);
+}
+
+function applyQueryFilter(rows: ForumThread[], queryText: string): ForumThread[] {
+  const query = queryText.trim().toLowerCase();
+  if (!query) {
+    return rows;
+  }
+  return rows.filter((thread) => {
+    return (
+      thread.title.toLowerCase().includes(query) ||
+      thread.thread_id.toLowerCase().includes(query) ||
+      (thread.assignee_name || "").toLowerCase().includes(query) ||
+      (thread.agent_name || "").toLowerCase().includes(query)
+    );
+  });
+}
+
+function applyTopicAgentFilter(rows: ForumThread[], topicMode: TopicMode, selectedAgentName: string): ForumThread[] {
+  if (topicMode !== "agent") {
+    return rows;
+  }
+  const agent = selectedAgentName.trim().toLowerCase();
+  if (!agent) {
+    return rows;
+  }
+  return rows.filter((thread) => (thread.agent_name || "").trim().toLowerCase() === agent);
+}
+
+function inferViewerAssigneeIDs(viewerID: string): string[] {
+  const normalized = viewerID.trim().toLowerCase();
+  if (!normalized) {
+    return [];
+  }
+  const set = new Set<string>();
+  set.add(normalized);
+
+  const parts = normalized.split(":").map((part) => part.trim()).filter((part) => part.length > 0);
+  if (parts.length >= 2) {
+    set.add(parts[1]);
+  }
+  if (parts.length >= 3) {
+    set.add(parts[parts.length - 1]);
+  }
+
+  return [...set];
+}
+
+function assigneeMatchesViewer(assigneeName: string, inferredIDs: string[]): boolean {
+  const assignee = assigneeName.trim().toLowerCase();
+  if (!assignee || inferredIDs.length === 0) {
+    return false;
+  }
+  if (inferredIDs.includes(assignee)) {
+    return true;
+  }
+  const parts = assignee.split(":").map((part) => part.trim()).filter((part) => part.length > 0);
+  if (parts.length >= 2 && inferredIDs.includes(parts[1])) {
+    return true;
+  }
+  if (parts.length >= 3 && inferredIDs.includes(parts[parts.length - 1])) {
+    return true;
+  }
+  return false;
 }
 
 function summarizePayload(raw?: string): string {
