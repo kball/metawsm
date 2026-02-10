@@ -16,20 +16,25 @@ RelatedFiles:
       Note: Added bus observer registration and notification during redis message consumption (commit 05d88afe3febf2fe85a3bdbfb775ca38ae891f8f)
     - Path: internal/orchestrator/service_forum.go
       Note: Exposed SubscribeForumEvents callback bridge for decoded ForumEvent payloads (commit 05d88afe3febf2fe85a3bdbfb775ca38ae891f8f)
+    - Path: internal/server/api_test.go
+      Note: Added websocket stream tests for catch-up
     - Path: internal/server/forum_event_broker.go
       Note: Introduces ticket/run filtered broker used for websocket fanout (commit 9b46c10cb406de50d95f8cc03e4aca8c5010dad0)
     - Path: internal/server/forum_event_broker_test.go
       Note: Adds broker behavioral tests for filtering
     - Path: internal/server/runtime.go
-      Note: Added runtime event pump wiring from live forum subscriber into broker (commit 05d88afe3febf2fe85a3bdbfb775ca38ae891f8f)
+      Note: |-
+        Added runtime event pump wiring from live forum subscriber into broker (commit 05d88afe3febf2fe85a3bdbfb775ca38ae891f8f)
+        Added configurable stream heartbeat interval used by endpoint and tests (commit 071a080f8287a70c06d17a34b37f7ff51b457695)
     - Path: internal/server/websocket.go
       Note: Reworked stream endpoint to catch-up plus broker-driven live event push (commit 05d88afe3febf2fe85a3bdbfb775ca38ae891f8f)
 ExternalSources: []
 Summary: Implementation diary for sequential task delivery and validation evidence for METAWSM-FORUM-BUGFIX-20260210.
-LastUpdated: 2026-02-10T12:56:00-08:00
+LastUpdated: 2026-02-10T12:59:00-08:00
 WhatFor: Capture what changed, why, test results, risks, and commit traceability for each completed task.
 WhenToUse: Use to review implementation history, reproduce verification, and continue work task-by-task.
 ---
+
 
 
 
@@ -196,3 +201,78 @@ To source live events from Redis processing, I added a bus observer path through
 - `forumbus.Runtime.consumeRedisMessages` -> `notifyObservers` -> `Service.SubscribeForumEvents` -> `LocalCore.SubscribeForumEvents` -> `server.Runtime.startEventPump`.
 - Task progress:
 - Marked Task 2 complete via `docmgr task check --ticket METAWSM-FORUM-BUGFIX-20260210 --id 2`.
+
+## Step 3: Add Websocket Tests For Event and Heartbeat Semantics
+
+This step expanded websocket endpoint coverage to explicitly assert the new stream model behaviors: catch-up event frames, heartbeat when idle, and broker-fed live event frames. The previous test only validated that some frame arrived.
+
+I also added a configurable stream heartbeat interval in runtime state so endpoint tests can validate heartbeat behavior without waiting 25 seconds.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Go through and implement task by task, keeping a diary and commiting as you go"
+
+**Assistant interpretation:** Continue through the ticket checklist in order, committing each completed item and recording implementation details.
+
+**Inferred user intent:** Ensure each task is concretely implemented and independently verifiable.
+
+**Commit (code):** `071a080f8287a70c06d17a34b37f7ff51b457695` — "Expand forum websocket tests for catchup and heartbeat"
+
+### What I did
+- Replaced the old generic stream test in `internal/server/api_test.go` with focused tests:
+- `TestHandleForumStreamSendsCatchUpFrame`
+- `TestHandleForumStreamSendsHeartbeatWhenIdle`
+- `TestHandleForumStreamSendsLiveBrokerEventFrame`
+- Added websocket test helpers:
+- `openTestWebSocket(...)`
+- `readWebSocketJSONFrame(...)`
+- Updated test runtime factory to set `streamBeat` to `50ms`.
+- Extended runtime options/state in `internal/server/runtime.go`:
+- Added `Options.StreamHeartbeat`
+- Added `Runtime.streamBeat` and `streamHeartbeatInterval()`.
+- Updated stream code in `internal/server/websocket.go` to consume runtime heartbeat interval.
+- Ran:
+- `gofmt -w internal/server/api_test.go internal/server/runtime.go internal/server/websocket.go`
+- `go test ./internal/server -count=1`
+
+### Why
+- Task 3 required explicit event/heartbeat websocket behavior tests.
+- Heartbeat interval needed to be configurable to make heartbeat tests practical and deterministic.
+
+### What worked
+- All three new endpoint tests passed.
+- Heartbeat test executes quickly with the test interval.
+- Live broker publish test validates stream receives events without polling loops.
+
+### What didn't work
+- No blocking issues in this step.
+
+### What I learned
+- Endpoint-level websocket tests are much easier to maintain with reusable handshake/frame helpers.
+- Runtime-configured heartbeat intervals are useful for both testing and future tuning.
+
+### What was tricky to build
+- Ensuring live event publish occurs after websocket subscribe required a short delayed goroutine in the test.
+- Frame decoding in tests needed explicit JSON parsing to avoid brittle string matching.
+
+### What warrants a second pair of eyes
+- Test timing assumptions around the delayed broker publish (`25ms`) under high CI load.
+- Whether to expose heartbeat interval as a user-facing CLI flag in future iterations.
+
+### What should be done in the future
+- Add assertions on frame payload content structure (`events[*].envelope`) if schema stability becomes critical.
+
+### Code review instructions
+- Start in `internal/server/api_test.go` at the three new stream tests and helper functions.
+- Review heartbeat interval plumbing in `internal/server/runtime.go`.
+- Confirm stream interval use in `internal/server/websocket.go`.
+- Validate with:
+- `go test ./internal/server -count=1`
+
+### Technical details
+- New stream test scenarios:
+- Catch-up only (events from `ForumWatchEvents`).
+- Idle heartbeat only (no catch-up, no live events).
+- Live push only (broker publish after subscribe).
+- Task progress:
+- Marked Task 3 complete via `docmgr task check --ticket METAWSM-FORUM-BUGFIX-20260210 --id 3`.

@@ -38,3 +38,14 @@ Step 2: Reworked forum websocket stream to catch-up plus live broker fanout, sou
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/server/websocket.go — Primary stream behavior change from timer polling to event-driven push
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Diary entry for step 2 details and verification
 
+
+## 2026-02-10
+
+Step 3: Added explicit websocket endpoint tests for catch-up events, idle heartbeat, and live broker frames (commit 071a080f8287a70c06d17a34b37f7ff51b457695).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/server/api_test.go — Expanded stream endpoint tests and websocket test helpers
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/server/runtime.go — Runtime now exposes heartbeat interval configuration for stream behavior
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Diary entry for task 3 test implementation
+
