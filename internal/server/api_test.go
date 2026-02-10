@@ -410,8 +410,10 @@ func TestHandleForumStreamSendsCatchUpFrame(t *testing.T) {
 }
 
 func TestHandleForumStreamSendsHeartbeatWhenIdle(t *testing.T) {
+	calls := 0
 	core := &mockCore{
 		forumWatchEventsFn: func(_ string, _ int64, _ int) ([]model.ForumEvent, error) {
+			calls++
 			return nil, nil
 		},
 	}
@@ -423,11 +425,16 @@ func TestHandleForumStreamSendsHeartbeatWhenIdle(t *testing.T) {
 	if frame["type"] != "heartbeat" {
 		t.Fatalf("expected heartbeat frame, got %#v", frame["type"])
 	}
+	if calls != 1 {
+		t.Fatalf("expected exactly one catch-up watch call, got %d", calls)
+	}
 }
 
 func TestHandleForumStreamSendsLiveBrokerEventFrame(t *testing.T) {
+	calls := 0
 	core := &mockCore{
 		forumWatchEventsFn: func(_ string, _ int64, _ int) ([]model.ForumEvent, error) {
+			calls++
 			return nil, nil
 		},
 	}
@@ -453,6 +460,9 @@ func TestHandleForumStreamSendsLiveBrokerEventFrame(t *testing.T) {
 	frame := readWebSocketJSONFrame(t, conn, reader, 500*time.Millisecond)
 	if frame["type"] != "forum.events" {
 		t.Fatalf("expected forum.events frame, got %#v", frame["type"])
+	}
+	if calls != 1 {
+		t.Fatalf("expected exactly one catch-up watch call, got %d", calls)
 	}
 	events, ok := frame["events"].([]any)
 	if !ok || len(events) == 0 {
