@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -167,6 +169,101 @@ func (r *Runtime) Healthy() error {
 		return fmt.Errorf("forum redis ping failed: %w", err)
 	}
 	return nil
+}
+
+func (r *Runtime) DebugSnapshot(ctx context.Context, topics []string) model.ForumBusDebug {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	r.mu.RLock()
+	running := r.running
+	client := r.redisClient
+	streamName := r.streamName
+	groupName := r.groupName
+	consumerName := r.consumerName
+	redisURL := sanitizeRedisURL(strings.TrimSpace(r.cfg.Forum.Redis.URL))
+	handlerTopics := sortedMapKeys(r.handlers)
+	subscriptionTopics := sortedMapKeys(r.subscriptions)
+	r.mu.RUnlock()
+
+	debug := model.ForumBusDebug{
+		Running:            running,
+		Healthy:            true,
+		RedisURL:           redisURL,
+		StreamName:         streamName,
+		ConsumerGroup:      groupName,
+		ConsumerName:       consumerName,
+		HandlerTopics:      handlerTopics,
+		SubscriptionTopics: subscriptionTopics,
+		Topics:             []model.ForumBusTopicDebug{},
+	}
+	if err := r.Healthy(); err != nil {
+		debug.Healthy = false
+		debug.HealthError = strings.TrimSpace(err.Error())
+	}
+
+	topicSet := map[string]struct{}{}
+	for _, topic := range topics {
+		topic = strings.TrimSpace(topic)
+		if topic != "" {
+			topicSet[topic] = struct{}{}
+		}
+	}
+	for _, topic := range handlerTopics {
+		topicSet[topic] = struct{}{}
+	}
+	for _, topic := range subscriptionTopics {
+		topicSet[topic] = struct{}{}
+	}
+	allTopics := make([]string, 0, len(topicSet))
+	for topic := range topicSet {
+		allTopics = append(allTopics, topic)
+	}
+	sort.Strings(allTopics)
+
+	for _, topic := range allTopics {
+		item := model.ForumBusTopicDebug{
+			Topic:             topic,
+			Stream:            streamTopicForPrefix(streamName, topic),
+			HandlerRegistered: containsString(handlerTopics, topic),
+			Subscribed:        containsString(subscriptionTopics, topic),
+		}
+		if !running || client == nil {
+			debug.Topics = append(debug.Topics, item)
+			continue
+		}
+
+		streamInfo, err := client.XInfoStream(ctx, item.Stream).Result()
+		if err != nil {
+			if !isRedisNoStreamError(err) {
+				item.TopicError = appendTopicError(item.TopicError, err.Error())
+			}
+		} else {
+			item.StreamExists = true
+			item.StreamLength = streamInfo.Length
+			item.LastGeneratedID = strings.TrimSpace(streamInfo.LastGeneratedID)
+		}
+
+		groups, err := client.XInfoGroups(ctx, item.Stream).Result()
+		if err != nil {
+			if !isRedisNoStreamError(err) {
+				item.TopicError = appendTopicError(item.TopicError, err.Error())
+			}
+		} else {
+			for _, group := range groups {
+				if strings.TrimSpace(group.Name) != groupName {
+					continue
+				}
+				item.ConsumerGroupPresent = true
+				item.ConsumerGroupPending = group.Pending
+				item.ConsumerGroupLag = group.Lag
+				break
+			}
+		}
+		debug.Topics = append(debug.Topics, item)
+	}
+	return debug
 }
 
 func (r *Runtime) RegisterHandler(topic string, handler MessageHandler) error {
@@ -416,4 +513,84 @@ func deriveStreamNamespace(stream string, group string, consumer string, dbPath 
 	hash := sha1.Sum([]byte(dbPath))
 	suffix := fmt.Sprintf("%x", hash[:4])
 	return stream + "." + suffix, group + "." + suffix, consumer + "-" + suffix
+}
+
+func sortedMapKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func containsString(values []string, expected string) bool {
+	expected = strings.TrimSpace(expected)
+	for _, value := range values {
+		if strings.TrimSpace(value) == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeRedisURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	if parsed.User != nil {
+		if username := parsed.User.Username(); username != "" {
+			parsed.User = url.UserPassword(username, "***")
+		} else {
+			parsed.User = url.User("***")
+		}
+	}
+	return parsed.String()
+}
+
+func isRedisNoStreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, redis.Nil) {
+		return true
+	}
+	value := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(value, "no such key")
+}
+
+func streamTopicForPrefix(prefix string, topic string) string {
+	prefix = strings.TrimSpace(prefix)
+	topic = strings.TrimSpace(topic)
+	if prefix == "" {
+		return topic
+	}
+	if topic == "" {
+		return prefix
+	}
+	return prefix + "." + topic
+}
+
+func appendTopicError(existing string, next string) string {
+	existing = strings.TrimSpace(existing)
+	next = strings.TrimSpace(next)
+	if next == "" {
+		return existing
+	}
+	if existing == "" {
+		return next
+	}
+	if strings.Contains(existing, next) {
+		return existing
+	}
+	return existing + "; " + next
 }

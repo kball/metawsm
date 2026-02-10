@@ -145,6 +145,61 @@ func TestHandleForumEvents(t *testing.T) {
 	}
 }
 
+func TestHandleForumDebug(t *testing.T) {
+	core := &mockCore{
+		forumStreamDebugSnapshotFn: func(_ context.Context, options serviceapi.ForumDebugOptions) (model.ForumStreamDebugSnapshot, error) {
+			if options.Ticket != "METAWSM-011" {
+				t.Fatalf("unexpected ticket %q", options.Ticket)
+			}
+			if options.RunID != "run-123" {
+				t.Fatalf("unexpected run id %q", options.RunID)
+			}
+			if options.Limit != 15 {
+				t.Fatalf("unexpected limit %d", options.Limit)
+			}
+			return model.ForumStreamDebugSnapshot{
+				GeneratedAt: time.Now().UTC(),
+				Ticket:      options.Ticket,
+				RunID:       options.RunID,
+				Outbox: model.ForumOutboxStats{
+					PendingCount:    3,
+					ProcessingCount: 1,
+					FailedCount:     2,
+				},
+				Bus: model.ForumBusDebug{
+					Running:       true,
+					Healthy:       true,
+					StreamName:    "metawsm-forum.abc",
+					ConsumerGroup: "metawsm-forum.abc",
+					ConsumerName:  "operator-abc",
+				},
+			}, nil
+		},
+	}
+	runtime := newTestRuntime(core)
+	mux := http.NewServeMux()
+	runtime.registerRoutes(mux)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/forum/debug?ticket=METAWSM-011&run_id=run-123&limit=15", nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Debug model.ForumStreamDebugSnapshot `json:"debug"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal forum debug: %v", err)
+	}
+	if payload.Debug.Ticket != "METAWSM-011" {
+		t.Fatalf("unexpected payload ticket %q", payload.Debug.Ticket)
+	}
+	if payload.Debug.Bus.StreamName != "metawsm-forum.abc" {
+		t.Fatalf("unexpected stream name %q", payload.Debug.Bus.StreamName)
+	}
+}
+
 func TestHandleForumStreamRejectsInvalidUpgrade(t *testing.T) {
 	core := &mockCore{}
 	runtime := newTestRuntime(core)
@@ -275,18 +330,19 @@ type mockCore struct {
 	listRunSnapshotsFn func(context.Context, string) ([]serviceapi.RunSnapshot, error)
 	runSnapshotFn      func(context.Context, string) (serviceapi.RunSnapshot, error)
 
-	forumOpenThreadFn    func(context.Context, serviceapi.ForumOpenThreadOptions) (model.ForumThreadView, error)
-	forumAddPostFn       func(context.Context, serviceapi.ForumAddPostOptions) (model.ForumThreadView, error)
-	forumAnswerThreadFn  func(context.Context, serviceapi.ForumAddPostOptions) (model.ForumThreadView, error)
-	forumAssignThreadFn  func(context.Context, serviceapi.ForumAssignThreadOptions) (model.ForumThreadView, error)
-	forumChangeStateFn   func(context.Context, serviceapi.ForumChangeStateOptions) (model.ForumThreadView, error)
-	forumSetPriorityFn   func(context.Context, serviceapi.ForumSetPriorityOptions) (model.ForumThreadView, error)
-	forumCloseThreadFn   func(context.Context, serviceapi.ForumChangeStateOptions) (model.ForumThreadView, error)
-	forumControlSignalFn func(context.Context, serviceapi.ForumControlSignalOptions) (model.ForumThreadView, error)
-	forumListThreadsFn   func(model.ForumThreadFilter) ([]model.ForumThreadView, error)
-	forumGetThreadFn     func(string) (*serviceapi.ForumThreadDetail, error)
-	forumListStatsFn     func(string, string) ([]model.ForumThreadStats, error)
-	forumWatchEventsFn   func(string, int64, int) ([]model.ForumEvent, error)
+	forumOpenThreadFn          func(context.Context, serviceapi.ForumOpenThreadOptions) (model.ForumThreadView, error)
+	forumAddPostFn             func(context.Context, serviceapi.ForumAddPostOptions) (model.ForumThreadView, error)
+	forumAnswerThreadFn        func(context.Context, serviceapi.ForumAddPostOptions) (model.ForumThreadView, error)
+	forumAssignThreadFn        func(context.Context, serviceapi.ForumAssignThreadOptions) (model.ForumThreadView, error)
+	forumChangeStateFn         func(context.Context, serviceapi.ForumChangeStateOptions) (model.ForumThreadView, error)
+	forumSetPriorityFn         func(context.Context, serviceapi.ForumSetPriorityOptions) (model.ForumThreadView, error)
+	forumCloseThreadFn         func(context.Context, serviceapi.ForumChangeStateOptions) (model.ForumThreadView, error)
+	forumControlSignalFn       func(context.Context, serviceapi.ForumControlSignalOptions) (model.ForumThreadView, error)
+	forumStreamDebugSnapshotFn func(context.Context, serviceapi.ForumDebugOptions) (model.ForumStreamDebugSnapshot, error)
+	forumListThreadsFn         func(model.ForumThreadFilter) ([]model.ForumThreadView, error)
+	forumGetThreadFn           func(string) (*serviceapi.ForumThreadDetail, error)
+	forumListStatsFn           func(string, string) ([]model.ForumThreadStats, error)
+	forumWatchEventsFn         func(string, int64, int) ([]model.ForumEvent, error)
 }
 
 func (m *mockCore) Shutdown() {}
@@ -295,6 +351,12 @@ func (m *mockCore) ProcessForumBusOnce(_ context.Context, _ int) (int, error) { 
 func (m *mockCore) ForumBusHealth() error                                     { return nil }
 func (m *mockCore) ForumOutboxStats() (model.ForumOutboxStats, error) {
 	return model.ForumOutboxStats{}, nil
+}
+func (m *mockCore) ForumStreamDebugSnapshot(ctx context.Context, options serviceapi.ForumDebugOptions) (model.ForumStreamDebugSnapshot, error) {
+	if m.forumStreamDebugSnapshotFn == nil {
+		return model.ForumStreamDebugSnapshot{}, nil
+	}
+	return m.forumStreamDebugSnapshotFn(ctx, options)
 }
 func (m *mockCore) RunSnapshot(ctx context.Context, runID string) (serviceapi.RunSnapshot, error) {
 	if m.runSnapshotFn == nil {

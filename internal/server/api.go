@@ -22,6 +22,7 @@ func (r *Runtime) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/forum/control/signal", r.handleForumControlSignal)
 	mux.HandleFunc("/api/v1/forum/events", r.handleForumEvents)
 	mux.HandleFunc("/api/v1/forum/stats", r.handleForumStats)
+	mux.HandleFunc("/api/v1/forum/debug", r.handleForumDebug)
 	mux.HandleFunc("/api/v1/forum/stream", r.handleForumStream)
 }
 
@@ -311,6 +312,31 @@ func (r *Runtime) handleForumStats(w http.ResponseWriter, req *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"stats": stats,
+	})
+}
+
+func (r *Runtime) handleForumDebug(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET is supported")
+		return
+	}
+	query := req.URL.Query()
+	limit, err := parseIntQuery(query.Get("limit"), 50)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_limit", err.Error())
+		return
+	}
+	debugSnapshot, err := r.service.ForumStreamDebugSnapshot(req.Context(), serviceapi.ForumDebugOptions{
+		Ticket: strings.TrimSpace(query.Get("ticket")),
+		RunID:  strings.TrimSpace(query.Get("run_id")),
+		Limit:  limit,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "forum_debug_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"debug": debugSnapshot,
 	})
 }
 

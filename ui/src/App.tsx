@@ -24,9 +24,68 @@ type ForumThread = {
   updated_at: string;
 };
 
+type ForumOutboxMessage = {
+  message_id: string;
+  topic: string;
+  status: string;
+  attempt_count: number;
+  last_error?: string;
+  updated_at: string;
+};
+
+type ForumEvent = {
+  sequence: number;
+  envelope: {
+    event_id: string;
+    event_type: string;
+    thread_id: string;
+    ticket: string;
+    run_id?: string;
+    occurred_at: string;
+  };
+};
+
+type ForumBusTopicDebug = {
+  topic: string;
+  stream: string;
+  handler_registered: boolean;
+  subscribed: boolean;
+  stream_exists: boolean;
+  stream_length: number;
+  consumer_group_present: boolean;
+  consumer_group_pending: number;
+  consumer_group_lag: number;
+  topic_error?: string;
+};
+
+type ForumDebugSnapshot = {
+  generated_at: string;
+  ticket?: string;
+  run_id?: string;
+  outbox: {
+    pending_count: number;
+    processing_count: number;
+    failed_count: number;
+    oldest_pending_age_seconds: number;
+  };
+  outbox_messages: ForumOutboxMessage[];
+  events: ForumEvent[];
+  bus: {
+    running: boolean;
+    healthy: boolean;
+    health_error?: string;
+    redis_url?: string;
+    stream_name: string;
+    consumer_group: string;
+    consumer_name: string;
+    topics: ForumBusTopicDebug[];
+  };
+};
+
 export function App() {
   const [runs, setRuns] = useState<RunSnapshot[]>([]);
   const [threads, setThreads] = useState<ForumThread[]>([]);
+  const [debugSnapshot, setDebugSnapshot] = useState<ForumDebugSnapshot | null>(null);
   const [selectedRunID, setSelectedRunID] = useState("");
   const [error, setError] = useState("");
 
@@ -46,6 +105,7 @@ export function App() {
     } else {
       setThreads([]);
     }
+    void refreshDebug(selectedTicket, selectedRunID);
   }, [selectedTicket, selectedRunID]);
 
   useEffect(() => {
@@ -59,6 +119,7 @@ export function App() {
     const socket = new WebSocket(socketURL);
     socket.onmessage = () => {
       void refreshThreads(selectedTicket, selectedRunID);
+      void refreshDebug(selectedTicket, selectedRunID);
     };
     socket.onerror = () => {
       setError("WebSocket stream unavailable; using pull refresh only.");
@@ -105,6 +166,27 @@ export function App() {
       }
       const payload = (await response.json()) as { threads: ForumThread[] };
       setThreads(payload.threads);
+    } catch (err) {
+      setError(toErrorString(err));
+    }
+  }
+
+  async function refreshDebug(ticket: string, runID: string) {
+    try {
+      const query = new URLSearchParams();
+      if (ticket) {
+        query.set("ticket", ticket);
+      }
+      if (runID) {
+        query.set("run_id", runID);
+      }
+      query.set("limit", "40");
+      const response = await fetch(`/api/v1/forum/debug?${query.toString()}`);
+      if (!response.ok) {
+        throw new Error(`debug request failed (${response.status})`);
+      }
+      const payload = (await response.json()) as { debug?: ForumDebugSnapshot };
+      setDebugSnapshot(payload.debug ?? null);
     } catch (err) {
       setError(toErrorString(err));
     }
@@ -158,6 +240,89 @@ export function App() {
               </li>
             ))}
           </ul>
+        </section>
+
+        <section className="panel span-2">
+          <h2>Stream Debug</h2>
+          {!debugSnapshot ? <p className="muted">No debug snapshot available.</p> : null}
+          {debugSnapshot ? (
+            <div className="debug-grid">
+              <div className="debug-card">
+                <strong>Bus</strong>
+                <span>
+                  running={String(debugSnapshot.bus.running)} healthy={String(debugSnapshot.bus.healthy)}
+                </span>
+                <small>
+                  stream={debugSnapshot.bus.stream_name || "-"} group={debugSnapshot.bus.consumer_group || "-"} consumer=
+                  {debugSnapshot.bus.consumer_name || "-"}
+                </small>
+                <small>redis={debugSnapshot.bus.redis_url || "-"}</small>
+                {debugSnapshot.bus.health_error ? <small className="error-inline">{debugSnapshot.bus.health_error}</small> : null}
+              </div>
+
+              <div className="debug-card">
+                <strong>Outbox</strong>
+                <span>
+                  pending={debugSnapshot.outbox.pending_count} processing={debugSnapshot.outbox.processing_count} failed=
+                  {debugSnapshot.outbox.failed_count}
+                </span>
+                <small>oldest_pending_age={debugSnapshot.outbox.oldest_pending_age_seconds}s</small>
+              </div>
+
+              <div className="debug-card full">
+                <strong>Topic Streams ({debugSnapshot.bus.topics.length})</strong>
+                <ul className="list compact">
+                  {debugSnapshot.bus.topics.map((topic) => (
+                    <li key={topic.topic} className="thread">
+                      <span>
+                        {topic.topic} stream={topic.stream}
+                      </span>
+                      <small>
+                        handler={String(topic.handler_registered)} subscribed={String(topic.subscribed)} exists=
+                        {String(topic.stream_exists)} len={topic.stream_length} group={String(topic.consumer_group_present)} pending=
+                        {topic.consumer_group_pending} lag={topic.consumer_group_lag}
+                      </small>
+                      {topic.topic_error ? <small className="error-inline">{topic.topic_error}</small> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="debug-card">
+                <strong>Recent Outbox ({debugSnapshot.outbox_messages.length})</strong>
+                <ul className="list compact">
+                  {debugSnapshot.outbox_messages.map((message) => (
+                    <li key={message.message_id} className="thread">
+                      <span>
+                        {message.status} {message.topic}
+                      </span>
+                      <small>
+                        id={message.message_id} attempts={message.attempt_count} updated={formatShortTime(message.updated_at)}
+                      </small>
+                      {message.last_error ? <small className="error-inline">{message.last_error}</small> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="debug-card">
+                <strong>Recent Events ({debugSnapshot.events.length})</strong>
+                <ul className="list compact">
+                  {debugSnapshot.events.map((event) => (
+                    <li key={`${event.sequence}-${event.envelope.event_id}`} className="thread">
+                      <span>
+                        #{event.sequence} {event.envelope.event_type}
+                      </span>
+                      <small>
+                        thread={event.envelope.thread_id} ticket={event.envelope.ticket} run={event.envelope.run_id || "-"}
+                      </small>
+                      <small>{formatShortTime(event.envelope.occurred_at)}</small>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          ) : null}
         </section>
       </div>
     </div>
@@ -247,4 +412,12 @@ function normalizeGuidanceArray(
       } => item !== null,
     );
   return normalized;
+}
+
+function formatShortTime(raw: string): string {
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    return raw;
+  }
+  return parsed.toISOString();
 }

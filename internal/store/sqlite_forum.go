@@ -645,6 +645,60 @@ LIMIT %d;`,
 	return out, nil
 }
 
+func (s *SQLiteStore) ListRecentForumEvents(ticket string, runID string, limit int) ([]model.ForumEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	clauses := []string{"1=1"}
+	ticket = strings.TrimSpace(ticket)
+	runID = strings.TrimSpace(runID)
+	if ticket != "" {
+		clauses = append(clauses, fmt.Sprintf("ticket=%s", quote(ticket)))
+	}
+	if runID != "" {
+		clauses = append(clauses, fmt.Sprintf("run_id=%s", quote(runID)))
+	}
+	sql := fmt.Sprintf(
+		`SELECT sequence, event_id, event_type, event_version, occurred_at, thread_id, run_id, ticket, agent_name, actor_type, actor_name, correlation_id, causation_id, payload_json
+FROM forum_events
+WHERE %s
+ORDER BY sequence DESC
+LIMIT %d;`,
+		strings.Join(clauses, " AND "),
+		limit,
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.ForumEvent, 0, len(rows))
+	for _, row := range rows {
+		occurredAt, err := time.Parse(time.RFC3339, asString(row["occurred_at"]))
+		if err != nil {
+			return nil, fmt.Errorf("parse forum event occurred_at: %w", err)
+		}
+		out = append(out, model.ForumEvent{
+			Sequence: int64(asInt(row["sequence"])),
+			Envelope: model.ForumEnvelope{
+				EventID:       asString(row["event_id"]),
+				EventType:     asString(row["event_type"]),
+				EventVersion:  asInt(row["event_version"]),
+				OccurredAt:    occurredAt,
+				ThreadID:      asString(row["thread_id"]),
+				RunID:         asString(row["run_id"]),
+				Ticket:        asString(row["ticket"]),
+				AgentName:     asString(row["agent_name"]),
+				ActorType:     model.ForumActorType(asString(row["actor_type"])),
+				ActorName:     asString(row["actor_name"]),
+				CorrelationID: asString(row["correlation_id"]),
+				CausationID:   asString(row["causation_id"]),
+			},
+			PayloadJSON: asString(row["payload_json"]),
+		})
+	}
+	return out, nil
+}
+
 func (s *SQLiteStore) GetForumEvent(eventID string) (*model.ForumEvent, error) {
 	eventID = strings.TrimSpace(eventID)
 	if eventID == "" {
@@ -1128,6 +1182,51 @@ WHERE status=%s
 ORDER BY id
 LIMIT %d;`,
 		quote(string(status)),
+		limit,
+	)
+	rows, err := s.queryJSON(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.ForumOutboxMessage, 0, len(rows))
+	for _, row := range rows {
+		createdAt, err := time.Parse(time.RFC3339, asString(row["created_at"]))
+		if err != nil {
+			return nil, fmt.Errorf("parse forum_outbox created_at: %w", err)
+		}
+		updatedAtParsed, err := time.Parse(time.RFC3339Nano, asString(row["updated_at"]))
+		if err != nil {
+			updatedAtParsed, err = time.Parse(time.RFC3339, asString(row["updated_at"]))
+			if err != nil {
+				return nil, fmt.Errorf("parse forum_outbox updated_at: %w", err)
+			}
+		}
+		out = append(out, model.ForumOutboxMessage{
+			ID:           int64(asInt(row["id"])),
+			MessageID:    asString(row["message_id"]),
+			Topic:        asString(row["topic"]),
+			MessageKey:   asString(row["message_key"]),
+			PayloadJSON:  asString(row["payload_json"]),
+			Status:       model.ForumOutboxStatus(asString(row["status"])),
+			AttemptCount: asInt(row["attempt_count"]),
+			LastError:    asString(row["last_error"]),
+			CreatedAt:    createdAt,
+			UpdatedAt:    updatedAtParsed,
+			SentAt:       parseTimePtr(asString(row["sent_at"])),
+		})
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) ListRecentForumOutbox(limit int) ([]model.ForumOutboxMessage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	sql := fmt.Sprintf(
+		`SELECT id, message_id, topic, message_key, payload_json, status, attempt_count, last_error, created_at, updated_at, sent_at
+FROM forum_outbox
+ORDER BY id DESC
+LIMIT %d;`,
 		limit,
 	)
 	rows, err := s.queryJSON(sql)

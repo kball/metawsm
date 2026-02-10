@@ -182,3 +182,58 @@ func TestRuntimeReplaysFailedOutboxMessageAfterHandlerRegistration(t *testing.T)
 		t.Fatalf("expected replayed message to move to sent, got %d sent rows", len(sent))
 	}
 }
+
+func TestRuntimeDebugSnapshotIncludesTopicDetails(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not available")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "metawsm.db")
+	sqliteStore := store.NewSQLiteStore(dbPath)
+	if err := sqliteStore.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	redisServer := startTestRedis(t)
+	rt := NewRuntime(sqliteStore, testPolicyWithRedis(redisServer))
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.RegisterHandler("forum.commands.debug_test", func(context.Context, model.ForumOutboxMessage) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("register handler: %v", err)
+	}
+	if _, err := rt.Publish("forum.commands.debug_test", "debug-thread-1", map[string]any{"ok": true}); err != nil {
+		t.Fatalf("publish message: %v", err)
+	}
+	if _, err := rt.ProcessOnce(context.Background(), 10); err != nil {
+		t.Fatalf("process once: %v", err)
+	}
+
+	snapshot := rt.DebugSnapshot(context.Background(), nil)
+	if !snapshot.Running {
+		t.Fatalf("expected running snapshot")
+	}
+	if !snapshot.Healthy {
+		t.Fatalf("expected healthy snapshot, got error: %s", snapshot.HealthError)
+	}
+	found := false
+	for _, topic := range snapshot.Topics {
+		if topic.Topic != "forum.commands.debug_test" {
+			continue
+		}
+		found = true
+		if !topic.HandlerRegistered {
+			t.Fatalf("expected handler_registered=true for debug topic")
+		}
+		if topic.Stream == "" {
+			t.Fatalf("expected non-empty stream name")
+		}
+	}
+	if !found {
+		t.Fatalf("expected debug topic to be present in snapshot topics")
+	}
+}

@@ -15,6 +15,7 @@ type ForumAssignThreadOptions = orchestrator.ForumAssignThreadOptions
 type ForumChangeStateOptions = orchestrator.ForumChangeStateOptions
 type ForumSetPriorityOptions = orchestrator.ForumSetPriorityOptions
 type ForumControlSignalOptions = orchestrator.ForumControlSignalOptions
+type ForumDebugOptions = orchestrator.ForumDebugOptions
 type ForumThreadDetail = orchestrator.ForumThreadDetail
 type RunSnapshot = orchestrator.RunSnapshot
 
@@ -24,6 +25,7 @@ type Core interface {
 	ProcessForumBusOnce(ctx context.Context, limit int) (int, error)
 	ForumBusHealth() error
 	ForumOutboxStats() (model.ForumOutboxStats, error)
+	ForumStreamDebugSnapshot(ctx context.Context, options ForumDebugOptions) (model.ForumStreamDebugSnapshot, error)
 
 	RunSnapshot(ctx context.Context, runID string) (RunSnapshot, error)
 	ListRunSnapshots(ctx context.Context, ticket string) ([]RunSnapshot, error)
@@ -72,6 +74,10 @@ func (l *LocalCore) ForumBusHealth() error {
 
 func (l *LocalCore) ForumOutboxStats() (model.ForumOutboxStats, error) {
 	return l.service.ForumOutboxStats()
+}
+
+func (l *LocalCore) ForumStreamDebugSnapshot(ctx context.Context, options ForumDebugOptions) (model.ForumStreamDebugSnapshot, error) {
+	return l.service.ForumStreamDebugSnapshot(ctx, options)
 }
 
 func (l *LocalCore) RunSnapshot(ctx context.Context, runID string) (RunSnapshot, error) {

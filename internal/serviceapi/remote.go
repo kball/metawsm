@@ -61,6 +61,26 @@ func (r *RemoteCore) ForumOutboxStats() (model.ForumOutboxStats, error) {
 	return response.Outbox, nil
 }
 
+func (r *RemoteCore) ForumStreamDebugSnapshot(ctx context.Context, options ForumDebugOptions) (model.ForumStreamDebugSnapshot, error) {
+	query := map[string]string{}
+	if ticket := strings.TrimSpace(options.Ticket); ticket != "" {
+		query["ticket"] = ticket
+	}
+	if runID := strings.TrimSpace(options.RunID); runID != "" {
+		query["run_id"] = runID
+	}
+	if options.Limit > 0 {
+		query["limit"] = strconv.Itoa(options.Limit)
+	}
+	var response struct {
+		Debug model.ForumStreamDebugSnapshot `json:"debug"`
+	}
+	if err := r.doJSON(ctx, http.MethodGet, "/api/v1/forum/debug", query, nil, &response); err != nil {
+		return model.ForumStreamDebugSnapshot{}, err
+	}
+	return response.Debug, nil
+}
+
 func (r *RemoteCore) RunSnapshot(ctx context.Context, runID string) (RunSnapshot, error) {
 	var response struct {
 		Run RunSnapshot `json:"run"`

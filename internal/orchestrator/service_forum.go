@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -77,6 +78,12 @@ type ForumControlSignalOptions struct {
 	CorrelationID string
 	CausationID   string
 	Payload       model.ForumControlPayloadV1
+}
+
+type ForumDebugOptions struct {
+	Ticket string
+	RunID  string
+	Limit  int
 }
 
 func (s *Service) registerForumBusHandlers() error {
@@ -743,6 +750,77 @@ func (s *Service) ForumOutboxStats() (model.ForumOutboxStats, error) {
 	return stats, nil
 }
 
+func (s *Service) ForumStreamDebugSnapshot(ctx context.Context, options ForumDebugOptions) (model.ForumStreamDebugSnapshot, error) {
+	ticket := strings.TrimSpace(options.Ticket)
+	runID := strings.TrimSpace(options.RunID)
+	limit := options.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	outbox, err := s.ForumOutboxStats()
+	if err != nil {
+		return model.ForumStreamDebugSnapshot{}, err
+	}
+	outboxMessages, err := s.store.ListRecentForumOutbox(limit)
+	if err != nil {
+		return model.ForumStreamDebugSnapshot{}, err
+	}
+	events, err := s.store.ListRecentForumEvents(ticket, runID, limit)
+	if err != nil {
+		return model.ForumStreamDebugSnapshot{}, err
+	}
+	threads, err := s.store.ListForumThreads(model.ForumThreadFilter{
+		Ticket: ticket,
+		RunID:  runID,
+		Limit:  limit,
+	})
+	if err != nil {
+		return model.ForumStreamDebugSnapshot{}, err
+	}
+	controlThreads, err := s.store.ListForumControlThreads(runID)
+	if err != nil {
+		return model.ForumStreamDebugSnapshot{}, err
+	}
+	if ticket != "" {
+		filtered := make([]model.ForumControlThread, 0, len(controlThreads))
+		for _, item := range controlThreads {
+			if strings.EqualFold(strings.TrimSpace(item.Ticket), ticket) {
+				filtered = append(filtered, item)
+			}
+		}
+		controlThreads = filtered
+	}
+
+	topics := s.forumDebugTopics()
+	bus := model.ForumBusDebug{
+		Running:            false,
+		Healthy:            false,
+		HealthError:        "forum bus runtime not configured",
+		HandlerTopics:      []string{},
+		SubscriptionTopics: []string{},
+		Topics:             []model.ForumBusTopicDebug{},
+	}
+	if s.forumBus != nil {
+		bus = s.forumBus.DebugSnapshot(ctx, topics)
+	}
+
+	return model.ForumStreamDebugSnapshot{
+		GeneratedAt:    time.Now().UTC(),
+		Ticket:         ticket,
+		RunID:          runID,
+		Outbox:         outbox,
+		OutboxMessages: outboxMessages,
+		Events:         events,
+		Threads:        threads,
+		ControlThreads: controlThreads,
+		Bus:            bus,
+	}, nil
+}
+
 func (s *Service) ForumAppendControlSignal(ctx context.Context, options ForumControlSignalOptions) (model.ForumThreadView, error) {
 	_ = ctx
 	actorType, err := normalizeForumActorType(options.ActorType)
@@ -800,6 +878,46 @@ func (s *Service) ForumAppendControlSignal(ctx context.Context, options ForumCon
 		return model.ForumThreadView{}, fmt.Errorf("forum control append returned nil thread")
 	}
 	return *next, nil
+}
+
+func (s *Service) forumDebugTopics() []string {
+	set := map[string]struct{}{}
+	for _, name := range []string{
+		"open_thread",
+		"add_post",
+		"assign_thread",
+		"change_state",
+		"set_priority",
+		"close_thread",
+	} {
+		set[s.forumTopics.CommandTopic(name)] = struct{}{}
+	}
+	for _, eventType := range []string{
+		"forum.thread.opened",
+		"forum.post.added",
+		"forum.control.signal",
+		"forum.assigned",
+		"forum.state.changed",
+		"forum.priority.changed",
+		"forum.thread.closed",
+		"forum.integration.docs_sync.requested",
+	} {
+		topic := forumEventTopicForType(s.forumTopics, eventType)
+		if strings.TrimSpace(topic) == "" {
+			continue
+		}
+		set[topic] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for topic := range set {
+		topic = strings.TrimSpace(topic)
+		if topic == "" {
+			continue
+		}
+		out = append(out, topic)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func normalizeForumActorType(actorType model.ForumActorType) (model.ForumActorType, error) {

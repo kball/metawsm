@@ -285,7 +285,7 @@ func bootstrapCommand(args []string) error {
 
 func forumCommand(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch|signal> [...]")
+		return fmt.Errorf("usage: metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch|signal|debug> [...]")
 	}
 	subcommand := strings.TrimSpace(strings.ToLower(args[0]))
 	rest := args[1:]
@@ -310,6 +310,8 @@ func forumCommand(args []string) error {
 		return forumWatchCommand(rest)
 	case "signal":
 		return forumSignalCommand(rest)
+	case "debug":
+		return forumDebugCommand(rest)
 	default:
 		return fmt.Errorf("unknown forum subcommand %q", subcommand)
 	}
@@ -656,6 +658,128 @@ func forumWatchCommand(args []string) error {
 			emptyValue(event.Envelope.ActorName, "-"),
 			event.Envelope.OccurredAt.Format(time.RFC3339),
 		)
+	}
+	return nil
+}
+
+func forumDebugCommand(args []string) error {
+	fs := flag.NewFlagSet("forum debug", flag.ContinueOnError)
+	var serverURL string
+	var ticket string
+	var runID string
+	var limit int
+	var asJSON bool
+	fs.StringVar(&serverURL, "server", "http://127.0.0.1:3001", "metawsm serve base URL")
+	fs.StringVar(&ticket, "ticket", "", "Optional ticket filter for events/threads")
+	fs.StringVar(&runID, "run-id", "", "Optional run filter for events/threads/control threads")
+	fs.IntVar(&limit, "limit", 50, "Limit for recent outbox messages/events/threads")
+	fs.BoolVar(&asJSON, "json", false, "Print full diagnostics as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	core, err := newForumCore(serverURL)
+	if err != nil {
+		return err
+	}
+	defer core.Shutdown()
+
+	snapshot, err := core.ForumStreamDebugSnapshot(context.Background(), serviceapi.ForumDebugOptions{
+		Ticket: strings.TrimSpace(ticket),
+		RunID:  strings.TrimSpace(runID),
+		Limit:  limit,
+	})
+	if err != nil {
+		return err
+	}
+
+	if asJSON {
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(map[string]any{"debug": snapshot})
+	}
+
+	fmt.Printf("generated_at=%s ticket=%s run_id=%s\n",
+		snapshot.GeneratedAt.Format(time.RFC3339),
+		emptyValue(snapshot.Ticket, "-"),
+		emptyValue(snapshot.RunID, "-"),
+	)
+	fmt.Printf("bus running=%t healthy=%t stream=%s group=%s consumer=%s redis=%s\n",
+		snapshot.Bus.Running,
+		snapshot.Bus.Healthy,
+		emptyValue(snapshot.Bus.StreamName, "-"),
+		emptyValue(snapshot.Bus.ConsumerGroup, "-"),
+		emptyValue(snapshot.Bus.ConsumerName, "-"),
+		emptyValue(snapshot.Bus.RedisURL, "-"),
+	)
+	if strings.TrimSpace(snapshot.Bus.HealthError) != "" {
+		fmt.Printf("  health_error=%s\n", snapshot.Bus.HealthError)
+	}
+	fmt.Printf("outbox pending=%d processing=%d failed=%d oldest_pending_age=%ds\n",
+		snapshot.Outbox.PendingCount,
+		snapshot.Outbox.ProcessingCount,
+		snapshot.Outbox.FailedCount,
+		snapshot.Outbox.OldestPendingAgeSec,
+	)
+
+	fmt.Printf("topics count=%d\n", len(snapshot.Bus.Topics))
+	for _, topic := range snapshot.Bus.Topics {
+		fmt.Printf("  - topic=%s stream=%s handler=%t subscribed=%t stream_exists=%t stream_length=%d group_present=%t group_pending=%d group_lag=%d\n",
+			topic.Topic,
+			emptyValue(topic.Stream, "-"),
+			topic.HandlerRegistered,
+			topic.Subscribed,
+			topic.StreamExists,
+			topic.StreamLength,
+			topic.ConsumerGroupPresent,
+			topic.ConsumerGroupPending,
+			topic.ConsumerGroupLag,
+		)
+		if strings.TrimSpace(topic.TopicError) != "" {
+			fmt.Printf("    error=%s\n", topic.TopicError)
+		}
+	}
+
+	fmt.Printf("outbox_messages count=%d\n", len(snapshot.OutboxMessages))
+	for _, message := range snapshot.OutboxMessages {
+		fmt.Printf("  - message_id=%s status=%s topic=%s attempts=%d updated_at=%s\n",
+			message.MessageID,
+			message.Status,
+			message.Topic,
+			message.AttemptCount,
+			message.UpdatedAt.Format(time.RFC3339),
+		)
+		if strings.TrimSpace(message.LastError) != "" {
+			fmt.Printf("    error=%s\n", message.LastError)
+		}
+	}
+
+	fmt.Printf("events count=%d\n", len(snapshot.Events))
+	for _, event := range snapshot.Events {
+		fmt.Printf("  - sequence=%d event_id=%s type=%s thread=%s ticket=%s run_id=%s occurred_at=%s\n",
+			event.Sequence,
+			event.Envelope.EventID,
+			event.Envelope.EventType,
+			event.Envelope.ThreadID,
+			event.Envelope.Ticket,
+			emptyValue(event.Envelope.RunID, "-"),
+			event.Envelope.OccurredAt.Format(time.RFC3339),
+		)
+	}
+
+	fmt.Printf("control_threads count=%d\n", len(snapshot.ControlThreads))
+	for _, thread := range snapshot.ControlThreads {
+		fmt.Printf("  - run_id=%s agent=%s ticket=%s thread=%s updated_at=%s\n",
+			thread.RunID,
+			thread.AgentName,
+			thread.Ticket,
+			thread.ThreadID,
+			thread.UpdatedAt.Format(time.RFC3339),
+		)
+	}
+
+	fmt.Printf("threads count=%d\n", len(snapshot.Threads))
+	for _, thread := range snapshot.Threads {
+		printForumThreadSummary(thread)
 	}
 	return nil
 }
@@ -3351,7 +3475,7 @@ func printUsage() {
 	fmt.Println("  metawsm review sync [--run-id RUN_ID | --ticket T1] [--max-items N] [--dispatch] [--dry-run]")
 	fmt.Println("  metawsm watch [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--notify-cmd \"...\"] [--bell=true]")
 	fmt.Println("  metawsm operator [--run-id RUN_ID | --ticket T1 | --all] [--interval 15] [--llm-mode off|assist|auto] [--dry-run]")
-	fmt.Println("  metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch|signal> [--server http://127.0.0.1:3001] [...]")
+	fmt.Println("  metawsm forum <ask|answer|assign|state|priority|close|list|thread|watch|signal|debug> [--server http://127.0.0.1:3001] [...]")
 	fmt.Println("  metawsm resume [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm stop [--run-id RUN_ID | --ticket T1]")
 	fmt.Println("  metawsm restart [--run-id RUN_ID | --ticket T1] [--dry-run]")
