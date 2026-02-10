@@ -132,15 +132,15 @@ func newRootCommand() (*cobra.Command, error) {
 		}
 		rootCmd.AddCommand(cobraCommand)
 	}
+	if err := addGroupedCommandTrees(rootCmd); err != nil {
+		return nil, err
+	}
 
 	legacySpecs := []legacyPassthroughSpec{
 		{Use: "run", Short: "Start a multi-ticket run", Run: runCommand},
 		{Use: "bootstrap", Short: "Bootstrap a ticket run interactively", Run: bootstrapCommand},
-		{Use: "auth", Short: "Auth subcommands", Run: authCommand},
-		{Use: "review", Short: "Review subcommands", Run: reviewCommand},
 		{Use: "watch", Short: "Watch run status and alerts", Run: watchCommand},
 		{Use: "operator", Short: "Operator loop for run supervision", Run: operatorCommand},
-		{Use: "forum", Short: "Forum subcommands", Run: forumCommand},
 		{Use: "tui", Short: "Terminal UI monitor", Run: tuiCommand},
 	}
 
