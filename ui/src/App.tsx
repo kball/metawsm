@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type RunSnapshot = {
   run_id: string;
@@ -106,6 +106,10 @@ type ForumDebugSnapshot = {
 };
 
 type QueueTab = "all" | "unseen" | "unanswered";
+type ForumStreamFrame = {
+  type?: string;
+  events?: unknown[];
+};
 
 export function App() {
   const [runs, setRuns] = useState<RunSnapshot[]>([]);
@@ -131,6 +135,8 @@ export function App() {
 
   const [debugSnapshot, setDebugSnapshot] = useState<ForumDebugSnapshot | null>(null);
   const [error, setError] = useState("");
+  const streamRefreshTimer = useRef<number | null>(null);
+  const selectedThreadRef = useRef("");
 
   const selectedRun = useMemo(
     () => runs.find((item) => item.run_id === selectedRunID) ?? null,
@@ -183,6 +189,10 @@ export function App() {
   }, [selectedThreadID, viewerType, viewerID]);
 
   useEffect(() => {
+    selectedThreadRef.current = selectedThreadID;
+  }, [selectedThreadID]);
+
+  useEffect(() => {
     if (!selectedTicket) {
       return;
     }
@@ -191,20 +201,33 @@ export function App() {
     socketURL.searchParams.set("ticket", selectedTicket);
 
     const socket = new WebSocket(socketURL);
-    socket.onmessage = () => {
-      void refreshForumData();
-      if (selectedThreadID) {
-        void refreshThreadDetail(selectedThreadID);
+    socket.onmessage = (event) => {
+      const frame = parseForumStreamFrame(event.data);
+      if (!frame || frame.type !== "forum.events" || !Array.isArray(frame.events) || frame.events.length === 0) {
+        return;
       }
-      void refreshDebug(selectedTicket, selectedRunID);
+      if (streamRefreshTimer.current !== null) {
+        window.clearTimeout(streamRefreshTimer.current);
+      }
+      streamRefreshTimer.current = window.setTimeout(() => {
+        void refreshForumData();
+        if (selectedThreadRef.current) {
+          void refreshThreadDetail(selectedThreadRef.current);
+        }
+        streamRefreshTimer.current = null;
+      }, 150);
     };
     socket.onerror = () => {
       setError("WebSocket stream unavailable; using pull refresh only.");
     };
     return () => {
+      if (streamRefreshTimer.current !== null) {
+        window.clearTimeout(streamRefreshTimer.current);
+        streamRefreshTimer.current = null;
+      }
       socket.close();
     };
-  }, [selectedTicket, selectedRunID, selectedThreadID]);
+  }, [selectedTicket, selectedRunID]);
 
   async function refreshRuns() {
     try {
@@ -789,4 +812,19 @@ function formatShortTime(raw: string): string {
     return raw;
   }
   return parsed.toISOString();
+}
+
+function parseForumStreamFrame(raw: unknown): ForumStreamFrame | null {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    return parsed as ForumStreamFrame;
+  } catch {
+    return null;
+  }
 }
