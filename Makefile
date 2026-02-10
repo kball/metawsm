@@ -1,8 +1,10 @@
-.PHONY: dev-backend dev-frontend frontend-check generate-frontend build test
+.PHONY: dev-backend dev-frontend frontend-check ui-install generate-frontend prepare-serve serve-all build test
 
 UI_DIR ?= ui
 DEV_API_ADDR ?= :3001
 DEV_UI_PORT ?= 3000
+SERVE_ADDR ?= :3001
+SERVE_DB ?= .metawsm/metawsm.db
 
 dev-backend:
 	go run ./cmd/metawsm serve --addr "$(DEV_API_ADDR)"
@@ -13,11 +15,20 @@ dev-frontend:
 frontend-check:
 	npm --prefix $(UI_DIR) run check
 
+ui-install:
+	npm --prefix $(UI_DIR) install
+
 generate-frontend:
 	go generate ./internal/web
 
-build:
-	go generate ./internal/web && go build -tags embed ./...
+prepare-serve: ui-install
+	go generate ./internal/web
+
+serve-all: prepare-serve
+	go run ./cmd/metawsm serve --addr "$(SERVE_ADDR)" --db "$(SERVE_DB)"
+
+build: prepare-serve
+	go build -tags embed ./...
 
 test:
 	go test ./... -count=1

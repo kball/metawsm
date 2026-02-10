@@ -290,6 +290,12 @@ npm --prefix ui install
 make dev-frontend
 ```
 
+One-shot daemon startup with prerequisites (installs UI deps, builds assets, then runs server):
+
+```bash
+make serve-all
+```
+
 Production-style build:
 
 ```bash
