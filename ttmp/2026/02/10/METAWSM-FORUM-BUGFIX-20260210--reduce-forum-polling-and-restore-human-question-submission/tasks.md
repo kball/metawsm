@@ -10,5 +10,5 @@
 - [x] Add "Ask Question" composer in forum UI for human-originated thread creation
 - [x] Wire ask submit flow to `POST /api/v1/forum/threads` with viewer-backed actor identity
 - [x] Add UI tests for ask validation and successful thread creation path
-- [ ] Run manual validation: idle UI no longer generates continuous refresh traffic
+- [x] Run manual validation: idle UI no longer generates continuous refresh traffic
 - [x] Run manual validation: human can create a new thread and see it appear live
