@@ -755,3 +755,43 @@ func TestUsageTextIncludesExpectedCommandMatrix(t *testing.T) {
 		}
 	}
 }
+
+func TestNewRootCommandRegistersExpectedTopLevelCommands(t *testing.T) {
+	rootCmd, err := newRootCommand()
+	if err != nil {
+		t.Fatalf("new root command: %v", err)
+	}
+
+	expected := []string{
+		"run",
+		"bootstrap",
+		"status",
+		"auth",
+		"review",
+		"watch",
+		"operator",
+		"forum",
+		"resume",
+		"stop",
+		"restart",
+		"cleanup",
+		"commit",
+		"pr",
+		"merge",
+		"iterate",
+		"close",
+		"policy-init",
+		"tui",
+		"docs",
+		"serve",
+	}
+	for _, name := range expected {
+		cmd, _, findErr := rootCmd.Find([]string{name})
+		if findErr != nil {
+			t.Fatalf("find top-level command %q: %v", name, findErr)
+		}
+		if cmd == nil || cmd.Name() != name {
+			t.Fatalf("expected top-level command %q to resolve, got %#v", name, cmd)
+		}
+	}
+}

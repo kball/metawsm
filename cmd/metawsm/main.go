@@ -43,61 +43,7 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
-
-	command := os.Args[1]
-	args := os.Args[2:]
-
-	var err error
-	switch command {
-	case "run":
-		err = runCommand(args)
-	case "bootstrap":
-		err = bootstrapCommand(args)
-	case "status":
-		err = statusCommand(args)
-	case "auth":
-		err = authCommand(args)
-	case "review":
-		err = reviewCommand(args)
-	case "watch":
-		err = watchCommand(args)
-	case "operator":
-		err = operatorCommand(args)
-	case "forum":
-		err = forumCommand(args)
-	case "resume":
-		err = resumeCommand(args)
-	case "stop":
-		err = stopCommand(args)
-	case "restart":
-		err = restartCommand(args)
-	case "cleanup":
-		err = cleanupCommand(args)
-	case "commit":
-		err = commitCommand(args)
-	case "pr":
-		err = prCommand(args)
-	case "merge":
-		err = mergeCommand(args)
-	case "iterate":
-		err = iterateCommand(args)
-	case "close":
-		err = closeCommand(args)
-	case "policy-init":
-		err = policyInitCommand(args)
-	case "tui":
-		err = tuiCommand(args)
-	case "docs":
-		err = docsCommand(args)
-	case "serve":
-		err = serveCommand(args)
-	case "help", "--help", "-h":
-		printUsage()
-	default:
-		err = fmt.Errorf("unknown command %q", command)
-	}
-
-	if err != nil {
+	if err := executeCLI(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
