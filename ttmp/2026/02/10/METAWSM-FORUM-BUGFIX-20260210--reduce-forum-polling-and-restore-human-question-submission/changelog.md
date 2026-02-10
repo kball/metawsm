@@ -89,3 +89,25 @@ Step 7: Wired Ask as Human composer to POST /api/v1/forum/threads using viewer-b
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Diary entry for task 7 wiring
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.tsx — Implemented ask-thread API submit and created-thread focus behavior
 
+
+## 2026-02-10
+
+Step 8: Added UI tests for ask-form validation and successful thread creation payload/field-reset path using Vitest + Testing Library (commit 560b3a97c9ff94e0cce26bf1bf3aa3e9f61ef838).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Diary entry for task 8 automation
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/package.json — Added test script and required dev dependencies
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.test.tsx — New ask flow tests and endpoint mocks
+
+
+## 2026-02-10
+
+Step 9-10: Completed validation checks for idle stream behavior (no repeated watch polling) and human ask flow/live event behavior; added stream test assertions for single catch-up watch call (commit b6a7be09f9abd1a5e7d3b1adc77952e668622078).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/internal/server/api_test.go — Validation assertion updates for idle/live stream behavior
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Validation diary section for tasks 9 and 10
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.test.tsx — Ask-flow tests used as task 10 validation evidence
+
