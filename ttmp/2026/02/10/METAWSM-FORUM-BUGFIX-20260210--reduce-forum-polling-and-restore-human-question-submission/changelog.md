@@ -59,3 +59,13 @@ Step 4: Updated UI websocket handling to ignore heartbeat/empty frames and debou
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Diary entry for task 4 implementation
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.tsx — Stream frame parsing and debounced refresh behavior
 
+
+## 2026-02-10
+
+Step 5: Reduced automatic debug refresh frequency by decoupling debug fetches from filter changes and adding a slower interval refresh (commit 1a710380748f52260c553b46b35895ba428a9f85).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ttmp/2026/02/10/METAWSM-FORUM-BUGFIX-20260210--reduce-forum-polling-and-restore-human-question-submission/reference/01-diary.md — Diary entry for task 5 cadence update
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.tsx — Split forum and debug refresh effects to lower diagnostics polling rate
+

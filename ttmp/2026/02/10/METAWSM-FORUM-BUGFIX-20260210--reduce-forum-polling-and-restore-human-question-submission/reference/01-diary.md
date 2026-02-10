@@ -29,13 +29,16 @@ RelatedFiles:
     - Path: internal/server/websocket.go
       Note: Reworked stream endpoint to catch-up plus broker-driven live event push (commit 05d88afe3febf2fe85a3bdbfb775ca38ae891f8f)
     - Path: ui/src/App.tsx
-      Note: Websocket onmessage now ignores heartbeat/no-event frames and debounces refreshes (commit afa77ed1d2bfbb0cc285cf168d62378bf6fe3e52)
+      Note: |-
+        Websocket onmessage now ignores heartbeat/no-event frames and debounces refreshes (commit afa77ed1d2bfbb0cc285cf168d62378bf6fe3e52)
+        Separated debug refresh cadence from filter-driven data refresh and added 15s interval (commit 1a710380748f52260c553b46b35895ba428a9f85)
 ExternalSources: []
 Summary: Implementation diary for sequential task delivery and validation evidence for METAWSM-FORUM-BUGFIX-20260210.
-LastUpdated: 2026-02-10T13:01:00-08:00
+LastUpdated: 2026-02-10T13:02:00-08:00
 WhatFor: Capture what changed, why, test results, risks, and commit traceability for each completed task.
 WhenToUse: Use to review implementation history, reproduce verification, and continue work task-by-task.
 ---
+
 
 
 
@@ -345,3 +348,64 @@ The change is intentionally narrow to satisfy Task 4 without mixing in debug-pan
 - `window.setTimeout(..., 150)` with cancel-on-replace and cleanup-on-unmount.
 - Task progress:
 - Marked Task 4 complete via `docmgr task check --ticket METAWSM-FORUM-BUGFIX-20260210 --id 4`.
+
+## Step 5: Reduce Automatic Debug Refresh Frequency
+
+This step reduced debug snapshot refresh frequency by separating debug updates from the high-frequency thread/filter refresh path. Debug data now refreshes on run/ticket changes and a slower periodic timer.
+
+This keeps diagnostics available while avoiding extra requests during routine search/filter interactions.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Go through and implement task by task, keeping a diary and commiting as you go"
+
+**Assistant interpretation:** Continue sequential delivery and commit each completed task with diary documentation.
+
+**Inferred user intent:** Reduce load sources incrementally while preserving observability.
+
+**Commit (code):** `1a710380748f52260c553b46b35895ba428a9f85` — "Throttle forum debug refresh to run-level cadence"
+
+### What I did
+- Updated `ui/src/App.tsx` effects:
+- Kept `refreshForumData()` tied to filter/view dependencies.
+- Moved `refreshDebug(selectedTicket, selectedRunID)` into its own effect scoped to run/ticket changes.
+- Added interval-based debug refresh every `15s`.
+- Removed debug refresh coupling to queue/search/viewer filter changes.
+- Ran:
+- `npm --prefix ui run check`
+
+### Why
+- Task 5 required lowering debug refresh frequency.
+- Debug health does not need to refresh on every UI filter edit.
+
+### What worked
+- TypeScript check passed.
+- Debug refresh path is now lower-frequency and scoped.
+- Manual refresh button behavior remains unchanged.
+
+### What didn't work
+- No blockers in this step.
+
+### What I learned
+- Separating data concerns into dedicated effects makes refresh cadence tuning straightforward.
+
+### What was tricky to build
+- Ensuring existing forum data refresh behavior remained unchanged while extracting debug refresh into a separate cadence.
+
+### What warrants a second pair of eyes
+- The `15s` interval may be too slow or too fast depending on operational preference.
+
+### What should be done in the future
+- Consider making debug interval configurable from settings or policy if operators need tuning.
+
+### Code review instructions
+- Review effect split in `ui/src/App.tsx` around `refreshForumData` and `refreshDebug`.
+- Validate with:
+- `npm --prefix ui run check`
+
+### Technical details
+- Debug refresh cadence:
+- Immediate on `[selectedTicket, selectedRunID]` change.
+- Interval refresh every `15000ms`.
+- Task progress:
+- Marked Task 5 complete via `docmgr task check --ticket METAWSM-FORUM-BUGFIX-20260210 --id 5`.
