@@ -107,6 +107,24 @@ func newRootCommand() (*cobra.Command, error) {
 	}
 	migrated = append(migrated, closeCmd)
 
+	watchCmd, err := newWatchGlazedCommand()
+	if err != nil {
+		return nil, err
+	}
+	migrated = append(migrated, watchCmd)
+
+	operatorCmd, err := newOperatorGlazedCommand()
+	if err != nil {
+		return nil, err
+	}
+	migrated = append(migrated, operatorCmd)
+
+	tuiCmd, err := newTUIGlazedCommand()
+	if err != nil {
+		return nil, err
+	}
+	migrated = append(migrated, tuiCmd)
+
 	policyInitCmd, err := newPolicyInitGlazedCommand()
 	if err != nil {
 		return nil, err
@@ -139,9 +157,6 @@ func newRootCommand() (*cobra.Command, error) {
 	legacySpecs := []legacyPassthroughSpec{
 		{Use: "run", Short: "Start a multi-ticket run", Run: runCommand},
 		{Use: "bootstrap", Short: "Bootstrap a ticket run interactively", Run: bootstrapCommand},
-		{Use: "watch", Short: "Watch run status and alerts", Run: watchCommand},
-		{Use: "operator", Short: "Operator loop for run supervision", Run: operatorCommand},
-		{Use: "tui", Short: "Terminal UI monitor", Run: tuiCommand},
 	}
 
 	for _, spec := range legacySpecs {
