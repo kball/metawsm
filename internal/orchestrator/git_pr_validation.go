@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -32,6 +34,7 @@ type gitPRValidationInput struct {
 	WorkspaceName string
 	Repo          string
 	RepoPath      string
+	DocRootPath   string
 	BaseBranch    string
 	HeadBranch    string
 }
@@ -157,8 +160,238 @@ func defaultGitPRValidationChecks() map[string]gitPRValidationCheck {
 	return map[string]gitPRValidationCheck{
 		"tests":           gitPRTestsCheck{},
 		"forbidden_files": gitPRForbiddenFilesCheck{},
+		"ticket_workflow": gitPRTicketWorkflowCheck{},
 		"clean_tree":      gitPRCleanTreeCheck{},
 	}
+}
+
+type gitPRTicketWorkflowCheck struct{}
+
+func (gitPRTicketWorkflowCheck) Name() string { return "ticket_workflow" }
+
+func (gitPRTicketWorkflowCheck) Supports(op gitPRValidationOperation) bool {
+	return op == gitPRValidationOperationCommit || op == gitPRValidationOperationPR
+}
+
+func (gitPRTicketWorkflowCheck) Run(ctx context.Context, _ policy.Config, input gitPRValidationInput) (gitPRValidationCheckResult, error) {
+	_ = ctx
+	ticket := strings.TrimSpace(input.Ticket)
+	if ticket == "" {
+		return gitPRValidationCheckResult{
+			Status: gitPRValidationStatusPassed,
+			Detail: "ticket unavailable; staged workflow check skipped",
+		}, nil
+	}
+
+	docRootPath := strings.TrimSpace(input.DocRootPath)
+	if docRootPath == "" {
+		return gitPRValidationCheckResult{
+			Status: gitPRValidationStatusPassed,
+			Detail: "doc root unavailable; staged workflow check skipped",
+		}, nil
+	}
+
+	ticketPaths, err := locateTicketDocDirsInWorkspace(docRootPath, ticket)
+	if err != nil {
+		return gitPRValidationCheckResult{}, err
+	}
+	if len(ticketPaths) == 0 {
+		return gitPRValidationCheckResult{
+			Status: gitPRValidationStatusPassed,
+			Detail: "ticket docs not found; no staged workflow contract detected",
+		}, nil
+	}
+
+	requiredPaths := []string{}
+	failures := []string{}
+	for _, ticketPath := range ticketPaths {
+		required, err := stagedWorkflowContractRequired(ticketPath)
+		if err != nil {
+			return gitPRValidationCheckResult{}, err
+		}
+		if !required {
+			continue
+		}
+		requiredPaths = append(requiredPaths, ticketPath)
+		missing, err := stagedWorkflowMissingArtifacts(ticketPath)
+		if err != nil {
+			return gitPRValidationCheckResult{}, err
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		failures = append(failures, fmt.Sprintf("%s (%s)", filepath.Base(ticketPath), strings.Join(missing, "; ")))
+	}
+
+	if len(requiredPaths) == 0 {
+		return gitPRValidationCheckResult{
+			Status: gitPRValidationStatusPassed,
+			Detail: "no staged workflow contract declared in operator feedback",
+		}, nil
+	}
+	if len(failures) > 0 {
+		return gitPRValidationCheckResult{
+			Status: gitPRValidationStatusFailed,
+			Detail: "staged workflow contract unmet: " + strings.Join(failures, " | "),
+		}, nil
+	}
+	return gitPRValidationCheckResult{
+		Status: gitPRValidationStatusPassed,
+		Detail: fmt.Sprintf("staged workflow contract satisfied for %d ticket doc path(s)", len(requiredPaths)),
+	}, nil
+}
+
+func stagedWorkflowContractRequired(ticketPath string) (bool, error) {
+	path := filepath.Join(ticketPath, "reference", "99-operator-feedback.md")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	text := strings.ToLower(string(content))
+	if !strings.Contains(text, "required workflow:") {
+		return false, nil
+	}
+	return strings.Contains(text, "step 1") &&
+		strings.Contains(text, "step 2") &&
+		strings.Contains(text, "step 3") &&
+		strings.Contains(text, "step 4"), nil
+}
+
+var (
+	workflowCheckedTaskRegex   = regexp.MustCompile(`(?mi)^\s*-\s*\[[xX]\]\s+`)
+	workflowUncheckedTaskRegex = regexp.MustCompile(`(?mi)^\s*-\s*\[\s\]\s+`)
+)
+
+func stagedWorkflowMissingArtifacts(ticketPath string) ([]string, error) {
+	paths, err := stagedWorkflowMarkdownFiles(ticketPath)
+	if err != nil {
+		return nil, err
+	}
+
+	analysisFound := false
+	analysisApproved := false
+	planFound := false
+	planApproved := false
+	diaryFound := false
+	for _, path := range paths {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		text := strings.ToLower(string(content))
+		if stagedWorkflowLooksLikeAnalysisDoc(text) {
+			analysisFound = true
+			if strings.Contains(text, "approved") {
+				analysisApproved = true
+			}
+		}
+		if stagedWorkflowLooksLikePlanDoc(text) {
+			planFound = true
+			if strings.Contains(text, "approved") {
+				planApproved = true
+			}
+		}
+		if strings.Contains(text, "# diary") && strings.Contains(text, "## step ") && strings.Contains(text, "### prompt context") {
+			diaryFound = true
+		}
+	}
+
+	missing := []string{}
+	if !analysisFound {
+		missing = append(missing, "analysis doc with Relevant Areas + Feedback sections")
+	} else if !analysisApproved {
+		missing = append(missing, "analysis feedback response missing approval")
+	}
+	if !planFound {
+		missing = append(missing, "implementation plan doc with Plan + Feedback sections")
+	} else if !planApproved {
+		missing = append(missing, "implementation plan feedback response missing approval")
+	}
+	if !diaryFound {
+		missing = append(missing, "diary doc with step entries")
+	}
+
+	tasksPath := filepath.Join(ticketPath, "tasks.md")
+	taskBytes, err := os.ReadFile(tasksPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			missing = append(missing, "tasks.md missing")
+		} else {
+			return nil, err
+		}
+	} else {
+		tasks := string(taskBytes)
+		if !workflowCheckedTaskRegex.MatchString(tasks) {
+			missing = append(missing, "tasks.md has no completed checklist items")
+		}
+		if workflowUncheckedTaskRegex.MatchString(tasks) {
+			missing = append(missing, "tasks.md still has unchecked items")
+		}
+	}
+
+	changelogPath := filepath.Join(ticketPath, "changelog.md")
+	changelogBytes, err := os.ReadFile(changelogPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			missing = append(missing, "changelog.md missing")
+		} else {
+			return nil, err
+		}
+	} else {
+		changelog := strings.ToLower(string(changelogBytes))
+		if !strings.Contains(changelog, "step ") {
+			missing = append(missing, "changelog.md missing step entries")
+		}
+	}
+
+	return missing, nil
+}
+
+func stagedWorkflowLooksLikeAnalysisDoc(text string) bool {
+	return strings.Contains(text, "codebase relevance analysis") &&
+		strings.Contains(text, "## relevant areas") &&
+		strings.Contains(text, "## feedback request") &&
+		strings.Contains(text, "## feedback response")
+}
+
+func stagedWorkflowLooksLikePlanDoc(text string) bool {
+	return strings.Contains(text, "implementation plan") &&
+		strings.Contains(text, "## plan") &&
+		strings.Contains(text, "## feedback request") &&
+		strings.Contains(text, "## feedback response")
+}
+
+func stagedWorkflowMarkdownFiles(ticketPath string) ([]string, error) {
+	dirs := []string{
+		filepath.Join(ticketPath, "reference"),
+		filepath.Join(ticketPath, "design"),
+		filepath.Join(ticketPath, "design-doc"),
+	}
+	paths := []string{}
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := strings.ToLower(strings.TrimSpace(entry.Name()))
+			if !strings.HasSuffix(name, ".md") {
+				continue
+			}
+			paths = append(paths, filepath.Join(dir, entry.Name()))
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 type gitPRTestsCheck struct{}

@@ -167,7 +167,7 @@ func Default() Config {
 	cfg.GitPR.CredentialMode = "local_user_auth"
 	cfg.GitPR.BranchTemplate = "{ticket}/{repo}/{run}"
 	cfg.GitPR.RequireAll = true
-	cfg.GitPR.RequiredChecks = []string{"tests", "forbidden_files", "clean_tree"}
+	cfg.GitPR.RequiredChecks = []string{"tests", "forbidden_files", "ticket_workflow", "clean_tree"}
 	cfg.GitPR.TestCommands = []string{}
 	cfg.GitPR.ForbiddenPatterns = []string{
 		".env",
@@ -472,7 +472,7 @@ func Validate(cfg Config) error {
 
 func isSupportedGitPRCheck(check string) bool {
 	switch strings.TrimSpace(strings.ToLower(check)) {
-	case "tests", "forbidden_files", "clean_tree":
+	case "tests", "forbidden_files", "ticket_workflow", "clean_tree":
 		return true
 	default:
 		return false
