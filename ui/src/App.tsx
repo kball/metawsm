@@ -111,7 +111,7 @@ type ForumStreamFrame = {
   events?: unknown[];
 };
 
-type BoardKey = "in_progress" | "needs_me" | "recently_completed";
+type BoardKey = "in_progress" | "needs_me" | "recently_completed" | "all_threads";
 type TopicMode = "ticket" | "run" | "agent";
 
 type BoardBuckets = {
@@ -122,6 +122,7 @@ type BoardBuckets = {
   needsMeUnanswered: ForumThread[];
   needsMeAssigned: ForumThread[];
   recentlyClosed: ForumThread[];
+  allThreads: ForumThread[];
 };
 
 const EMPTY_BUCKETS: BoardBuckets = {
@@ -132,6 +133,7 @@ const EMPTY_BUCKETS: BoardBuckets = {
   needsMeUnanswered: [],
   needsMeAssigned: [],
   recentlyClosed: [],
+  allThreads: [],
 };
 
 export function App() {
@@ -176,6 +178,7 @@ export function App() {
       ...boardBuckets.needsMeUnanswered,
       ...boardBuckets.needsMeAssigned,
       ...boardBuckets.recentlyClosed,
+      ...boardBuckets.allThreads,
     ],
     [boardBuckets],
   );
@@ -205,6 +208,7 @@ export function App() {
       inProgress,
       needsMe: needsMeUnique.size,
       recentlyCompleted: boardBuckets.recentlyClosed.length,
+      allThreads: boardBuckets.allThreads.length,
     };
   }, [boardBuckets]);
 
@@ -288,7 +292,7 @@ export function App() {
   useEffect(() => {
     void refreshDebug(ticketFilter, runFilter);
     const interval = window.setInterval(() => {
-      void refreshDebug(questionTicket.trim(), runFilter);
+      void refreshDebug(ticketFilter, runFilter);
     }, 15000);
     return () => {
       window.clearInterval(interval);
@@ -427,6 +431,7 @@ export function App() {
         needsMeUnanswered: scopedUnansweredRows,
         needsMeAssigned,
         recentlyClosed: scopedClosedRows,
+        allThreads: scopedAllRows,
       };
       setBoardBuckets(nextBuckets);
 
@@ -440,6 +445,7 @@ export function App() {
             ...nextBuckets.needsMeUnanswered,
             ...nextBuckets.needsMeAssigned,
             ...nextBuckets.recentlyClosed,
+            ...nextBuckets.allThreads,
           ].map((thread) => thread.thread_id),
         );
         if (!visibleIDs.has(selectedThreadID)) {
@@ -489,8 +495,10 @@ export function App() {
     if (!response.ok) {
       throw new Error(`forum search request failed (${response.status})`);
     }
-    const payload = (await response.json()) as { threads?: ForumThread[] };
-    return Array.isArray(payload.threads) ? payload.threads : [];
+    const payload = (await response.json()) as { threads?: unknown[] };
+    return Array.isArray(payload.threads)
+      ? payload.threads.map(normalizeForumThread).filter((item): item is ForumThread => item !== null)
+      : [];
   }
 
   async function fetchQueueThreads(
@@ -525,8 +533,10 @@ export function App() {
     if (!response.ok) {
       throw new Error(`forum queue request failed (${response.status})`);
     }
-    const payload = (await response.json()) as { threads?: ForumThread[] };
-    return Array.isArray(payload.threads) ? payload.threads : [];
+    const payload = (await response.json()) as { threads?: unknown[] };
+    return Array.isArray(payload.threads)
+      ? payload.threads.map(normalizeForumThread).filter((item): item is ForumThread => item !== null)
+      : [];
   }
 
   async function refreshThreadDetail(threadID: string) {
@@ -751,6 +761,13 @@ export function App() {
             >
               Recently Completed ({boardCounts.recentlyCompleted})
             </button>
+            <button
+              type="button"
+              className={activeBoard === "all_threads" ? "chip active" : "chip"}
+              onClick={() => setActiveBoard("all_threads")}
+            >
+              All Threads ({boardCounts.allThreads})
+            </button>
           </div>
 
           <div className="scope-filters">
@@ -899,6 +916,18 @@ export function App() {
                 selectedThreadID={selectedThreadID}
                 onSelectThread={setSelectedThreadID}
                 emptyLabel="No recently closed threads."
+              />
+            </div>
+          ) : null}
+
+          {activeBoard === "all_threads" ? (
+            <div className="board-columns single">
+              <BoardLane
+                title="All Threads"
+                rows={boardBuckets.allThreads}
+                selectedThreadID={selectedThreadID}
+                onSelectThread={setSelectedThreadID}
+                emptyLabel="No threads found."
               />
             </div>
           ) : null}
@@ -1107,8 +1136,8 @@ function resolveScope(ticketFilter: string, runFilter: string) {
   };
 }
 
-function isState(value: string, expected: string[]): boolean {
-  const normalized = value.trim().toLowerCase();
+function isState(value: string | undefined | null, expected: string[]): boolean {
+  const normalized = String(value ?? "").trim().toLowerCase();
   return expected.some((candidate) => candidate === normalized);
 }
 
@@ -1161,8 +1190,8 @@ function inferViewerAssigneeIDs(viewerID: string): string[] {
   return [...set];
 }
 
-function assigneeMatchesViewer(assigneeName: string, inferredIDs: string[]): boolean {
-  const assignee = assigneeName.trim().toLowerCase();
+function assigneeMatchesViewer(assigneeName: string | undefined | null, inferredIDs: string[]): boolean {
+  const assignee = String(assigneeName ?? "").trim().toLowerCase();
   if (!assignee || inferredIDs.length === 0) {
     return false;
   }
@@ -1201,6 +1230,35 @@ function toErrorString(err: unknown): string {
   return String(err);
 }
 
+function normalizeForumThread(value: unknown): ForumThread | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const raw = value as Record<string, unknown>;
+  const threadID = pickString(raw.thread_id, raw.ThreadID);
+  if (!threadID) {
+    return null;
+  }
+
+  return {
+    thread_id: threadID,
+    ticket: pickString(raw.ticket, raw.Ticket) ?? "",
+    run_id: pickString(raw.run_id, raw.RunID) ?? "",
+    agent_name: pickString(raw.agent_name, raw.AgentName) ?? "",
+    title: pickString(raw.title, raw.Title) ?? threadID,
+    state: pickString(raw.state, raw.State) ?? "unknown",
+    priority: pickString(raw.priority, raw.Priority) ?? "normal",
+    assignee_name: pickString(raw.assignee_name, raw.AssigneeName) ?? "",
+    posts_count: toNumber(raw.posts_count ?? raw.PostsCount),
+    updated_at: pickString(raw.updated_at, raw.UpdatedAt) ?? "",
+    opened_at: pickString(raw.opened_at, raw.OpenedAt) ?? "",
+    last_event_sequence: toOptionalNumber(raw.last_event_sequence ?? raw.LastEventSequence),
+    last_actor_type: pickString(raw.last_actor_type, raw.LastActorType) ?? "",
+    is_unseen: toOptionalBool(raw.is_unseen ?? raw.IsUnseen),
+    is_unanswered: toOptionalBool(raw.is_unanswered ?? raw.IsUnanswered),
+  };
+}
+
 function normalizeRunSnapshot(value: unknown): RunSnapshot | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -1216,6 +1274,40 @@ function normalizeRunSnapshot(value: unknown): RunSnapshot | null {
     tickets: normalizeStringArray(raw.tickets ?? raw.Tickets),
     pending_guidance: normalizeGuidanceArray(raw.pending_guidance ?? raw.PendingGuidance),
   };
+}
+
+function toNumber(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return 0;
+}
+
+function toOptionalNumber(value: unknown): number | undefined {
+  const parsed = toNumber(value);
+  return parsed === 0 ? undefined : parsed;
+}
+
+function toOptionalBool(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") {
+      return true;
+    }
+    if (normalized === "false") {
+      return false;
+    }
+  }
+  return undefined;
 }
 
 function pickString(...values: unknown[]): string | null {
