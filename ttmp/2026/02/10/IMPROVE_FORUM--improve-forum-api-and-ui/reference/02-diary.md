@@ -16,18 +16,24 @@ RelatedFiles:
       Note: |-
         Tracks implementation task progress
         Tracked and completed implementation tasks
+    - Path: ui/src/App.test.tsx
+      Note: Updated tests for global explorer heading and question ticket input
     - Path: ui/src/App.tsx
       Note: |-
         Primary UI implementation target for upcoming steps
         Implemented board-oriented forum navigation and lane data flow (commit dfe2ebc)
+        Switched board scope to global-by-default with optional run/ticket filters (commit 4c98227)
     - Path: ui/src/styles.css
-      Note: Added board and diagnostics drawer styling (commit dfe2ebc)
+      Note: |-
+        Added board and diagnostics drawer styling (commit dfe2ebc)
+        Adjusted layout and scope filter styling for global explorer (commit 4c98227)
 ExternalSources: []
 Summary: Step-by-step implementation diary for board-oriented forum UI evolution.
-LastUpdated: 2026-02-10T14:36:46-08:00
+LastUpdated: 2026-02-10T15:24:25-08:00
 WhatFor: Record implementation steps, decisions, validation, and follow-ups while delivering IMPROVE_FORUM.
 WhenToUse: Use while implementing and reviewing board UI changes for forum navigation.
 ---
+
 
 
 
@@ -202,3 +208,93 @@ This step also finalized the “assigned to me” inference and moved diagnostic
   - `GET /api/v1/forum/threads/{thread_id}`
   - `POST /api/v1/forum/threads/{thread_id}/seen`
   - `POST /api/v1/forum/threads/{thread_id}/posts`
+
+## Step 3: Shift to Global-by-Default Board Scope
+
+After initial delivery, feedback indicated the board experience still felt run/ticket scoped because of the left-side run panel and implicit run-driven ticket scope. This step converted the board explorer to global-by-default behavior with run/ticket as optional filters.
+
+The goal was to preserve board functionality while removing mandatory scope constraints so users can explore work across all runs/tickets first, then narrow only when needed.
+
+### Prompt Context
+
+**User prompt (verbatim):** "OK something is weird here... it all still appears to be scoped by run/ticket on the left, but I don't want that, I want a global view"
+
+**Assistant interpretation:** Remove mandatory run/ticket scoping from the board UI and make the explorer global by default.
+
+**Inferred user intent:** Prioritize broad situational awareness and cross-run discovery over scoped navigation defaults.
+
+**Commit (code):** 4c98227 — "ui: make board explorer global by default with optional scope filters"
+
+### What I did
+
+- Removed the left run-selection panel as the primary navigation gate.
+- Reworked scope state in `ui/src/App.tsx`:
+  - replaced `selectedRunID`-driven scope with optional `ticketFilter` and `runFilter`
+  - made `resolveScope` always return a valid scope object (possibly empty/global)
+- Updated explorer header and controls:
+  - heading now plain `Threads Explorer` (not run-ticket tagged)
+  - added optional `All tickets` / `All runs` selectors
+  - scope label now shows `global` when filters are empty
+- Updated websocket stream setup to subscribe globally when filters are empty and include params only when provided.
+- Updated Ask flow:
+  - added explicit `Question ticket` input
+  - request payload now uses user-entered ticket and optional run filter
+- Updated tests in `ui/src/App.test.tsx` for global heading and required ticket input.
+- Updated styles in `ui/src/styles.css`:
+  - two-column main layout for explorer/detail
+  - `scope-filters` styling for optional global filters
+
+### Why
+
+- Mandatory run/ticket scoping prevented the quick global scan the board UX is intended to support.
+- Global-by-default aligns with your stated goal of top-level work visibility and exploration.
+
+### What worked
+
+- `npm --prefix ui run check` passed.
+- `npm --prefix ui run test` passed after test updates.
+- Board lanes continued to function with empty/global scope.
+
+### What didn't work
+
+- First commit attempt hit stale git lock again:
+  - `fatal: Unable to create '/Users/kball/git/kball/metawsm/.git/worktrees/metawsm/index.lock': File exists.`
+- Commit succeeded on retry once lock cleared.
+
+### What I learned
+
+- The backend APIs already support fully global list/search/queue behavior when `ticket`/`run_id` are omitted.
+- Requiring ticket context for ask-question is still necessary; making it explicit in the composer avoids hidden coupling to run selection.
+
+### What was tricky to build
+
+- Ensuring global scope did not regress existing board lane derivation logic.
+- Preserving ask/reply flows while decoupling run-driven ticket state.
+
+### What warrants a second pair of eyes
+
+- UX around `topicMode` semantics now that scope is optional; may need simplification in a follow-up.
+- Whether we should persist optional filters in URL/query state for shareable global views.
+
+### What should be done in the future
+
+- Add explicit “clear filters” affordance (currently selecting `All` values achieves this).
+- Consider simplifying topic mode controls for clearer mental model in global view.
+
+### Code review instructions
+
+- Review `ui/src/App.tsx`:
+  - new scope model (`ticketFilter`, `runFilter`, `resolveScope`)
+  - websocket/debug query behavior under empty scope
+  - ask-question payload and required ticket input
+- Review `ui/src/styles.css` for layout shift to two-column global explorer.
+- Review `ui/src/App.test.tsx` updates for new ask prerequisites.
+- Validate with:
+  - `npm --prefix ui run check`
+  - `npm --prefix ui run test`
+
+### Technical details
+
+- APIs used in global mode:
+  - `/api/v1/forum/search` without `ticket`/`run_id` for all-thread retrieval
+  - `/api/v1/forum/queues` without `ticket`/`run_id` for global unseen/unanswered retrieval

@@ -24,3 +24,14 @@ Step 2: Implemented board-based forum explorer UI and collapsed system health di
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.tsx — Board navigation
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/styles.css — Board layout and diagnostics drawer styling
 
+
+## 2026-02-10
+
+Step 3: Switched board explorer to global-by-default scope with optional run/ticket filters (commit 4c98227).
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.test.tsx — Adjusted ask-flow tests for global-mode ticket entry
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/App.tsx — Removed mandatory run panel scope and added optional global filters
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/ui/src/styles.css — Updated layout from run-scoped to global two-column explorer
+
