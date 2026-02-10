@@ -23,16 +23,18 @@ RelatedFiles:
         Primary UI implementation target for upcoming steps
         Implemented board-oriented forum navigation and lane data flow (commit dfe2ebc)
         Switched board scope to global-by-default with optional run/ticket filters (commit 4c98227)
+        Step 4 fixed undefined trim crash and added All Threads board (commit 22e93e1)
     - Path: ui/src/styles.css
       Note: |-
         Added board and diagnostics drawer styling (commit dfe2ebc)
         Adjusted layout and scope filter styling for global explorer (commit 4c98227)
 ExternalSources: []
 Summary: Step-by-step implementation diary for board-oriented forum UI evolution.
-LastUpdated: 2026-02-10T15:24:25-08:00
+LastUpdated: 2026-02-10T15:29:53-08:00
 WhatFor: Record implementation steps, decisions, validation, and follow-ups while delivering IMPROVE_FORUM.
 WhenToUse: Use while implementing and reviewing board UI changes for forum navigation.
 ---
+
 
 
 
@@ -298,3 +300,88 @@ The goal was to preserve board functionality while removing mandatory scope cons
 - APIs used in global mode:
   - `/api/v1/forum/search` without `ticket`/`run_id` for all-thread retrieval
   - `/api/v1/forum/queues` without `ticket`/`run_id` for global unseen/unanswered retrieval
+
+## Step 4: Fix Runtime Trim Crash and Add All Threads View
+
+After switching to global scope, you reported a runtime error: `Cannot read properties of undefined (reading 'trim')` and requested a way to view all threads. This step resolved both issues in a single UI patch.
+
+I hardened thread normalization and guard logic to prevent `.trim()` on missing API fields, and added an explicit `All Threads` board so full-thread browsing is always available.
+
+### Prompt Context
+
+**User prompt (verbatim):** "I'm getting this error on the screen. I also need a way to see *all threads*. Error: Cannot read properties of undefined (reading 'trim')"
+
+**Assistant interpretation:** Fix the runtime crash and add a first-class view that lists all threads.
+
+**Inferred user intent:** Restore reliability and provide complete browse capability, not only segmented board lanes.
+
+**Commit (code):** 22e93e1 — "ui: add all-threads board and guard missing thread fields"
+
+### What I did
+
+- Added `all_threads` board mode and `All Threads` tab/count in `ui/src/App.tsx`.
+- Added `boardBuckets.allThreads` and rendered it as a dedicated lane.
+- Hardened unsafe string operations:
+  - `assigneeMatchesViewer` now accepts undefined/null safely.
+  - `isState` now accepts undefined/null safely.
+- Added `normalizeForumThread()` for API responses and applied it in both:
+  - `fetchSearchThreads`
+  - `fetchQueueThreads`
+- Added basic numeric/bool parsing helpers for normalized thread fields.
+- Fixed a refresh bug introduced earlier:
+  - debug refresh interval now uses `ticketFilter` (not `questionTicket`).
+- Validation:
+  - `npm --prefix ui run check`
+  - `npm --prefix ui run test`
+
+### Why
+
+- The crash indicates production data can omit fields the UI assumed were always present.
+- All Threads is needed for complete exploration beyond lane-based slices.
+
+### What worked
+
+- Typecheck and tests both passed after normalization/guard changes.
+- All Threads tab now surfaces full scoped thread results directly.
+
+### What didn't work
+
+- First commit attempt hit the recurring stale git lock:
+  - `fatal: Unable to create '/Users/kball/git/kball/metawsm/.git/worktrees/metawsm/index.lock': File exists.`
+- Commit succeeded on immediate retry after lock disappearance.
+
+### What I learned
+
+- Forum thread payloads are not guaranteed to include all optional string fields; UI normalization is mandatory.
+- Lane-based UX still benefits from an explicit “show everything” escape hatch.
+
+### What was tricky to build
+
+- Keeping normalization robust while preserving existing filtering semantics and test expectations.
+
+### What warrants a second pair of eyes
+
+- Whether `normalizeForumThread` defaults (e.g., `state: "unknown"`) should be surfaced visually or hidden.
+- Whether All Threads should optionally include per-item lane membership hints.
+
+### What should be done in the future
+
+- Add regression tests that include malformed/incomplete thread rows from API mocks.
+
+### Code review instructions
+
+- Review `ui/src/App.tsx`:
+  - `BoardKey` + `BoardBuckets` additions for all-threads mode
+  - `normalizeForumThread`, `toNumber`, `toOptionalNumber`, `toOptionalBool`
+  - updated `fetchSearchThreads` / `fetchQueueThreads`
+  - safe helpers: `isState`, `assigneeMatchesViewer`
+- Validate with:
+  - `npm --prefix ui run check`
+  - `npm --prefix ui run test`
+
+### Technical details
+
+- New UX entry point:
+  - board tab: `All Threads`
+- Runtime safety improvements:
+  - no `.trim()` calls on nullable/undefined thread fields in key filter paths
