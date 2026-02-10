@@ -166,7 +166,6 @@ export function App() {
 
   useEffect(() => {
     void refreshForumData();
-    void refreshDebug(selectedTicket, selectedRunID);
   }, [
     selectedTicket,
     selectedRunID,
@@ -178,6 +177,16 @@ export function App() {
     viewerType,
     viewerID,
   ]);
+
+  useEffect(() => {
+    void refreshDebug(selectedTicket, selectedRunID);
+    const interval = window.setInterval(() => {
+      void refreshDebug(selectedTicket, selectedRunID);
+    }, 15000);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [selectedTicket, selectedRunID]);
 
   useEffect(() => {
     if (!selectedThreadID) {
