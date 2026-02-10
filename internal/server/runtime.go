@@ -23,6 +23,7 @@ type Options struct {
 	WorkerBatchSize int
 	WorkerLogPeriod time.Duration
 	ShutdownTimeout time.Duration
+	StreamHeartbeat time.Duration
 }
 
 type Runtime struct {
@@ -33,6 +34,7 @@ type Runtime struct {
 	server        *http.Server
 	eventBroker   *ForumEventBroker
 	stopEventPump func()
+	streamBeat    time.Duration
 }
 
 type HealthResponse struct {
@@ -62,6 +64,7 @@ func NewRuntime(options Options) (*Runtime, error) {
 		worker:      NewForumWorker(service, options.WorkerInterval, options.WorkerBatchSize, options.WorkerLogPeriod, logger),
 		startedAt:   time.Now().UTC(),
 		eventBroker: NewForumEventBroker(128),
+		streamBeat:  options.StreamHeartbeat,
 	}
 	mux := http.NewServeMux()
 	runtime.registerRoutes(mux)
@@ -146,7 +149,17 @@ func normalizeOptions(options Options) Options {
 	if options.ShutdownTimeout <= 0 {
 		options.ShutdownTimeout = 5 * time.Second
 	}
+	if options.StreamHeartbeat <= 0 {
+		options.StreamHeartbeat = 25 * time.Second
+	}
 	return options
+}
+
+func (r *Runtime) streamHeartbeatInterval() time.Duration {
+	if r == nil || r.streamBeat <= 0 {
+		return 25 * time.Second
+	}
+	return r.streamBeat
 }
 
 func (r *Runtime) startEventPump() {

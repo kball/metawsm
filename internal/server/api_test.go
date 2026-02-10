@@ -2,7 +2,6 @@ package server
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -379,14 +378,12 @@ func TestHandleForumStreamRejectsInvalidUpgrade(t *testing.T) {
 	}
 }
 
-func TestHandleForumStreamSendsFrame(t *testing.T) {
-	calls := 0
+func TestHandleForumStreamSendsCatchUpFrame(t *testing.T) {
 	core := &mockCore{
 		forumWatchEventsFn: func(_ string, _ int64, _ int) ([]model.ForumEvent, error) {
-			calls++
 			return []model.ForumEvent{
 				{
-					Sequence: int64(calls),
+					Sequence: 7,
 					Envelope: model.ForumEnvelope{
 						EventID:      "evt-stream-1",
 						EventType:    "forum.post.added",
@@ -400,59 +397,66 @@ func TestHandleForumStreamSendsFrame(t *testing.T) {
 		},
 	}
 	runtime := newTestRuntime(core)
-	mux := http.NewServeMux()
-	runtime.registerRoutes(mux)
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	parsed, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse server url: %v", err)
-	}
-	conn, err := net.Dial("tcp", parsed.Host)
-	if err != nil {
-		t.Fatalf("dial server: %v", err)
-	}
+	conn, reader := openTestWebSocket(t, runtime, "/api/v1/forum/stream?ticket=METAWSM-011")
 	defer conn.Close()
 
-	request := strings.Join([]string{
-		"GET /api/v1/forum/stream?ticket=METAWSM-011&poll_ms=50 HTTP/1.1",
-		"Host: " + parsed.Host,
-		"Upgrade: websocket",
-		"Connection: Upgrade",
-		"Sec-WebSocket-Version: 13",
-		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
-		"",
-		"",
-	}, "\r\n")
-	if _, err := conn.Write([]byte(request)); err != nil {
-		t.Fatalf("write handshake request: %v", err)
+	frame := readWebSocketJSONFrame(t, conn, reader, 500*time.Millisecond)
+	if frame["type"] != "forum.events" {
+		t.Fatalf("expected forum.events frame, got %#v", frame["type"])
 	}
+	if frame["next_cursor"] == nil {
+		t.Fatalf("expected next_cursor in frame payload")
+	}
+}
 
-	reader := bufio.NewReader(conn)
-	statusLine, err := reader.ReadString('\n')
-	if err != nil {
-		t.Fatalf("read status line: %v", err)
+func TestHandleForumStreamSendsHeartbeatWhenIdle(t *testing.T) {
+	core := &mockCore{
+		forumWatchEventsFn: func(_ string, _ int64, _ int) ([]model.ForumEvent, error) {
+			return nil, nil
+		},
 	}
-	if !strings.Contains(statusLine, "101") {
-		t.Fatalf("expected websocket upgrade status, got %q", statusLine)
-	}
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			t.Fatalf("read header line: %v", err)
-		}
-		if line == "\r\n" {
-			break
-		}
-	}
+	runtime := newTestRuntime(core)
+	conn, reader := openTestWebSocket(t, runtime, "/api/v1/forum/stream?ticket=METAWSM-011")
+	defer conn.Close()
 
-	framePayload, err := readWebSocketFrame(reader)
-	if err != nil {
-		t.Fatalf("read websocket frame: %v", err)
+	frame := readWebSocketJSONFrame(t, conn, reader, 500*time.Millisecond)
+	if frame["type"] != "heartbeat" {
+		t.Fatalf("expected heartbeat frame, got %#v", frame["type"])
 	}
-	if !bytes.Contains(framePayload, []byte(`"type":"forum.events"`)) && !bytes.Contains(framePayload, []byte(`"type":"heartbeat"`)) {
-		t.Fatalf("unexpected websocket payload: %s", string(framePayload))
+}
+
+func TestHandleForumStreamSendsLiveBrokerEventFrame(t *testing.T) {
+	core := &mockCore{
+		forumWatchEventsFn: func(_ string, _ int64, _ int) ([]model.ForumEvent, error) {
+			return nil, nil
+		},
+	}
+	runtime := newTestRuntime(core)
+	conn, reader := openTestWebSocket(t, runtime, "/api/v1/forum/stream?ticket=METAWSM-011")
+	defer conn.Close()
+
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		runtime.eventBroker.Publish(model.ForumEvent{
+			Sequence: 9,
+			Envelope: model.ForumEnvelope{
+				EventID:      "evt-live-9",
+				EventType:    "forum.post.added",
+				EventVersion: 1,
+				ThreadID:     "fthr-live-1",
+				Ticket:       "METAWSM-011",
+				OccurredAt:   time.Now().UTC(),
+			},
+		})
+	}()
+
+	frame := readWebSocketJSONFrame(t, conn, reader, 500*time.Millisecond)
+	if frame["type"] != "forum.events" {
+		t.Fatalf("expected forum.events frame, got %#v", frame["type"])
+	}
+	events, ok := frame["events"].([]any)
+	if !ok || len(events) == 0 {
+		t.Fatalf("expected non-empty events payload, got %#v", frame["events"])
 	}
 }
 
@@ -483,12 +487,85 @@ func readWebSocketFrame(reader *bufio.Reader) ([]byte, error) {
 	return payload, nil
 }
 
+func openTestWebSocket(t *testing.T, runtime *Runtime, path string) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	mux := http.NewServeMux()
+	runtime.registerRoutes(mux)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	conn, err := net.Dial("tcp", parsed.Host)
+	if err != nil {
+		t.Fatalf("dial server: %v", err)
+	}
+	request := strings.Join([]string{
+		"GET " + path + " HTTP/1.1",
+		"Host: " + parsed.Host,
+		"Upgrade: websocket",
+		"Connection: Upgrade",
+		"Sec-WebSocket-Version: 13",
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+		"",
+		"",
+	}, "\r\n")
+	if _, err := conn.Write([]byte(request)); err != nil {
+		_ = conn.Close()
+		t.Fatalf("write handshake request: %v", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	statusLine, err := reader.ReadString('\n')
+	if err != nil {
+		_ = conn.Close()
+		t.Fatalf("read status line: %v", err)
+	}
+	if !strings.Contains(statusLine, "101") {
+		_ = conn.Close()
+		t.Fatalf("expected websocket upgrade status, got %q", statusLine)
+	}
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			_ = conn.Close()
+			t.Fatalf("read header line: %v", err)
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+	return conn, reader
+}
+
+func readWebSocketJSONFrame(t *testing.T, conn net.Conn, reader *bufio.Reader, timeout time.Duration) map[string]any {
+	t.Helper()
+	if timeout <= 0 {
+		timeout = 500 * time.Millisecond
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	payload, err := readWebSocketFrame(reader)
+	if err != nil {
+		t.Fatalf("read websocket frame: %v", err)
+	}
+	var frame map[string]any
+	if err := json.Unmarshal(payload, &frame); err != nil {
+		t.Fatalf("unmarshal websocket frame: %v payload=%s", err, string(payload))
+	}
+	return frame
+}
+
 func newTestRuntime(core serviceapi.Core) *Runtime {
 	return &Runtime{
 		service:     core,
 		worker:      NewForumWorker(core, time.Second, 10, time.Minute, nil),
 		startedAt:   time.Now().UTC(),
 		eventBroker: NewForumEventBroker(32),
+		streamBeat:  50 * time.Millisecond,
 	}
 }
 

@@ -69,11 +69,11 @@ func (r *Runtime) streamForumEvents(conn net.Conn, ticket string, runID string, 
 	}
 
 	if r.eventBroker == nil {
-		return streamHeartbeatOnly(conn)
+		return streamHeartbeatOnly(conn, r.streamHeartbeatInterval(), nextCursor)
 	}
 	eventsCh, unsubscribe := r.eventBroker.Subscribe(ticket, runID)
 	defer unsubscribe()
-	heartbeat := time.NewTicker(25 * time.Second)
+	heartbeat := time.NewTicker(r.streamHeartbeatInterval())
 	defer heartbeat.Stop()
 
 	for {
@@ -148,11 +148,14 @@ func writeHeartbeatFrame(conn net.Conn, nextCursor int64) error {
 	})
 }
 
-func streamHeartbeatOnly(conn net.Conn) error {
-	heartbeat := time.NewTicker(25 * time.Second)
+func streamHeartbeatOnly(conn net.Conn, interval time.Duration, nextCursor int64) error {
+	if interval <= 0 {
+		interval = 25 * time.Second
+	}
+	heartbeat := time.NewTicker(interval)
 	defer heartbeat.Stop()
 	for range heartbeat.C {
-		if err := writeHeartbeatFrame(conn, 0); err != nil {
+		if err := writeHeartbeatFrame(conn, nextCursor); err != nil {
 			return err
 		}
 	}
