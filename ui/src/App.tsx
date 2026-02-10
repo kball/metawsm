@@ -75,10 +75,15 @@ export function App() {
       if (!response.ok) {
         throw new Error(`runs request failed (${response.status})`);
       }
-      const payload = (await response.json()) as { runs: RunSnapshot[] };
-      setRuns(payload.runs);
-      if (!selectedRunID && payload.runs.length > 0) {
-        setSelectedRunID(payload.runs[0].run_id);
+      const payload = (await response.json()) as { runs?: unknown[] };
+      const normalizedRuns = Array.isArray(payload.runs)
+        ? payload.runs
+            .map(normalizeRunSnapshot)
+            .filter((item): item is RunSnapshot => item !== null)
+        : [];
+      setRuns(normalizedRuns);
+      if (!selectedRunID && normalizedRuns.length > 0) {
+        setSelectedRunID(normalizedRuns[0].run_id);
       }
     } catch (err) {
       setError(toErrorString(err));
@@ -130,7 +135,7 @@ export function App() {
                 >
                   <strong>{run.run_id}</strong>
                   <span>{run.status}</span>
-                  <small>{run.tickets.join(", ") || "No tickets"}</small>
+                  <small>{run.tickets.length > 0 ? run.tickets.join(", ") : "No tickets"}</small>
                 </button>
               </li>
             ))}
@@ -164,4 +169,82 @@ function toErrorString(err: unknown): string {
     return err.message;
   }
   return String(err);
+}
+
+function normalizeRunSnapshot(value: unknown): RunSnapshot | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const raw = value as Record<string, unknown>;
+  const runID = pickString(raw.run_id, raw.RunID);
+  if (!runID) {
+    return null;
+  }
+  return {
+    run_id: runID,
+    status: pickString(raw.status, raw.Status) ?? "unknown",
+    tickets: normalizeStringArray(raw.tickets ?? raw.Tickets),
+    pending_guidance: normalizeGuidanceArray(raw.pending_guidance ?? raw.PendingGuidance),
+  };
+}
+
+function pickString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function normalizeGuidanceArray(
+  value: unknown,
+): Array<{ thread_id: string; agent_name: string; workspace_name: string; question: string }> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const normalized = value
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      const raw = item as Record<string, unknown>;
+      const threadID = pickString(raw.thread_id, raw.ThreadID) ?? "";
+      const agentName = pickString(raw.agent_name, raw.AgentName) ?? "";
+      const workspaceName = pickString(raw.workspace_name, raw.WorkspaceName) ?? "";
+      const question = pickString(raw.question, raw.Question) ?? "";
+      if (!threadID || !agentName || !workspaceName || !question) {
+        return null;
+      }
+      return {
+        thread_id: threadID,
+        agent_name: agentName,
+        workspace_name: workspaceName,
+        question,
+      };
+    })
+    .filter(
+      (
+        item,
+      ): item is {
+        thread_id: string;
+        agent_name: string;
+        workspace_name: string;
+        question: string;
+      } => item !== null,
+    );
+  return normalized;
 }
