@@ -47,6 +47,66 @@ func newRootCommand() (*cobra.Command, error) {
 	})
 
 	migrated := []cmds.Command{}
+	statusCmd, err := newStatusGlazedCommand()
+	if err != nil {
+		return nil, err
+	}
+	migrated = append(migrated, statusCmd)
+
+	resumeCmd, err := newResumeGlazedCommand()
+	if err != nil {
+		return nil, err
+	}
+	migrated = append(migrated, resumeCmd)
+
+	stopCmd, err := newStopGlazedCommand()
+	if err != nil {
+		return nil, err
+	}
+	migrated = append(migrated, stopCmd)
+
+	restartCmd, err := newRestartGlazedCommand()
+	if err != nil {
+		return nil, err
+	}
+	migrated = append(migrated, restartCmd)
+
+	cleanupCmd, err := newCleanupGlazedCommand()
+	if err != nil {
+		return nil, err
+	}
+	migrated = append(migrated, cleanupCmd)
+
+	mergeCmd, err := newMergeGlazedCommand()
+	if err != nil {
+		return nil, err
+	}
+	migrated = append(migrated, mergeCmd)
+
+	commitCmd, err := newCommitGlazedCommand()
+	if err != nil {
+		return nil, err
+	}
+	migrated = append(migrated, commitCmd)
+
+	prCmd, err := newPRGlazedCommand()
+	if err != nil {
+		return nil, err
+	}
+	migrated = append(migrated, prCmd)
+
+	iterateCmd, err := newIterateGlazedCommand()
+	if err != nil {
+		return nil, err
+	}
+	migrated = append(migrated, iterateCmd)
+
+	closeCmd, err := newCloseGlazedCommand()
+	if err != nil {
+		return nil, err
+	}
+	migrated = append(migrated, closeCmd)
+
 	policyInitCmd, err := newPolicyInitGlazedCommand()
 	if err != nil {
 		return nil, err
@@ -76,21 +136,11 @@ func newRootCommand() (*cobra.Command, error) {
 	legacySpecs := []legacyPassthroughSpec{
 		{Use: "run", Short: "Start a multi-ticket run", Run: runCommand},
 		{Use: "bootstrap", Short: "Bootstrap a ticket run interactively", Run: bootstrapCommand},
-		{Use: "status", Short: "Print run status", Run: statusCommand},
 		{Use: "auth", Short: "Auth subcommands", Run: authCommand},
 		{Use: "review", Short: "Review subcommands", Run: reviewCommand},
 		{Use: "watch", Short: "Watch run status and alerts", Run: watchCommand},
 		{Use: "operator", Short: "Operator loop for run supervision", Run: operatorCommand},
 		{Use: "forum", Short: "Forum subcommands", Run: forumCommand},
-		{Use: "resume", Short: "Resume a paused run", Run: resumeCommand},
-		{Use: "stop", Short: "Stop an active run", Run: stopCommand},
-		{Use: "restart", Short: "Restart a run", Run: restartCommand},
-		{Use: "cleanup", Short: "Clean up run workspaces/sessions", Run: cleanupCommand},
-		{Use: "commit", Short: "Commit workspace changes", Run: commitCommand},
-		{Use: "pr", Short: "Open or update pull requests", Run: prCommand},
-		{Use: "merge", Short: "Merge run pull requests", Run: mergeCommand},
-		{Use: "iterate", Short: "Send feedback to continue a run", Run: iterateCommand},
-		{Use: "close", Short: "Close a completed run", Run: closeCommand},
 		{Use: "tui", Short: "Terminal UI monitor", Run: tuiCommand},
 	}
 
