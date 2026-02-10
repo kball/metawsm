@@ -48,3 +48,13 @@ Step 4: Migrated run-selector family to glazed with shared selector layer (commi
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/glazed_run_selector_commands.go — Implemented status/resume/stop/restart/cleanup/merge/commit/pr/iterate/close as glazed commands
 - /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/root_command.go — Registered run-selector glazed commands in root
 
+
+## 2026-02-10
+
+Step 5: Migrated grouped command trees for auth/review/forum hierarchy (commit 313863de313c267dab6325aa47e5602327bc5bc0)
+
+### Related Files
+
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/glazed_grouped_commands.go — Implemented auth check and review sync as glazed grouped commands plus forum subcommand tree wrappers
+- /Users/kball/workspaces/2026-02-07/metawsm/metawsm/cmd/metawsm/root_command.go — Registered grouped trees and removed legacy top-level grouped passthrough
+

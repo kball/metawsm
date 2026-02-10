@@ -9,6 +9,8 @@ DocType: reference
 Intent: long-term
 Owners: []
 RelatedFiles:
+    - Path: cmd/metawsm/glazed_grouped_commands.go
+      Note: Added grouped command tree migration for auth/review/forum
     - Path: cmd/metawsm/glazed_low_risk_commands.go
       Note: Migrated policy-init/docs/serve into glazed BareCommand implementations
     - Path: cmd/metawsm/glazed_run_selector_commands.go
@@ -27,6 +29,7 @@ RelatedFiles:
       Note: |-
         Added cobra/glazed root registration with legacy passthrough adapters
         Switched run-selector commands from legacy passthrough to glazed registration
+        Replaced auth/review/forum top-level passthrough with grouped tree registration
     - Path: go.mod
       Note: Added glazed and cobra dependencies
     - Path: go.sum
@@ -41,6 +44,7 @@ LastUpdated: 2026-02-10T09:20:00-08:00
 WhatFor: Track implementation steps, tradeoffs, failures, and validation for CLI migration.
 WhenToUse: During ticket execution and handoff/review.
 ---
+
 
 
 
@@ -287,3 +291,80 @@ This step removes a large amount of duplicated command flag plumbing from future
 
 - Selector parsing now uses `parsedLayers.InitializeStruct("run-selector", ...)` across the migrated family.
 - Commands with additional flags parse command-specific settings from the default layer.
+
+## Step 4: Migrate grouped command trees (auth/review/forum)
+
+I migrated grouped command tree behavior into explicit cobra hierarchy. `auth check` and `review sync` are now glazed commands, while `forum` has an explicit subcommand tree (`ask|answer|assign|state|priority|close|list|thread|watch|signal|debug`) that currently forwards to existing forum handlers for behavior parity.
+
+This step removes manual top-level grouping logic for these families and makes hierarchy explicit at command registration time.
+
+### Prompt Context
+
+**User prompt (verbatim):** "Use docmgr to pick up ticket REWORK_CLI. Read the plan, break it into tasks if it isn't already, then implement. Keep a diary and commit as you go."
+
+**Assistant interpretation:** Continue phased migration by converting grouped command families to explicit tree structure while preserving behavior.
+
+**Inferred user intent:** Get to a maintainable CLI architecture where command hierarchy is encoded directly instead of manually checked from trailing args.
+
+**Commit (code):** 313863de313c267dab6325aa47e5602327bc5bc0 — "metawsm: migrate auth/review trees and forum subcommand hierarchy"
+
+### What I did
+
+- Added `cmd/metawsm/glazed_grouped_commands.go`.
+- Implemented glazed grouped commands:
+  - `auth check`
+  - `review sync`
+- Added `addGroupedCommandTrees(...)` to create explicit tree structure under root:
+  - `auth` parent with `check`
+  - `review` parent with `sync`
+  - `forum` parent with explicit subcommands forwarding to `forumCommand` for compatibility
+- Updated `cmd/metawsm/root_command.go` to remove legacy top-level passthrough entries for `auth`, `review`, and `forum`.
+
+### Why
+
+- The plan called out grouped trees as a major manual-dispatch pain point.
+- Converting these to explicit command hierarchy reduces parsing ambiguity and future change risk.
+
+### What worked
+
+- `go test ./cmd/metawsm -count=1` remained green.
+- Help paths now reflect grouped hierarchy:
+  - `go run ./cmd/metawsm auth check --help`
+  - `go run ./cmd/metawsm review sync --help`
+  - `go run ./cmd/metawsm forum --help`
+
+### What didn't work
+
+- `go run ./cmd/metawsm forum ask --help` exits with status `1` and `flag: help requested` because forum subcommands currently forward to legacy flag-based handlers.
+- This matches existing legacy forum help behavior but is not ideal UX for cobra-style help exits.
+
+### What I learned
+
+- Forum tree migration can be split safely: hierarchy first, per-subcommand parser migration second.
+
+### What was tricky to build
+
+- Keeping forum behavior unchanged while moving tree registration required forwarding wrappers that preserve existing arg order.
+
+### What warrants a second pair of eyes
+
+- Confirm whether `forum <sub> --help` should continue returning exit code `1` during this ticket, or be normalized to cobra help semantics in a follow-up pass.
+
+### What should be done in the future
+
+- Migrate watch/operator/tui loop commands to glazed with equivalent signal/runtime behavior.
+
+### Code review instructions
+
+- Start with `cmd/metawsm/glazed_grouped_commands.go` for grouped-tree wiring and command implementations.
+- Review `cmd/metawsm/root_command.go` where grouped trees replace top-level passthrough entries.
+- Validate with:
+  - `go test ./cmd/metawsm -count=1`
+  - `go run ./cmd/metawsm auth check --help`
+  - `go run ./cmd/metawsm review sync --help`
+  - `go run ./cmd/metawsm forum --help`
+
+### Technical details
+
+- `auth check` and `review sync` reuse shared selector layer (`run-id`, `ticket`, `db`) and command-specific default-layer flags.
+- Forum subcommands are currently compatibility wrappers to legacy handlers, preserving existing behavior while eliminating manual top-level dispatch.
